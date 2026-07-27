@@ -5,11 +5,13 @@ import {
   customers,
   demoShop,
   demoUsers,
+  initialDemoState,
   maintenanceItems,
   mileageReadings,
   serviceDefinitions,
   vehicles,
 } from "../src/lib/demo-data";
+import { getRecordStatus } from "../src/lib/demo-calculations";
 
 const adapter = new PrismaPg({
   connectionString: process.env.DATABASE_URL ?? "",
@@ -19,6 +21,8 @@ const prisma = new PrismaClient({ adapter });
 async function main() {
   await prisma.auditLog.deleteMany();
   await prisma.communication.deleteMany();
+  await prisma.appointmentService.deleteMany();
+  await prisma.appointment.deleteMany();
   await prisma.automationQueueItem.deleteMany();
   await prisma.vehicleMaintenanceItem.deleteMany();
   await prisma.mileageReading.deleteMany();
@@ -91,6 +95,7 @@ async function main() {
       smsConsent: customer.smsConsent,
       emailConsent: customer.emailConsent,
       callConsent: customer.callConsent,
+      address: customer.address,
       notes: customer.notes,
       status: customer.status as "ACTIVE" | "WATCHLIST" | "PAUSED",
       customerScore: customer.customerScore,
@@ -129,7 +134,11 @@ async function main() {
           | "MANUAL_ENTRY"
           | "IMPORTED"
           | "ESTIMATED",
-        confidence: reading.confidence,
+        confidence: reading.confidence as
+          | "VERIFIED"
+          | "CUSTOMER_CONFIRMED"
+          | "IMPORTED"
+          | "ESTIMATED",
         createdById: demoUsers[0].id,
       })),
     });
@@ -140,17 +149,27 @@ async function main() {
       id: item.id,
       shopId: item.shopId,
       vehicleId: item.vehicleId,
-      serviceDefinitionId: item.serviceDefinitionId,
+      serviceDefinitionId: item.serviceId,
       lastCompletedDate: new Date(item.lastCompletedDate),
       lastCompletedMileage: item.lastCompletedMileage,
       recommendedMileageInterval: item.recommendedMileageInterval,
       recommendedTimeIntervalMonths: item.recommendedTimeIntervalMonths,
       notificationThreshold: item.notificationThreshold,
-      estimatedLaborMinutes: item.estimatedLaborMinutes,
-      estimatedPriceCents: item.estimatedPriceCents,
-      status: item.status as "HEALTHY" | "DUE_SOON" | "OVERDUE",
-      mechanicRemainingPercentage: item.mechanicRemainingPercentage,
-      communicationStatus: "NOT_CONTACTED",
+      estimatedLaborMinutes: Math.round(item.laborHours * 60),
+      estimatedPriceCents: item.priceCents,
+      status:
+        getRecordStatus(initialDemoState, item).status === "DUE"
+          ? "DUE_SOON"
+          : (getRecordStatus(initialDemoState, item).status as
+              | "HEALTHY"
+              | "DUE_SOON"
+              | "OVERDUE"),
+      communicationStatus:
+        item.outreachStatus === "SCHEDULED"
+          ? "APPOINTMENT_BOOKED"
+          : item.outreachStatus === "OUTREACH_SENT"
+            ? "CONTACTED"
+            : "NOT_CONTACTED",
     })),
   });
 

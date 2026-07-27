@@ -11,13 +11,23 @@ import {
 } from "recharts";
 import { revenueForecast } from "@/lib/demo-data";
 
-const data = revenueForecast.map((item) => ({
-  ...item,
-  predicted: item.predicted / 100,
-  scheduled: item.scheduled / 100,
-}));
+type ForecastItem = {
+  label: string;
+  predicted: number;
+  scheduled: number;
+};
 
-export function RevenueForecastChart() {
+export function RevenueForecastChart({
+  forecast = revenueForecast,
+}: {
+  forecast?: ForecastItem[];
+}) {
+  const data = forecast.map((item) => ({
+    ...item,
+    predicted: item.predicted / 100,
+    scheduled: item.scheduled / 100,
+  }));
+
   return (
     <div className="h-72 w-full">
       <ResponsiveContainer width="100%" height="100%">

@@ -10,6 +10,7 @@ Maintiva is a predictive maintenance and customer management platform for auto r
 - Credentials-based Auth.js/NextAuth foundation with role-ready users
 - Responsive SaaS shell with sidebar navigation, global search, and user menu space
 - Dashboard command center for customers, vehicles, maintenance opportunities, outreach, appointments, revenue, and capacity
+- Browser-persistent demo workflow backed by localStorage with a Reset Demo Data action
 - Customer list and customer detail views with consent, value, notes, vehicle history, and predicted service context
 - Vehicle preventative maintenance dashboard with independent time/mileage life calculations
 - Reusable services library with default intervals, thresholds, labor, and pricing
@@ -46,6 +47,8 @@ pnpm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000).
+
+The demo seeds itself automatically on first visit. Use **Reset Demo Data** in the top bar to restore the original seeded shop, customers, vehicles, recommendations, outreach, and appointments.
 
 ## PostgreSQL Setup
 

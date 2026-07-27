@@ -15,7 +15,7 @@ import {
   Users,
   Wrench,
 } from "lucide-react";
-import { demoShop } from "@/lib/demo-data";
+import { useDemoStore } from "@/lib/demo-store";
 import { cn } from "@/lib/utils";
 
 const navItems = [
@@ -31,6 +31,7 @@ const navItems = [
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const { state, resetDemoData } = useDemoStore();
 
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-950">
@@ -50,7 +51,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">
             Current shop
           </p>
-          <p className="mt-1 font-semibold">{demoShop.name}</p>
+          <p className="mt-1 font-semibold">{state.shop.name}</p>
         </div>
         <nav className="flex-1 space-y-1 px-4 py-5">
           {navItems.map((item) => {
@@ -77,8 +78,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </nav>
         <div className="border-t border-zinc-100 p-4">
           <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-3">
-            <p className="text-sm font-semibold">Avery Stone</p>
-            <p className="text-xs text-zinc-500">Owner</p>
+            <p className="text-sm font-semibold">{state.users[0]?.name ?? "Avery Stone"}</p>
+            <p className="text-xs text-zinc-500">{state.users[0]?.role ?? "OWNER"}</p>
           </div>
         </div>
       </aside>
@@ -95,12 +96,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <Search className="h-4 w-4" aria-hidden="true" />
             <span className="text-sm">Search customers, vehicles, VINs, services</span>
           </div>
-          <Link
-            href="/login"
+          <button
+            onClick={resetDemoData}
             className="rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white"
           >
-            Demo login
-          </Link>
+            Reset Demo Data
+          </button>
         </header>
         <main className="px-4 py-6 lg:px-8">{children}</main>
       </div>

@@ -1,10 +1,18 @@
+"use client";
+
+import Link from "next/link";
 import { CalendarPlus } from "lucide-react";
 import { Badge, statusVariant } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { appointments, customerLookup, vehicleLookup } from "@/lib/demo-data";
-import { formatCurrency, formatHours } from "@/lib/utils";
+import { getDashboardMetrics, vehicleLabel } from "@/lib/demo-calculations";
+import { useDemoStore } from "@/lib/demo-store";
+import { formatCurrency } from "@/lib/utils";
 
 export default function AppointmentsPage() {
+  const { state } = useDemoStore();
+  const metrics = getDashboardMetrics(state);
+  const committedHours = state.shop.dailyBayHours - metrics.openBayCapacityHours;
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
@@ -14,10 +22,10 @@ export default function AppointmentsPage() {
             Schedule consolidated visits based on total selected service labor.
           </p>
         </div>
-        <button className="inline-flex items-center gap-2 rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white">
+        <Link href="/automation" className="inline-flex items-center gap-2 rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white">
           <CalendarPlus className="h-4 w-4" />
-          New Appointment
-        </button>
+          Book from queue
+        </Link>
       </div>
 
       <div className="grid gap-6 xl:grid-cols-[1fr_0.8fr]">
@@ -26,46 +34,56 @@ export default function AppointmentsPage() {
             <h2 className="text-lg font-semibold">Schedule</h2>
           </CardHeader>
           <CardContent className="space-y-4">
-            {appointments.map((appointment) => (
-              <div key={appointment.id} className="rounded-lg border border-zinc-200 p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="font-semibold">
-                      {new Intl.DateTimeFormat("en-US", {
-                        weekday: "short",
-                        month: "short",
-                        day: "numeric",
-                        hour: "numeric",
-                        minute: "2-digit",
-                      }).format(new Date(appointment.scheduledStart))}
-                    </p>
-                    <p className="mt-1 text-sm text-zinc-500">
-                      {customerLookup[appointment.customerId].name} · {vehicleLookup[appointment.vehicleId].label}
-                    </p>
+            {state.appointments.length === 0 && (
+              <p className="rounded-lg border border-zinc-200 p-4 text-sm text-zinc-500">
+                No appointments have been booked yet. Send a recommendation from the queue to create one.
+              </p>
+            )}
+            {state.appointments.map((appointment) => {
+              const customer = state.customers.find((item) => item.id === appointment.customerId);
+              const vehicle = state.vehicles.find((item) => item.id === appointment.vehicleId);
+              if (!customer || !vehicle) return null;
+              return (
+                <div key={appointment.id} className="rounded-lg border border-zinc-200 p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-semibold">
+                        {new Intl.DateTimeFormat("en-US", {
+                          weekday: "short",
+                          month: "short",
+                          day: "numeric",
+                          hour: "numeric",
+                          minute: "2-digit",
+                        }).format(new Date(appointment.scheduledStart))}
+                      </p>
+                      <p className="mt-1 text-sm text-zinc-500">
+                        {customer.firstName} {customer.lastName} · {vehicleLabel(vehicle)}
+                      </p>
+                    </div>
+                    <Badge variant={statusVariant(appointment.status)}>{appointment.status}</Badge>
                   </div>
-                  <Badge variant={statusVariant(appointment.status)}>{appointment.status}</Badge>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {appointment.serviceNames.map((service) => (
+                      <Badge key={service} variant="purple">{service}</Badge>
+                    ))}
+                  </div>
+                  <div className="mt-4 grid grid-cols-3 gap-3 text-sm">
+                    <div>
+                      <p className="text-zinc-500">Labor</p>
+                      <p className="font-semibold">{appointment.totalLaborHours} hr</p>
+                    </div>
+                    <div>
+                      <p className="text-zinc-500">Revenue</p>
+                      <p className="font-semibold">{formatCurrency(appointment.totalPriceCents)}</p>
+                    </div>
+                    <div>
+                      <p className="text-zinc-500">Source</p>
+                      <p className="font-semibold">{appointment.source.replace("_", " ")}</p>
+                    </div>
+                  </div>
                 </div>
-                <div className="mt-4 flex flex-wrap gap-2">
-                  {appointment.services.map((service) => (
-                    <Badge key={service} variant="purple">{service}</Badge>
-                  ))}
-                </div>
-                <div className="mt-4 grid grid-cols-3 gap-3 text-sm">
-                  <div>
-                    <p className="text-zinc-500">Labor</p>
-                    <p className="font-semibold">{formatHours(appointment.estimatedLaborMinutes)}</p>
-                  </div>
-                  <div>
-                    <p className="text-zinc-500">Revenue</p>
-                    <p className="font-semibold">{formatCurrency(appointment.estimatedRevenueCents)}</p>
-                  </div>
-                  <div>
-                    <p className="text-zinc-500">Source</p>
-                    <p className="font-semibold">{appointment.source.replace("_", " ")}</p>
-                  </div>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </CardContent>
         </Card>
 
@@ -75,10 +93,10 @@ export default function AppointmentsPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             {[
-              ["Today committed", "23 hrs"],
-              ["Today open", "41 hrs"],
-              ["Next 7 days committed", "118 hrs"],
-              ["Forecasted due labor", "72 hrs"],
+              ["Today committed", `${committedHours} hrs`],
+              ["Today open", `${metrics.openBayCapacityHours} hrs`],
+              ["Scheduled revenue", formatCurrency(metrics.scheduledRevenue)],
+              ["Appointments today", String(metrics.appointmentsToday)],
             ].map(([label, value]) => (
               <div key={label} className="flex items-center justify-between rounded-lg border border-zinc-200 p-4">
                 <span className="text-sm text-zinc-500">{label}</span>

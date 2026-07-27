@@ -1,10 +1,13 @@
-import { Plus } from "lucide-react";
+"use client";
+
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { serviceDefinitions } from "@/lib/demo-data";
+import { useDemoStore } from "@/lib/demo-store";
 import { formatCurrency, formatHours } from "@/lib/utils";
 
 export default function ServicesPage() {
+  const { state } = useDemoStore();
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
@@ -14,10 +17,6 @@ export default function ServicesPage() {
             Reusable shop defaults for intervals, notification thresholds, labor, and pricing.
           </p>
         </div>
-        <button className="inline-flex items-center gap-2 rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white">
-          <Plus className="h-4 w-4" />
-          Create Service
-        </button>
       </div>
 
       <Card>
@@ -25,7 +24,7 @@ export default function ServicesPage() {
           <h2 className="text-lg font-semibold">Default Preventative Services</h2>
         </CardHeader>
         <CardContent className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {serviceDefinitions.map((service) => (
+          {state.services.map((service) => (
             <div key={service.id} className="rounded-lg border border-zinc-200 p-4">
               <div className="flex items-start justify-between gap-3">
                 <div>
@@ -58,9 +57,7 @@ export default function ServicesPage() {
                 <span className="font-semibold text-violet-950">
                   {formatCurrency(service.defaultPriceCents)}
                 </span>
-                <button className="rounded-lg border border-zinc-200 px-3 py-2 text-sm font-semibold">
-                  Edit defaults
-                </button>
+                <Badge variant="neutral">Demo defaults</Badge>
               </div>
             </div>
           ))}
