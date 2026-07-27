@@ -40,7 +40,8 @@ export default function AutomationPage() {
             "Due soon",
             "Overdue",
             "Never contacted",
-            "Contacted",
+            "Drafted",
+            "Manually sent",
             "Appointment booked",
             "No response",
             "Highest revenue",
@@ -109,13 +110,13 @@ export default function AutomationPage() {
                       Last contact: {lastContact ? formatDate(lastContact.sentAt) : "Never"} · {statusLabel(group.opportunityStatus)}
                     </div>
                     <div className="flex gap-2">
-                      <button className="grid h-10 w-10 place-items-center rounded-lg border border-zinc-200" title="Simulated SMS">
+                      <button className="grid h-10 w-10 place-items-center rounded-lg border border-zinc-200" title="Manual SMS draft">
                         <MessageSquare className="h-4 w-4" />
                       </button>
-                      <button className="grid h-10 w-10 place-items-center rounded-lg border border-zinc-200" title="Simulated email">
+                      <button className="grid h-10 w-10 place-items-center rounded-lg border border-zinc-200" title="Manual email draft">
                         <Mail className="h-4 w-4" />
                       </button>
-                      <button className="grid h-10 w-10 place-items-center rounded-lg border border-zinc-200" title="Simulated call">
+                      <button className="grid h-10 w-10 place-items-center rounded-lg border border-zinc-200" title="Manual call note">
                         <Phone className="h-4 w-4" />
                       </button>
                       {group.opportunityStatus === "SCHEDULED" ? (

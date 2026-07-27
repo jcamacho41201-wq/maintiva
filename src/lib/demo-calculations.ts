@@ -104,8 +104,12 @@ export function getOpportunityStatus(records: VehicleMaintenanceRecord[]): Outre
     return "SCHEDULED";
   }
 
-  if (records.some((record) => record.outreachStatus === "OUTREACH_SENT")) {
-    return "OUTREACH_SENT";
+  if (records.some((record) => record.outreachStatus === "MANUALLY_SENT")) {
+    return "MANUALLY_SENT";
+  }
+
+  if (records.some((record) => record.outreachStatus === "DRAFTED")) {
+    return "DRAFTED";
   }
 
   return "NEEDS_OUTREACH";
@@ -144,7 +148,13 @@ export function getVehicleOpportunities(state: DemoState) {
     })
     .filter((item) => item.vehicle && item.customer)
     .sort((a, b) => {
-      const statusRank = { NEEDS_OUTREACH: 0, OUTREACH_SENT: 1, SCHEDULED: 2 };
+      const statusRank = {
+        NEEDS_OUTREACH: 0,
+        DRAFTED: 1,
+        MANUALLY_SENT: 2,
+        DECLINED: 3,
+        SCHEDULED: 4,
+      };
       return (
         statusRank[a.opportunityStatus] - statusRank[b.opportunityStatus] ||
         a.urgency - b.urgency

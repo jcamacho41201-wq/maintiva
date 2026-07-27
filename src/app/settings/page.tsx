@@ -4,7 +4,7 @@ export default function SettingsPage() {
   return (
     <ComingSoon
       title="Settings"
-      description="Production configuration remains documented and modeled, while the demo keeps settings non-destructive."
+      description="Workspace, communication, import, and permission controls for a repair shop pilot."
       items={[
         "Role permissions",
         "Communication rules",

@@ -8,7 +8,7 @@ import {
 } from "@/lib/demo-calculations";
 import { createInitialDemoState } from "@/lib/demo-data";
 
-describe("working demo flow", () => {
+describe("pilot workflow flow", () => {
   it("shows Justin's Jeep with three open recommended services and clear due text", () => {
     const state = createInitialDemoState();
     const jeepRecords = getRecommendedRecords(state, "veh-jeep").filter(
@@ -87,5 +87,32 @@ describe("working demo flow", () => {
         nextState.maintenanceRecords.find((record) => record.id === selectedIds[0])!,
       ).dueText,
     ).toMatch(/Due|Overdue/);
+  });
+
+  it("distinguishes manual outreach from scheduled appointments", () => {
+    const state = createInitialDemoState();
+    const selectedIds = [
+      "item-veh-jeep-oil-change",
+      "item-veh-jeep-brake-pads",
+    ];
+    const nextState = {
+      ...state,
+      maintenanceRecords: state.maintenanceRecords.map((record) =>
+        selectedIds.includes(record.id)
+          ? { ...record, outreachStatus: "MANUALLY_SENT" as const }
+          : record,
+      ),
+    };
+    const jeep = getVehicleOpportunities(nextState).find(
+      (opportunity) => opportunity.vehicle?.id === "veh-jeep",
+    );
+
+    expect(jeep?.opportunityStatus).toBe("MANUALLY_SENT");
+    expect(getDashboardMetrics(nextState).readyForOutreach).toBeLessThan(
+      getDashboardMetrics(state).readyForOutreach,
+    );
+    expect(getDashboardMetrics(nextState).maintenanceOpportunities).toBe(
+      getDashboardMetrics(state).maintenanceOpportunities,
+    );
   });
 });

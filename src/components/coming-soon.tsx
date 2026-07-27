@@ -21,10 +21,10 @@ export function ComingSoon({
           <div>
             <h2 className="text-lg font-semibold">Coming soon</h2>
             <p className="mt-1 text-sm text-zinc-500">
-              This area is prepared for the production roadmap and intentionally deferred for the working demo.
+              This area is prepared for controlled rollout after the first shop pilot.
             </p>
           </div>
-          <Badge variant="purple">Roadmap</Badge>
+          <Badge variant="purple">Pilot scope</Badge>
         </CardHeader>
         <CardContent className="grid gap-3 sm:grid-cols-2">
           {items.map((item) => (

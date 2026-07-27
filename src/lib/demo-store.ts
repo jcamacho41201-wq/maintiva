@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useSyncExternalStore } from "react";
 import {
   createInitialDemoState,
   type Appointment,
@@ -20,9 +20,21 @@ function getServerSnapshot() {
   return serverSnapshot;
 }
 
+function shouldUseLocalDemoPersistence() {
+  return (
+    !process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    process.env.NEXT_PUBLIC_MAINTIVA_ENABLE_DEMO_RESET === "true"
+  );
+}
+
 function readState() {
   if (typeof window === "undefined") {
     return getServerSnapshot();
+  }
+
+  if (!shouldUseLocalDemoPersistence()) {
+    return cachedState ?? getServerSnapshot();
   }
 
   if (cachedState) {
@@ -42,8 +54,42 @@ function readState() {
 
 function saveState(state: DemoState) {
   cachedState = state;
-  window.localStorage.setItem(storageKey, JSON.stringify(state));
+  if (shouldUseLocalDemoPersistence()) {
+    window.localStorage.setItem(storageKey, JSON.stringify(state));
+  }
   window.dispatchEvent(new Event(changeEvent));
+}
+
+async function hydratePilotState() {
+  if (shouldUseLocalDemoPersistence()) return;
+  if (["/login", "/password-reset", "/onboarding", "/privacy", "/terms"].includes(window.location.pathname)) {
+    return;
+  }
+  const response = await fetch("/api/pilot/state", { credentials: "include" });
+  if (response.status === 409) {
+    window.location.href = "/onboarding";
+    return;
+  }
+  if (response.status === 401) {
+    window.location.href = "/login";
+    return;
+  }
+  if (!response.ok) return;
+  const data = (await response.json()) as { state: DemoState };
+  saveState(data.state);
+}
+
+async function mutatePilotState(body: unknown) {
+  if (shouldUseLocalDemoPersistence()) return;
+  const response = await fetch("/api/pilot/mutate", {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) return;
+  const data = (await response.json()) as { state: DemoState };
+  saveState(data.state);
 }
 
 function subscribe(callback: () => void) {
@@ -63,6 +109,10 @@ function subscribe(callback: () => void) {
 export function useDemoStore() {
   const state = useSyncExternalStore(subscribe, readState, getServerSnapshot);
 
+  useEffect(() => {
+    void hydratePilotState();
+  }, []);
+
   return useMemo(() => {
     function update(mutator: (draft: DemoState) => DemoState) {
       const next = mutator(structuredClone(readState()));
@@ -76,6 +126,7 @@ export function useDemoStore() {
         saveState(createInitialDemoState());
       },
       addCustomer(input: Omit<Customer, "id" | "shopId" | "customerScore" | "lifetimeRevenueCents" | "lastVisit">) {
+        void mutatePilotState({ action: "addCustomer", payload: input });
         update((draft) => ({
           ...draft,
           customers: [
@@ -92,6 +143,7 @@ export function useDemoStore() {
         }));
       },
       updateCustomer(customerId: string, input: Partial<Customer>) {
+        void mutatePilotState({ action: "updateCustomer", id: customerId, payload: input });
         update((draft) => ({
           ...draft,
           customers: draft.customers.map((customer) =>
@@ -100,6 +152,7 @@ export function useDemoStore() {
         }));
       },
       addVehicle(input: Omit<Vehicle, "id" | "shopId" | "overallHealth" | "lastServiceDate" | "vehicleType">) {
+        void mutatePilotState({ action: "addVehicle", payload: input });
         update((draft) => ({
           ...draft,
           vehicles: [
@@ -116,6 +169,7 @@ export function useDemoStore() {
         }));
       },
       updateVehicle(vehicleId: string, input: Partial<Vehicle>) {
+        void mutatePilotState({ action: "updateVehicle", id: vehicleId, payload: input });
         update((draft) => ({
           ...draft,
           vehicles: draft.vehicles.map((vehicle) =>
@@ -131,6 +185,10 @@ export function useDemoStore() {
         channel?: OutreachRecord["channel"];
       }) {
         const outreachId = `outreach-${Date.now()}`;
+        void mutatePilotState({
+          action: "markOutreachManuallySent",
+          payload: input,
+        });
         update((draft) => {
           const selected = draft.maintenanceRecords.filter((record) =>
             input.maintenanceRecordIds.includes(record.id),
@@ -149,14 +207,16 @@ export function useDemoStore() {
                 message: input.message,
                 channel: input.channel ?? "SMS",
                 sentAt: new Date().toISOString(),
-                status: "SENT",
+                copiedAt: new Date().toISOString(),
+                manuallySentAt: new Date().toISOString(),
+                status: "MANUALLY_SENT",
               },
             ],
             maintenanceRecords: draft.maintenanceRecords.map((record) =>
               input.maintenanceRecordIds.includes(record.id)
                 ? {
                     ...record,
-                    outreachStatus: "OUTREACH_SENT",
+                    outreachStatus: "MANUALLY_SENT",
                     outreachRecordId: outreachId,
                   }
                 : record,
@@ -175,6 +235,7 @@ export function useDemoStore() {
         notes?: string;
       }) {
         let appointment: Appointment | undefined;
+        void mutatePilotState({ action: "bookAppointment", payload: input });
         update((draft) => {
           appointment = createAppointmentFromRecords({ state: draft, ...input });
           return {

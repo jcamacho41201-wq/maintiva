@@ -5,7 +5,12 @@ export const asOfDate = new Date("2026-07-27T12:00:00-04:00");
 export type ContactMethod = "SMS" | "EMAIL" | "CALL";
 export type CustomerStatus = "ACTIVE" | "WATCHLIST" | "PAUSED" | "ARCHIVED";
 export type MaintenanceStatus = "HEALTHY" | "DUE_SOON" | "DUE" | "OVERDUE";
-export type OutreachStatus = "NEEDS_OUTREACH" | "OUTREACH_SENT" | "SCHEDULED";
+export type OutreachStatus =
+  | "NEEDS_OUTREACH"
+  | "DRAFTED"
+  | "MANUALLY_SENT"
+  | "SCHEDULED"
+  | "DECLINED";
 export type AppointmentStatus =
   | "REQUESTED"
   | "CONFIRMED"
@@ -18,8 +23,13 @@ export type Shop = {
   id: string;
   name: string;
   slug: string;
+  phone: string;
+  email: string;
+  address: string;
   timezone: string;
   dailyBayHours: number;
+  isDemo: boolean;
+  onboardingCompletedAt: string | null;
 };
 
 export type User = {
@@ -47,6 +57,7 @@ export type Customer = {
   customerScore: number;
   lifetimeRevenueCents: number;
   lastVisit: string;
+  archivedAt?: string;
 };
 
 export type Vehicle = {
@@ -64,6 +75,8 @@ export type Vehicle = {
   estimatedAnnualMileage: number;
   overallHealth: number;
   lastServiceDate: string;
+  licensePlate?: string;
+  archivedAt?: string;
 };
 
 export type MaintenanceService = {
@@ -120,7 +133,9 @@ export type OutreachRecord = {
   message: string;
   channel: "SMS" | "EMAIL" | "CALL";
   sentAt: string;
-  status: "SENT";
+  copiedAt?: string;
+  manuallySentAt?: string;
+  status: "DRAFTED" | "MANUALLY_SENT" | "SCHEDULED" | "DECLINED";
 };
 
 export type Appointment = {
@@ -135,7 +150,7 @@ export type Appointment = {
   status: AppointmentStatus;
   totalPriceCents: number;
   totalLaborHours: number;
-  source: "AUTOMATION" | "CUSTOMER_BOOKING" | "MANUAL";
+  source: "AUTOMATION" | "CUSTOMER_BOOKING" | "MANUAL" | "IMPORTED";
   notes: string;
 };
 
@@ -156,8 +171,13 @@ export const demoShop: Shop = {
   id: "shop-demo",
   name: "Cedar Bay Auto Works",
   slug: "cedar-bay-auto",
+  phone: "(404) 555-0100",
+  email: "hello@cedarbayauto.example",
+  address: "1200 DeKalb Ave NE, Atlanta, GA",
   timezone: "America/New_York",
   dailyBayHours: 64,
+  isDemo: true,
+  onboardingCompletedAt: "2026-07-01T09:00:00-04:00",
 };
 
 export const demoUsers: User[] = [
@@ -460,7 +480,9 @@ export const outreachRecords: OutreachRecord[] = [
       "Hi John, your 2019 Honda Accord is ready for a bundled maintenance visit. We can handle oil, brake fluid, and cabin filter service in one appointment.",
     channel: "SMS",
     sentAt: "2026-07-05T10:15:00-04:00",
-    status: "SENT",
+    copiedAt: "2026-07-05T10:13:00-04:00",
+    manuallySentAt: "2026-07-05T10:15:00-04:00",
+    status: "MANUALLY_SENT",
   },
 ];
 

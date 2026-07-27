@@ -57,7 +57,7 @@ export default function ServicesPage() {
                 <span className="font-semibold text-violet-950">
                   {formatCurrency(service.defaultPriceCents)}
                 </span>
-                <Badge variant="neutral">Demo defaults</Badge>
+                <Badge variant="neutral">Shop defaults</Badge>
               </div>
             </div>
           ))}

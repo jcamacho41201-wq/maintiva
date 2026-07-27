@@ -51,8 +51,10 @@ export default function VehicleMaintenancePage() {
   const opportunityStatus =
     recommended.length > 0 && recommended.every((record) => record.outreachStatus === "SCHEDULED")
       ? "SCHEDULED"
-      : recommended.some((record) => record.outreachStatus === "OUTREACH_SENT")
-        ? "OUTREACH_SENT"
+      : recommended.some((record) => record.outreachStatus === "MANUALLY_SENT")
+        ? "MANUALLY_SENT"
+        : recommended.some((record) => record.outreachStatus === "DRAFTED")
+          ? "DRAFTED"
         : "NEEDS_OUTREACH";
 
   if (!customer) return null;

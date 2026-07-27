@@ -2,38 +2,38 @@
 
 **Predict Maintenance. Drive Revenue.**
 
-Maintiva is a predictive maintenance and customer management platform for auto repair shops. It helps shops manage customers and vehicles, estimate mileage between visits, track independent maintenance lifespans, bundle due services into recommended appointments, automate customer outreach, and forecast revenue and bay capacity.
+Maintiva is a pilot-ready predictive maintenance and customer management platform for auto repair shops. It helps a shop owner create a secure workspace, manage real customers and vehicles, track service history, generate manual outreach drafts, and schedule bundled maintenance appointments.
 
-## Features
+## Current Architecture
 
-- Multi-tenant shop architecture with every operational model scoped by `shopId`
-- Credentials-based Auth.js/NextAuth foundation with role-ready users
-- Responsive SaaS shell with sidebar navigation, global search, and user menu space
-- Dashboard command center for customers, vehicles, maintenance opportunities, outreach, appointments, revenue, and capacity
-- Browser-persistent demo workflow backed by localStorage with a Reset Demo Data action
-- Customer list and customer detail views with consent, value, notes, vehicle history, and predicted service context
-- Vehicle preventative maintenance dashboard with independent time/mileage life calculations
-- Reusable services library with default intervals, thresholds, labor, and pricing
-- Grouped automation queue that bundles services by customer and vehicle
-- Simulated SMS, email, and call provider architecture
-- Appointment data model for multi-service scheduling and capacity planning
-- Prisma schema for PostgreSQL with seed data and audit-log groundwork
-- Real Vitest coverage for mileage, lifespan, automation, outreach, appointment, and tenant-isolation behavior
+- Next.js App Router, TypeScript, React, Tailwind CSS
+- Supabase Auth for signup, signin, signout, and password reset
+- Supabase PostgreSQL accessed through Prisma as the single database layer
+- Multi-tenant tables scoped by `shopId` with `ShopMembership` verification before server-side reads and mutations
+- Existing dashboard, customer, vehicle, automation, appointment, and service-library workflows preserved
+- Production mode hydrates and mutates through `/api/pilot/state` and `/api/pilot/mutate`
+- Local demo mode is available only when Supabase is not configured or `NEXT_PUBLIC_MAINTIVA_ENABLE_DEMO_RESET=true`
 
-## Technology Stack
+## Pilot MVP Features
 
-- Next.js App Router
-- TypeScript
-- React
-- Tailwind CSS
-- shadcn/ui-inspired local components
-- PostgreSQL
-- Prisma ORM
-- NextAuth
-- Zod validation
-- React Hook Form-ready dependencies
-- Recharts
-- Vercel deployment target
+- Account creation and login through Supabase Auth
+- First-login onboarding for shop name, contact details, timezone, and bay capacity
+- Database-backed entities for `User`, `Shop`, `ShopMembership`, `Customer`, `Vehicle`, `ServiceDefinition`, `VehicleMaintenanceRecord`, `ServiceHistoryRecord`, `OutreachRecord`, `Appointment`, and `AppointmentService`
+- Customer and vehicle CRUD paths with validation and archive-ready fields
+- Shop-scoped services library seeded with common preventative services
+- Manual outreach queue with statuses: Needs outreach, Drafted, Manually sent, Scheduled, Declined
+- No live SMS/email sending in the pilot MVP; Maintiva generates editable copy and records manual status only
+- Appointment creation with bundled services, duplicate prevention on vehicle/start time, cancellation/completion-ready statuses
+- Dashboard metrics computed from the active shop state
+- Public privacy and terms pages
+
+## Tenant Security
+
+All production API routes derive `shopId` from the authenticated Supabase user’s active `ShopMembership`. Browser payloads that include `shopId` are rejected before validation. Server mutations re-check that fetched customers, vehicles, maintenance records, outreach records, and appointments belong to the active shop.
+
+Do not expose Supabase service-role keys in the browser or Vercel public variables. This app uses the Supabase anon key for Auth and Prisma for database access.
+
+If you later add Supabase Data API calls, add Row Level Security policies equivalent to membership checks before shipping.
 
 ## Local Setup
 
@@ -48,38 +48,26 @@ pnpm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
-The demo seeds itself automatically on first visit. Use **Reset Demo Data** in the top bar to restore the original seeded shop, customers, vehicles, recommendations, outreach, and appointments.
+## Supabase Setup
 
-## PostgreSQL Setup
+1. Create a Supabase project.
+2. Copy the Supabase project URL and anon key into `.env`.
+3. Use the Supabase PostgreSQL connection string for `DATABASE_URL`.
+4. In Supabase Auth, set the site URL to `APP_URL`.
+5. Add redirect URLs for `/onboarding` and `/password-reset`.
+6. Run Prisma migrations against the database.
 
-Maintiva uses PostgreSQL in development and production. Do not switch to SQLite if deploying to Vercel.
-
-Example local URL:
-
-```bash
-DATABASE_URL="postgresql://maintiva:maintiva@localhost:5432/maintiva?schema=public"
-```
-
-Run:
-
-```bash
-pnpm prisma migrate dev
-pnpm run db:seed
-```
-
-## Environment Variables
-
-Copy `.env.example` to `.env` and fill required values.
-
-Required:
+Required environment variables:
 
 - `DATABASE_URL`
-- `AUTH_SECRET`
-- `NEXTAUTH_URL`
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 - `APP_URL`
 
-Optional future integrations:
+Optional:
 
+- `SUPPORT_EMAIL`
+- `NEXT_PUBLIC_MAINTIVA_ENABLE_DEMO_RESET`
 - `TWILIO_ACCOUNT_SID`
 - `TWILIO_AUTH_TOKEN`
 - `TWILIO_PHONE_NUMBER`
@@ -89,16 +77,18 @@ Optional future integrations:
 - `GOOGLE_CLIENT_SECRET`
 - `VIN_API_BASE_URL`
 
-The app remains in demo mode when optional communication integrations are not configured.
+## Demo and Admin Procedure
 
-## Demo Login
+The seeded demo shop is `Cedar Bay Auto Works` with demo-compatible users:
 
 ```text
-Email: owner@maintiva.dev
-Password: demo-password
+owner@maintiva.dev
+advisor@maintiva.dev
 ```
 
-These are development-only demo credentials.
+These are Supabase Auth user IDs in seed data, not local passwords. For a live demo account, create matching users in Supabase Auth, then run `pnpm run db:seed` against a non-production demo database.
+
+Reset is intentionally not shown in production unless `NEXT_PUBLIC_MAINTIVA_ENABLE_DEMO_RESET=true`. Real pilot shops should keep that variable unset or `false`.
 
 ## Commands
 
@@ -113,113 +103,15 @@ pnpm prisma migrate dev
 pnpm run db:seed
 ```
 
-## GitHub Setup
-
-This repository is intended to be named `maintiva`.
-
-```bash
-git init
-git add .
-git commit -m "Initial Maintiva application setup"
-git branch -M main
-git remote add origin https://github.com/USERNAME/maintiva.git
-git push -u origin main
-```
-
-Replace `USERNAME` with the GitHub owner. The username is intentionally not hardcoded.
-
-Recommended feature branches:
-
-```text
-feature/customer-management
-feature/maintenance-engine
-feature/automation
-feature/appointments
-feature/integrations
-```
-
-Example commits:
-
-```text
-feat: add customer and vehicle management
-feat: add preventative maintenance lifecycle engine
-feat: add grouped automation queue
-feat: add appointment scheduling workflow
-fix: correct mileage prediction calculations
-```
-
 ## Vercel Deployment
 
-Maintiva is prepared for Vercel with a production-safe build script:
+Set the required Supabase and database environment variables in Vercel, run migrations against Supabase PostgreSQL, and deploy from GitHub. Do not set service-role secrets as public variables.
 
-```json
-{
-  "build": "prisma generate && next build"
-}
-```
+## Deferred Until After First Pilot
 
-Deployment checklist:
-
-- Provision a PostgreSQL-compatible database.
-- Set `DATABASE_URL`, `AUTH_SECRET`, `NEXTAUTH_URL`, and `APP_URL` in Vercel.
-- Run migrations against the production database.
-- Do not rely on local filesystem writes.
-- Keep optional Twilio, email, Google Calendar, VIN, recall, and vehicle-history credentials unset until real providers are ready.
-
-## Project Structure
-
-```text
-prisma/
-  schema.prisma
-  seed.ts
-src/app/
-  page.tsx
-  customers/
-  vehicles/
-  services/
-  automation/
-  appointments/
-  analytics/
-  settings/
-src/components/
-  app-shell.tsx
-  charts/
-  ui/
-src/lib/
-  appointment.ts
-  automation.ts
-  auth.ts
-  demo-data.ts
-  maintenance-engine.ts
-  providers.ts
-  validation.ts
-tests/
-  maintenance-engine.test.ts
-```
-
-## Future Integration Roadmap
-
-- Twilio SMS and Voice provider adapters
-- Resend or SendGrid email provider
-- Google Calendar availability and booking sync
-- NHTSA VIN decoding and recall adapters
-- CARFAX or approved vehicle-history enrichment
-- Shop-management platform import adapters
-- CSV import preview, duplicate detection, and rollback UI
-- Customer booking portal and appointment confirmation flow
-- Fine-grained role permissions for owners, managers, service advisors, and technicians
-
-## Product Principle
-
-Maintiva is not a generic CRM. It is built around this operating loop:
-
-```text
-Shop data establishes vehicle history
-Maintiva predicts independent maintenance lifespans
-Customers confirm mileage
-Due services are bundled
-Automated outreach is sent
-Appointments are scheduled
-Future bay utilization becomes visible
-Preventative maintenance generates recurring revenue
-```
+- Live SMS, email, and call providers
+- Calendar sync and customer self-booking
+- Shop-management imports
+- Fine-grained role permission UI
+- VIN decoding, recall checks, and vehicle-history enrichment
+- Advanced analytics beyond the dashboard command center

@@ -44,7 +44,8 @@ export function statusVariant(status: string) {
     status === "DUE_SOON" ||
     status === "REQUESTED" ||
     status === "WATCHLIST" ||
-    status === "OUTREACH_SENT"
+    status === "DRAFTED" ||
+    status === "MANUALLY_SENT"
   ) {
     return "yellow" as const;
   }

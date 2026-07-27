@@ -14,8 +14,13 @@ import {
   Settings,
   Users,
   Wrench,
+  LogOut,
 } from "lucide-react";
 import { useDemoStore } from "@/lib/demo-store";
+import {
+  createSupabaseBrowserClient,
+  isBrowserSupabaseConfigured,
+} from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
 
 const navItems = [
@@ -32,6 +37,15 @@ const navItems = [
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { state, resetDemoData } = useDemoStore();
+  const showDemoReset = process.env.NEXT_PUBLIC_MAINTIVA_ENABLE_DEMO_RESET === "true";
+  const authConfigured = isBrowserSupabaseConfigured();
+
+  async function signOut() {
+    if (!authConfigured) return;
+    const supabase = createSupabaseBrowserClient();
+    await supabase.auth.signOut();
+    window.location.href = "/login";
+  }
 
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-950">
@@ -96,12 +110,29 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <Search className="h-4 w-4" aria-hidden="true" />
             <span className="text-sm">Search customers, vehicles, VINs, services</span>
           </div>
-          <button
-            onClick={resetDemoData}
-            className="rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white"
-          >
-            Reset Demo Data
-          </button>
+          {showDemoReset ? (
+            <button
+              onClick={resetDemoData}
+              className="rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white"
+            >
+              Reset Demo
+            </button>
+          ) : authConfigured ? (
+            <button
+              onClick={signOut}
+              className="inline-flex items-center gap-2 rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white"
+            >
+              <LogOut className="h-4 w-4" />
+              Sign out
+            </button>
+          ) : (
+            <Link
+              href="/login"
+              className="rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white"
+            >
+              Demo login
+            </Link>
+          )}
         </header>
         <main className="px-4 py-6 lg:px-8">{children}</main>
       </div>

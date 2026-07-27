@@ -1,15 +1,15 @@
-import { hash } from "bcryptjs";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "../src/generated/prisma/client";
 import {
+  appointments,
   customers,
   demoShop,
   demoUsers,
-  initialDemoState,
   maintenanceItems,
-  mileageReadings,
   serviceDefinitions,
+  serviceRecords,
   vehicles,
+  outreachRecords,
 } from "../src/lib/demo-data";
 import { getRecordStatus } from "../src/lib/demo-calculations";
 
@@ -20,16 +20,15 @@ const prisma = new PrismaClient({ adapter });
 
 async function main() {
   await prisma.auditLog.deleteMany();
-  await prisma.communication.deleteMany();
   await prisma.appointmentService.deleteMany();
   await prisma.appointment.deleteMany();
-  await prisma.automationQueueItem.deleteMany();
-  await prisma.vehicleMaintenanceItem.deleteMany();
-  await prisma.mileageReading.deleteMany();
+  await prisma.vehicleMaintenanceRecord.deleteMany();
+  await prisma.outreachRecord.deleteMany();
+  await prisma.serviceHistoryRecord.deleteMany();
   await prisma.vehicle.deleteMany();
   await prisma.customer.deleteMany();
   await prisma.serviceDefinition.deleteMany();
-  await prisma.automationRule.deleteMany();
+  await prisma.shopMembership.deleteMany();
   await prisma.user.deleteMany();
   await prisma.shop.deleteMany();
 
@@ -38,33 +37,31 @@ async function main() {
       id: demoShop.id,
       name: demoShop.name,
       slug: demoShop.slug,
+      phone: demoShop.phone,
+      email: demoShop.email,
+      address: demoShop.address,
       timezone: demoShop.timezone,
       dailyBayHours: demoShop.dailyBayHours,
+      isDemo: true,
+      status: "ACTIVE",
+      onboardingCompletedAt: new Date(demoShop.onboardingCompletedAt ?? new Date()),
     },
   });
 
-  const passwordHash = await hash("demo-password", 12);
   await prisma.user.createMany({
     data: demoUsers.map((user) => ({
       id: user.id,
-      shopId: user.shopId,
-      name: user.name,
       email: user.email,
-      role: user.role as "OWNER" | "SERVICE_ADVISOR",
-      passwordHash,
+      name: user.name,
     })),
   });
 
-  await prisma.automationRule.create({
-    data: {
-      shopId: demoShop.id,
-      name: "Prevent duplicate bundled outreach",
-      channelOrder: ["SMS", "EMAIL", "CALL"],
-      minDaysBetweenContacts: 14,
-      maxAttempts: 3,
-      escalateAfterDays: 7,
-      stopAfterAppointmentBooked: true,
-    },
+  await prisma.shopMembership.createMany({
+    data: demoUsers.map((user) => ({
+      shopId: user.shopId,
+      userId: user.id,
+      role: user.role,
+    })),
   });
 
   await prisma.serviceDefinition.createMany({
@@ -91,15 +88,16 @@ async function main() {
       lastName: customer.lastName,
       phone: customer.phone,
       email: customer.email,
-      preferredContact: customer.preferredContact as "SMS" | "EMAIL" | "CALL",
+      preferredContact: customer.preferredContact,
       smsConsent: customer.smsConsent,
       emailConsent: customer.emailConsent,
       callConsent: customer.callConsent,
       address: customer.address,
       notes: customer.notes,
-      status: customer.status as "ACTIVE" | "WATCHLIST" | "PAUSED",
+      status: customer.status,
       customerScore: customer.customerScore,
       lifetimeRevenueCents: customer.lifetimeRevenueCents,
+      lastVisit: new Date(customer.lastVisit),
     })),
   });
 
@@ -112,66 +110,127 @@ async function main() {
       make: vehicle.make,
       model: vehicle.model,
       vin: vehicle.vin,
+      licensePlate: vehicle.licensePlate,
       engine: vehicle.engine,
       trim: vehicle.trim,
-      vehicleType: "Passenger vehicle",
+      vehicleType: vehicle.vehicleType,
+      currentMileage: vehicle.currentMileage,
       estimatedAnnualMileage: vehicle.estimatedAnnualMileage,
       overallHealth: vehicle.overallHealth,
+      lastServiceDate: new Date(vehicle.lastServiceDate),
     })),
   });
 
-  for (const [vehicleId, readings] of Object.entries(mileageReadings)) {
-    await prisma.mileageReading.createMany({
-      data: readings.map((reading) => ({
-        shopId: demoShop.id,
-        vehicleId,
-        mileage: reading.mileage,
-        recordedAt: new Date(reading.recordedAt),
-        source: reading.source as
-          | "SHOP_REPAIR_ORDER"
-          | "CUSTOMER_SMS"
-          | "CUSTOMER_PORTAL"
-          | "MANUAL_ENTRY"
-          | "IMPORTED"
-          | "ESTIMATED",
-        confidence: reading.confidence as
-          | "VERIFIED"
-          | "CUSTOMER_CONFIRMED"
-          | "IMPORTED"
-          | "ESTIMATED",
-        createdById: demoUsers[0].id,
-      })),
+  for (const record of serviceRecords) {
+    const definition = await prisma.serviceDefinition.findFirst({
+      where: { shopId: record.shopId, name: record.serviceName },
+    });
+    await prisma.serviceHistoryRecord.create({
+      data: {
+        id: record.id,
+        shopId: record.shopId,
+        customerId: record.customerId,
+        vehicleId: record.vehicleId,
+        serviceDefinitionId: definition?.id,
+        serviceName: record.serviceName,
+        completedAt: new Date(record.completedAt),
+        mileage: record.mileage,
+        priceCents: record.priceCents,
+        notes: record.notes,
+      },
     });
   }
 
-  await prisma.vehicleMaintenanceItem.createMany({
-    data: maintenanceItems.map((item) => ({
-      id: item.id,
-      shopId: item.shopId,
-      vehicleId: item.vehicleId,
-      serviceDefinitionId: item.serviceId,
-      lastCompletedDate: new Date(item.lastCompletedDate),
-      lastCompletedMileage: item.lastCompletedMileage,
-      recommendedMileageInterval: item.recommendedMileageInterval,
-      recommendedTimeIntervalMonths: item.recommendedTimeIntervalMonths,
-      notificationThreshold: item.notificationThreshold,
-      estimatedLaborMinutes: Math.round(item.laborHours * 60),
-      estimatedPriceCents: item.priceCents,
-      status:
-        getRecordStatus(initialDemoState, item).status === "DUE"
-          ? "DUE_SOON"
-          : (getRecordStatus(initialDemoState, item).status as
-              | "HEALTHY"
-              | "DUE_SOON"
-              | "OVERDUE"),
-      communicationStatus:
-        item.outreachStatus === "SCHEDULED"
-          ? "APPOINTMENT_BOOKED"
-          : item.outreachStatus === "OUTREACH_SENT"
-            ? "CONTACTED"
-            : "NOT_CONTACTED",
+  await prisma.outreachRecord.createMany({
+    data: outreachRecords.map((record) => ({
+      id: record.id,
+      shopId: record.shopId,
+      customerId: record.customerId,
+      vehicleId: record.vehicleId,
+      message: record.message,
+      channel: record.channel,
+      status: record.status,
+      copiedAt: record.copiedAt ? new Date(record.copiedAt) : null,
+      manuallySentAt: record.manuallySentAt ? new Date(record.manuallySentAt) : null,
+      createdAt: new Date(record.sentAt),
     })),
   });
+
+  await prisma.vehicleMaintenanceRecord.createMany({
+    data: maintenanceItems.map((item) => {
+      const status = getRecordStatus(
+        {
+          shop: demoShop,
+          users: demoUsers,
+          customers,
+          vehicles,
+          services: serviceDefinitions,
+          maintenanceRecords: maintenanceItems,
+          serviceRecords,
+          outreachRecords,
+          appointments,
+          seededAt: new Date().toISOString(),
+        },
+        item,
+      ).status;
+
+      return {
+        id: item.id,
+        shopId: item.shopId,
+        vehicleId: item.vehicleId,
+        serviceDefinitionId: item.serviceId,
+        serviceName: item.serviceName,
+        lastCompletedDate: new Date(item.lastCompletedDate),
+        lastCompletedMileage: item.lastCompletedMileage,
+        recommendedMileageInterval: item.recommendedMileageInterval,
+        recommendedTimeIntervalMonths: item.recommendedTimeIntervalMonths,
+        notificationThreshold: item.notificationThreshold,
+        laborMinutes: Math.round(item.laborHours * 60),
+        priceCents: item.priceCents,
+        status,
+        outreachStatus: item.outreachStatus,
+        outreachRecordId: item.outreachRecordId,
+      };
+    }),
+  });
+
+  for (const appointment of appointments) {
+    await prisma.appointment.create({
+      data: {
+        id: appointment.id,
+        shopId: appointment.shopId,
+        customerId: appointment.customerId,
+        vehicleId: appointment.vehicleId,
+        scheduledStart: new Date(appointment.scheduledStart),
+        scheduledEnd: new Date(appointment.scheduledEnd),
+        status: appointment.status,
+        totalLaborMinutes: Math.round(appointment.totalLaborHours * 60),
+        totalPriceCents: appointment.totalPriceCents,
+        source: appointment.source,
+        notes: appointment.notes,
+        services: {
+          create: appointment.maintenanceRecordIds.map((maintenanceRecordId) => {
+            const item = maintenanceItems.find((record) => record.id === maintenanceRecordId);
+            return {
+              shopId: appointment.shopId,
+              serviceDefinitionId: item?.serviceId,
+              maintenanceRecordId,
+              serviceName: item?.serviceName ?? "Service",
+              laborMinutes: item ? Math.round(item.laborHours * 60) : 0,
+              priceCents: item?.priceCents ?? 0,
+            };
+          }),
+        },
+      },
+    });
+  }
+
+  for (const item of maintenanceItems.filter((record) => record.appointmentId)) {
+    await prisma.vehicleMaintenanceRecord.update({
+      where: { id: item.id },
+      data: { appointmentId: item.appointmentId },
+    });
+  }
 
   await prisma.auditLog.create({
     data: {
@@ -180,7 +239,7 @@ async function main() {
       action: "seed.demo_data.created",
       entityType: "Shop",
       entityId: demoShop.id,
-      metadata: { environment: "development" },
+      metadata: { environment: "development", auth: "supabase" },
     },
   });
 }

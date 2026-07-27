@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { CalendarCheck, Send, X } from "lucide-react";
+import { CalendarCheck, CheckCircle2, Clipboard, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { calculateAppointmentTotals, type Appointment, type Customer, type Vehicle, type VehicleMaintenanceRecord } from "@/lib/demo-data";
 import { vehicleLabel } from "@/lib/demo-calculations";
@@ -50,6 +50,7 @@ export function RecommendationModal({
   const [time, setTime] = useState("09:00");
   const [status, setStatus] = useState<Appointment["status"]>("CONFIRMED");
   const [error, setError] = useState("");
+  const [copied, setCopied] = useState(false);
   const [sent, setSent] = useState(false);
   const [booked, setBooked] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -68,13 +69,39 @@ export function RecommendationModal({
     );
   }
 
-  function sendRecommendation() {
+  async function copyMessage() {
     if (selectedIds.length === 0) {
       setError("Select at least one recommended service.");
       return;
     }
     if (message.trim().length < 20) {
-      setError("Add a clear message before sending the recommendation.");
+      setError("Add a clear message before copying the recommendation.");
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(message);
+      setCopied(true);
+      setError("");
+    } catch {
+      setError("Copy failed. Select the message text and copy it manually.");
+    }
+  }
+
+  function markManuallySent() {
+    if (selectedIds.length === 0) {
+      setError("Select at least one recommended service.");
+      return;
+    }
+    if (message.trim().length < 20) {
+      setError("Add a clear message before marking the recommendation manually sent.");
+      return;
+    }
+    if (
+      !window.confirm(
+        "Confirm that you manually sent this message outside Maintiva. Copying alone will not mark outreach sent.",
+      )
+    ) {
       return;
     }
 
@@ -148,7 +175,12 @@ export function RecommendationModal({
           )}
           {sent && (
             <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700">
-              Recommendation sent. This opportunity is now marked Outreach sent.
+              Outreach marked manually sent. This does not represent a live SMS or email delivery.
+            </div>
+          )}
+          {copied && !sent && (
+            <div className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-medium text-violet-700">
+              Message copied. Confirm manual send only after you send it from your phone, email, or shop system.
             </div>
           )}
           {booked && (
@@ -206,16 +238,24 @@ export function RecommendationModal({
 
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-zinc-100 pt-5">
             <div className="flex gap-2">
-              <Badge variant="purple">Simulated SMS</Badge>
+              <Badge variant="purple">Manual outreach</Badge>
               <Badge variant="neutral">No real message sent</Badge>
             </div>
             <button
-              onClick={sendRecommendation}
+              onClick={copyMessage}
+              disabled={saving}
+              className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 px-4 py-2 text-sm font-semibold text-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <Clipboard className="h-4 w-4" />
+              {copied ? "Copied message" : "Copy message"}
+            </button>
+            <button
+              onClick={markManuallySent}
               disabled={saving || sent}
               className="inline-flex items-center gap-2 rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
             >
-              <Send className="h-4 w-4" />
-              {sent ? "Recommendation sent" : saving ? "Sending..." : "Send recommendation"}
+              <CheckCircle2 className="h-4 w-4" />
+              {sent ? "Marked sent" : saving ? "Saving..." : "Mark manually sent"}
             </button>
           </div>
 
