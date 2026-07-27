@@ -1,0 +1,109 @@
+"use client";
+
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import {
+  BarChart3,
+  Bot,
+  CalendarDays,
+  Gauge,
+  LayoutDashboard,
+  Library,
+  Menu,
+  Search,
+  Settings,
+  Users,
+  Wrench,
+} from "lucide-react";
+import { demoShop } from "@/lib/demo-data";
+import { cn } from "@/lib/utils";
+
+const navItems = [
+  { href: "/", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/customers", label: "Customers", icon: Users },
+  { href: "/vehicles/veh-jeep", label: "Maintenance", icon: Wrench },
+  { href: "/automation", label: "Automation", icon: Bot },
+  { href: "/appointments", label: "Appointments", icon: CalendarDays },
+  { href: "/services", label: "Services Library", icon: Library },
+  { href: "/analytics", label: "Analytics", icon: BarChart3 },
+  { href: "/settings", label: "Settings", icon: Settings },
+];
+
+export function AppShell({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
+
+  return (
+    <div className="min-h-screen bg-zinc-50 text-zinc-950">
+      <aside className="fixed inset-y-0 left-0 z-30 hidden w-72 border-r border-zinc-200 bg-white lg:flex lg:flex-col">
+        <div className="flex h-20 items-center gap-3 border-b border-zinc-100 px-6">
+          <div className="grid h-11 w-11 place-items-center rounded-lg bg-violet-950 text-white">
+            <Gauge className="h-6 w-6" aria-hidden="true" />
+          </div>
+          <div>
+            <p className="text-lg font-semibold tracking-tight">Maintiva</p>
+            <p className="text-xs font-medium text-violet-700">
+              Predict Maintenance. Drive Revenue.
+            </p>
+          </div>
+        </div>
+        <div className="border-b border-zinc-100 px-6 py-4">
+          <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+            Current shop
+          </p>
+          <p className="mt-1 font-semibold">{demoShop.name}</p>
+        </div>
+        <nav className="flex-1 space-y-1 px-4 py-5">
+          {navItems.map((item) => {
+            const active =
+              item.href === "/"
+                ? pathname === item.href
+                : pathname.startsWith(item.href);
+            const Icon = item.icon;
+
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={cn(
+                  "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-zinc-600 transition hover:bg-violet-50 hover:text-violet-900",
+                  active && "bg-violet-950 text-white hover:bg-violet-950 hover:text-white",
+                )}
+              >
+                <Icon className="h-4 w-4" aria-hidden="true" />
+                {item.label}
+              </Link>
+            );
+          })}
+        </nav>
+        <div className="border-t border-zinc-100 p-4">
+          <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-3">
+            <p className="text-sm font-semibold">Avery Stone</p>
+            <p className="text-xs text-zinc-500">Owner</p>
+          </div>
+        </div>
+      </aside>
+
+      <div className="lg:pl-72">
+        <header className="sticky top-0 z-20 flex h-16 items-center gap-3 border-b border-zinc-200 bg-white/95 px-4 backdrop-blur lg:px-8">
+          <button
+            className="grid h-10 w-10 place-items-center rounded-lg border border-zinc-200 text-zinc-600 lg:hidden"
+            aria-label="Open navigation"
+          >
+            <Menu className="h-5 w-5" />
+          </button>
+          <div className="flex h-10 flex-1 items-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 px-3 text-zinc-500">
+            <Search className="h-4 w-4" aria-hidden="true" />
+            <span className="text-sm">Search customers, vehicles, VINs, services</span>
+          </div>
+          <Link
+            href="/login"
+            className="rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white"
+          >
+            Demo login
+          </Link>
+        </header>
+        <main className="px-4 py-6 lg:px-8">{children}</main>
+      </div>
+    </div>
+  );
+}
