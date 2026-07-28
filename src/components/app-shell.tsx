@@ -4,8 +4,9 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   BarChart3,
-  Bot,
   CalendarDays,
+  ClipboardList,
+  FileUp,
   Gauge,
   LayoutDashboard,
   Library,
@@ -14,23 +15,41 @@ import {
   Settings,
   Users,
   Wrench,
+  LogOut,
 } from "lucide-react";
-import { demoShop } from "@/lib/demo-data";
+import { useDemoStore } from "@/lib/demo-store";
+import {
+  createSupabaseBrowserClient,
+  isBrowserSupabaseConfigured,
+} from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
 
 const navItems = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/automation", label: "Revenue Queue", icon: ClipboardList },
   { href: "/customers", label: "Customers", icon: Users },
   { href: "/vehicles/veh-jeep", label: "Maintenance", icon: Wrench },
-  { href: "/automation", label: "Automation", icon: Bot },
+  { href: "/import", label: "Import Data", icon: FileUp },
+  { href: "/capacity", label: "Capacity", icon: Gauge },
   { href: "/appointments", label: "Appointments", icon: CalendarDays },
   { href: "/services", label: "Services Library", icon: Library },
-  { href: "/analytics", label: "Analytics", icon: BarChart3 },
+  { href: "/analytics", label: "ROI Report", icon: BarChart3 },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const { state, resetDemoData } = useDemoStore();
+  const showDemoReset = process.env.NEXT_PUBLIC_MAINTIVA_ENABLE_DEMO_RESET === "true";
+  const authConfigured = isBrowserSupabaseConfigured();
+  const canResetLocalDemo = state.shop.isDemo && !authConfigured && showDemoReset;
+
+  async function signOut() {
+    if (!authConfigured) return;
+    const supabase = createSupabaseBrowserClient();
+    await supabase.auth.signOut();
+    window.location.href = "/login";
+  }
 
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-950">
@@ -42,7 +61,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div>
             <p className="text-lg font-semibold tracking-tight">Maintiva</p>
             <p className="text-xs font-medium text-violet-700">
-              Predict Maintenance. Drive Revenue.
+              Recover Maintenance Revenue.
             </p>
           </div>
         </div>
@@ -50,7 +69,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">
             Current shop
           </p>
-          <p className="mt-1 font-semibold">{demoShop.name}</p>
+          <p className="mt-1 font-semibold">{state.shop.name}</p>
+          {state.shop.isDemo && (
+            <span className="mt-2 inline-flex rounded-full border border-violet-200 bg-violet-50 px-2.5 py-1 text-xs font-semibold text-violet-700">
+              Demo tenant
+            </span>
+          )}
         </div>
         <nav className="flex-1 space-y-1 px-4 py-5">
           {navItems.map((item) => {
@@ -77,8 +101,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </nav>
         <div className="border-t border-zinc-100 p-4">
           <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-3">
-            <p className="text-sm font-semibold">Avery Stone</p>
-            <p className="text-xs text-zinc-500">Owner</p>
+            <p className="text-sm font-semibold">{state.users[0]?.name ?? "Avery Stone"}</p>
+            <p className="text-xs text-zinc-500">{state.users[0]?.role ?? "OWNER"}</p>
           </div>
         </div>
       </aside>
@@ -95,12 +119,29 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <Search className="h-4 w-4" aria-hidden="true" />
             <span className="text-sm">Search customers, vehicles, VINs, services</span>
           </div>
-          <Link
-            href="/login"
-            className="rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white"
-          >
-            Demo login
-          </Link>
+          {canResetLocalDemo ? (
+            <button
+              onClick={resetDemoData}
+              className="rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white"
+            >
+              Reset Demo
+            </button>
+          ) : authConfigured ? (
+            <button
+              onClick={signOut}
+              className="inline-flex items-center gap-2 rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white"
+            >
+              <LogOut className="h-4 w-4" />
+              Sign out
+            </button>
+          ) : (
+            <Link
+              href="/login"
+              className="rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white"
+            >
+              Demo login
+            </Link>
+          )}
         </header>
         <main className="px-4 py-6 lg:px-8">{children}</main>
       </div>

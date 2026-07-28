@@ -32,16 +32,40 @@ export function Badge({
 }
 
 export function statusVariant(status: string) {
-  if (status === "HEALTHY" || status === "CONFIRMED" || status === "ACTIVE") {
+  if (
+    status === "HEALTHY" ||
+    status === "CONFIRMED" ||
+    status === "ACTIVE" ||
+    status === "SCHEDULED" ||
+    status === "BOOKED" ||
+    status === "COMPLETED" ||
+    status === "INTERESTED"
+  ) {
     return "green" as const;
   }
-  if (status === "DUE_SOON" || status === "REQUESTED" || status === "WATCHLIST") {
+  if (
+    status === "DUE_SOON" ||
+    status === "REQUESTED" ||
+    status === "WATCHLIST" ||
+    status === "DRAFTED" ||
+    status === "MANUALLY_SENT" ||
+    status === "RESPONDED" ||
+    status === "WANTS_CALLBACK" ||
+    status === "PARTIAL"
+  ) {
     return "yellow" as const;
   }
-  if (status === "OVERDUE" || status === "NO_RESPONSE") {
+  if (
+    status === "OVERDUE" ||
+    status === "NO_RESPONSE" ||
+    status === "DUE" ||
+    status === "DECLINED" ||
+    status === "FAILED" ||
+    status === "DO_NOT_CONTACT"
+  ) {
     return "red" as const;
   }
-  if (status === "PAUSED") {
+  if (status === "PAUSED" || status === "SNOOZED" || status === "NOT_NOW") {
     return "orange" as const;
   }
   return "neutral" as const;
