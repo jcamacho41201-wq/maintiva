@@ -46,7 +46,7 @@ export function RecommendationModal({
       .map((record) => record.serviceName.toLowerCase())
       .join(", ")}. We can bundle these services into one visit. Use this link to choose a time that works for you: [Booking Link]`,
   );
-  const [date, setDate] = useState("2026-07-27");
+  const [date, setDate] = useState("2026-07-28");
   const [time, setTime] = useState("09:00");
   const [status, setStatus] = useState<Appointment["status"]>("CONFIRMED");
   const [error, setError] = useState("");

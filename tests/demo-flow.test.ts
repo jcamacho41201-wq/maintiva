@@ -9,6 +9,13 @@ import {
 import { createInitialDemoState } from "@/lib/demo-data";
 
 describe("pilot workflow flow", () => {
+  it("counts the seeded July 28 appointment as today's capacity", () => {
+    const metrics = getDashboardMetrics(createInitialDemoState());
+
+    expect(metrics.appointmentsToday).toBe(1);
+    expect(metrics.openBayCapacityHours).toBe(62);
+  });
+
   it("shows Justin's Jeep with three open recommended services and clear due text", () => {
     const state = createInitialDemoState();
     const jeepRecords = getRecommendedRecords(state, "veh-jeep").filter(
@@ -38,7 +45,7 @@ describe("pilot workflow flow", () => {
       customerId: "cust-justin",
       vehicleId: "veh-jeep",
       maintenanceRecordIds: selectedIds,
-      date: "2026-07-27",
+      date: "2026-07-28",
       time: "09:00",
       status: "CONFIRMED",
     });

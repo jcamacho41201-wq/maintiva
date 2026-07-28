@@ -1,6 +1,6 @@
 import { calculateAppointmentDuration } from "@/lib/appointment";
 
-export const asOfDate = new Date("2026-07-27T12:00:00-04:00");
+export const asOfDate = new Date("2026-07-28T12:00:00-04:00");
 
 export type ContactMethod = "SMS" | "EMAIL" | "CALL";
 export type CustomerStatus = "ACTIVE" | "WATCHLIST" | "PAUSED" | "ARCHIVED";

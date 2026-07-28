@@ -111,7 +111,7 @@ export default function DashboardPage() {
                   onKeyDown={(event) => {
                     if (event.key === "Enter") router.push(`/vehicles/${vehicle.id}`);
                   }}
-                  className="grid cursor-pointer gap-4 rounded-lg border border-zinc-200 p-4 transition hover:border-violet-300 hover:bg-violet-50/40 lg:grid-cols-[1.2fr_1fr_auto]"
+                  className="grid cursor-pointer gap-4 rounded-lg border border-zinc-200 p-4 transition hover:border-violet-300 hover:bg-violet-50/40 2xl:grid-cols-[minmax(15rem,1.1fr)_minmax(16rem,1fr)_auto]"
                 >
                   <div>
                     <p className="font-semibold">{customer.firstName} {customer.lastName}</p>
@@ -132,9 +132,9 @@ export default function DashboardPage() {
                       const status = getRecordStatus(state, record);
                       return (
                         <div key={record.id}>
-                          <div className="mb-1 flex items-center justify-between text-xs">
-                            <span>{record.serviceName}</span>
-                            <span>{status.dueText}</span>
+                          <div className="mb-1 grid grid-cols-[minmax(0,1fr)_max-content] items-start gap-3 text-xs">
+                            <span className="min-w-0 leading-snug">{record.serviceName}</span>
+                            <span className="max-w-32 text-right leading-snug">{status.dueText}</span>
                           </div>
                           <Progress value={status.lifeRemaining} />
                         </div>

@@ -39,6 +39,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const { state, resetDemoData } = useDemoStore();
   const showDemoReset = process.env.NEXT_PUBLIC_MAINTIVA_ENABLE_DEMO_RESET === "true";
   const authConfigured = isBrowserSupabaseConfigured();
+  const canResetLocalDemo = state.shop.isDemo && (!authConfigured || showDemoReset);
 
   async function signOut() {
     if (!authConfigured) return;
@@ -110,7 +111,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <Search className="h-4 w-4" aria-hidden="true" />
             <span className="text-sm">Search customers, vehicles, VINs, services</span>
           </div>
-          {showDemoReset ? (
+          {canResetLocalDemo ? (
             <button
               onClick={resetDemoData}
               className="rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white"

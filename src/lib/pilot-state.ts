@@ -483,6 +483,20 @@ export async function bookPilotAppointment(
   );
   const scheduledStart = new Date(`${input.date}T${input.time}:00`);
   const scheduledEnd = new Date(scheduledStart.getTime() + totals.recommendedHours * 60 * 60 * 1000);
+  const duplicateAppointment = await prisma.appointment.findFirst({
+    where: {
+      shopId: context.shopId,
+      vehicleId: input.vehicleId,
+      scheduledStart,
+      status: {
+        notIn: ["CANCELLED", "NO_SHOW"],
+      },
+    },
+  });
+
+  if (duplicateAppointment) {
+    throw new Error("This vehicle already has an appointment at that time.");
+  }
 
   await prisma.$transaction(async (tx) => {
     const appointment = await tx.appointment.create({

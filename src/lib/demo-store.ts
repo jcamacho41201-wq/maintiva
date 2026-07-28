@@ -9,6 +9,7 @@ import {
   type OutreachRecord,
   type Vehicle,
 } from "@/lib/demo-data";
+import { hasActiveVehicleAppointmentAt } from "@/lib/appointment";
 import { createAppointmentFromRecords } from "@/lib/demo-calculations";
 
 const storageKey = "maintiva-demo-state-v2";
@@ -237,6 +238,16 @@ export function useDemoStore() {
         let appointment: Appointment | undefined;
         void mutatePilotState({ action: "bookAppointment", payload: input });
         update((draft) => {
+          const scheduledStart = new Date(`${input.date}T${input.time}:00`).toISOString();
+          if (
+            hasActiveVehicleAppointmentAt(draft.appointments, {
+              vehicleId: input.vehicleId,
+              scheduledStart,
+            })
+          ) {
+            return draft;
+          }
+
           appointment = createAppointmentFromRecords({ state: draft, ...input });
           return {
             ...draft,

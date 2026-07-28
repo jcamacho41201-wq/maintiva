@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { calculateAppointmentDuration } from "@/lib/appointment";
+import {
+  calculateAppointmentDuration,
+  hasActiveVehicleAppointmentAt,
+} from "@/lib/appointment";
 import {
   buildBundledMaintenanceMessage,
   canContactCustomer,
@@ -232,6 +235,39 @@ describe("automation and scheduling", () => {
     expect(result.estimatedLaborMinutes).toBe(165);
     expect(result.recommendedMinutes).toBe(180);
     expect(result.estimatedRevenueCents).toBe(59_500);
+  });
+
+  it("prevents duplicate active appointments for the same vehicle and start time", () => {
+    expect(
+      hasActiveVehicleAppointmentAt(
+        [
+          {
+            vehicleId: "veh-1",
+            scheduledStart: "2026-07-28T13:30:00.000Z",
+            status: "CONFIRMED",
+          },
+        ],
+        {
+          vehicleId: "veh-1",
+          scheduledStart: "2026-07-28T13:30:00.000Z",
+        },
+      ),
+    ).toBe(true);
+    expect(
+      hasActiveVehicleAppointmentAt(
+        [
+          {
+            vehicleId: "veh-1",
+            scheduledStart: "2026-07-28T13:30:00.000Z",
+            status: "CANCELLED",
+          },
+        ],
+        {
+          vehicleId: "veh-1",
+          scheduledStart: "2026-07-28T13:30:00.000Z",
+        },
+      ),
+    ).toBe(false);
   });
 
   it("bundles multiple services into one message", () => {

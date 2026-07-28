@@ -21,3 +21,22 @@ export function calculateAppointmentDuration(services: AppointmentServiceInput[]
     recommendedMinutes,
   };
 }
+
+export function hasActiveVehicleAppointmentAt(
+  appointments: Array<{
+    vehicleId: string;
+    scheduledStart: string;
+    status: string;
+  }>,
+  input: {
+    vehicleId: string;
+    scheduledStart: string;
+  },
+) {
+  return appointments.some(
+    (appointment) =>
+      appointment.vehicleId === input.vehicleId &&
+      appointment.scheduledStart === input.scheduledStart &&
+      !["CANCELLED", "NO_SHOW"].includes(appointment.status),
+  );
+}

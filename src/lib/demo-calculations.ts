@@ -175,8 +175,9 @@ export function getDashboardMetrics(state: DemoState) {
     (sum, item) => sum + item.record.priceCents,
     0,
   );
+  const today = asOfDate.toISOString().slice(0, 10);
   const appointmentsToday = state.appointments.filter((appointment) =>
-    appointment.scheduledStart.startsWith("2026-07-27"),
+    appointment.scheduledStart.startsWith(today),
   );
   const committedHours = appointmentsToday.reduce(
     (sum, appointment) => sum + appointment.totalLaborHours,
