@@ -132,6 +132,8 @@ pnpm run db:seed
 
 Set the required Supabase and database environment variables in Vercel, push the Supabase migrations to Supabase PostgreSQL, and deploy from GitHub. Do not set service-role secrets as public variables.
 
+Production Vercel builds run `prisma migrate deploy` before `prisma generate` and `next build` so the Prisma-backed tables exist in the database used by the deployment. Local and preview builds skip automatic migration deployment.
+
 Required Supabase dashboard settings:
 
 - Auth Site URL: `APP_URL`
