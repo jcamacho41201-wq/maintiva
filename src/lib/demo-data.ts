@@ -31,6 +31,8 @@ export type CustomerResponseStatus =
   | "WRONG_CONTACT"
   | "DO_NOT_CONTACT";
 export type AppointmentStatus =
+  | "TENTATIVE"
+  | "SCHEDULED"
   | "REQUESTED"
   | "CONFIRMED"
   | "IN_PROGRESS"

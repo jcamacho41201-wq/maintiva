@@ -45,6 +45,7 @@ export function statusVariant(status: string) {
   }
   if (
     status === "DUE_SOON" ||
+    status === "TENTATIVE" ||
     status === "REQUESTED" ||
     status === "WATCHLIST" ||
     status === "DRAFTED" ||

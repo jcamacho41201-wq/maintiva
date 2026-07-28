@@ -63,6 +63,29 @@ Use `/capacity` to review open labor capacity for 7, 14, and 30 day windows. Cap
 - scheduled revenue
 - opportunity labor that can fill the window
 
+## Capacity Calendar Workflow
+
+Use `/appointments` to schedule Maintiva-recovered work onto a visual day or week calendar. Maintiva opportunities are possible work; appointments are calendar commitments. Opportunities do not consume capacity until a user schedules and saves an appointment.
+
+1. Use Today, Previous, Next, Day, and Week controls to review the shop schedule in the configured shop time zone.
+2. Click an empty slot or New Appointment to create manual shop work with customer, vehicle, services, status, estimated labor, estimated price, notes, and attribution.
+3. Open Ready to Schedule to review opportunities with customer interest, contacted/high-priority work, due maintenance, and declined work.
+4. Drag an opportunity onto a slot or use Schedule. Confirm the prefilled form before saving. The opportunity stays in the panel until the save succeeds.
+5. Drag active appointment blocks to reschedule. Drag the lower resize handle to change duration and labor hours. Completed, canceled, and no-show appointments are protected from drag changes.
+6. Review warnings for over-capacity days, outside-hours work, duplicate vehicle appointments, and customer overlap. Save anyway only after confirming the overbooking is intentional.
+7. Use Find Work to Fill This Day for days with open capacity. Maintiva ranks matching opportunities by interest, priority, declined work, labor fit, and revenue.
+8. Open an appointment to mark it confirmed, start it, cancel it with history preserved, view customer/vehicle, or mark the job complete.
+9. Complete appointments with final revenue and labor. Maintiva-attributed work counts as recovered revenue only after completion.
+
+Run these migration commands before testing calendar writes against a Supabase project:
+
+```bash
+npx supabase db push --dry-run
+npx supabase db push
+```
+
+Calendar features deferred until after the pilot include technician-specific calendars, bay scheduling, external calendar sync, customer self-booking, recurring appointments, parts scheduling, live reminders, work orders, invoicing, and payments.
+
 ## ROI Reporting
 
 Use `/analytics` for the pilot ROI report. Export CSV or print the report for pilot check-ins. The report tracks:
@@ -91,6 +114,7 @@ Do not expose service-role keys in browser or Vercel public variables. Keep `NEX
 - Revenue Recovery Queue explains due, overdue, and declined-work opportunities.
 - Manual outreach copy can be generated, copied, marked manually sent, and assigned a response status.
 - Appointment booking from outreach updates dashboard revenue, appointments, and capacity in demo/local mode.
+- Capacity calendar creates manual appointments, schedules ready opportunities, warns before overbooking, preserves shop-time selections after refresh, and keeps each shop tenant-isolated.
 - Capacity and ROI pages render without console or page errors.
 - `pnpm run lint`, `pnpm test`, and `pnpm run build` pass.
 

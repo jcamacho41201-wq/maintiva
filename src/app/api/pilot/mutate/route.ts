@@ -13,8 +13,11 @@ import {
   bookPilotAppointment,
   buildPilotState,
   completePilotAppointment,
+  createPilotCalendarAppointment,
   importPilotCsvRows,
   markPilotOutreachManuallySent,
+  snoozePilotOpportunity,
+  updatePilotAppointment,
   updatePilotCustomer,
   updatePilotVehicle,
 } from "@/lib/pilot-state";
@@ -63,6 +66,8 @@ const mutationSchema = z.discriminatedUnion("action", [
       date: z.string().min(8),
       time: z.string().min(4),
       status: z.enum([
+        "TENTATIVE",
+        "SCHEDULED",
         "REQUESTED",
         "CONFIRMED",
         "IN_PROGRESS",
@@ -73,6 +78,9 @@ const mutationSchema = z.discriminatedUnion("action", [
       notes: z.string().optional(),
     }),
   }),
+  z.object({ action: z.literal("createCalendarAppointment"), payload: z.unknown() }),
+  z.object({ action: z.literal("updateAppointment"), payload: z.unknown() }),
+  z.object({ action: z.literal("snoozeOpportunity"), payload: z.unknown() }),
   z.object({
     action: z.literal("completeAppointment"),
     payload: z.object({
@@ -157,6 +165,15 @@ export async function POST(request: Request) {
         break;
       case "bookAppointment":
         await bookPilotAppointment(context, body.payload);
+        break;
+      case "createCalendarAppointment":
+        await createPilotCalendarAppointment(context, body.payload);
+        break;
+      case "updateAppointment":
+        await updatePilotAppointment(context, body.payload);
+        break;
+      case "snoozeOpportunity":
+        await snoozePilotOpportunity(context, body.payload);
         break;
       case "completeAppointment":
         await completePilotAppointment(context, body.payload);

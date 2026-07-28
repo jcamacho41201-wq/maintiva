@@ -13,6 +13,13 @@ import {
   getDashboardMetrics,
 } from "@/lib/demo-calculations";
 import {
+  dateHeading,
+  dateKeyInTimeZone,
+  findWorkForDay,
+  getDayCapacity,
+  nextDateKey,
+} from "@/lib/calendar";
+import {
   getCapacitySummary,
   getRevenueFunnel,
   getRevenueRecoveryMetrics,
@@ -31,6 +38,17 @@ export default function DashboardPage() {
   const opportunities = groupRevenueOpportunities(buildRevenueOpportunities(state));
   const funnel = getRevenueFunnel(state);
   const capacity14 = getCapacitySummary(state, 14);
+  const todayKey = dateKeyInTimeZone(new Date(), state.shop.timezone);
+  const upcomingCapacityDays = Array.from({ length: 7 }, (_, index) => {
+    let dateKey = todayKey;
+    for (let day = 0; day < index; day += 1) {
+      dateKey = nextDateKey(dateKey, 1, "day");
+    }
+    return getDayCapacity(state, dateKey);
+  });
+  const bestCapacityDay = upcomingCapacityDays
+    .sort((a, b) => b.openLaborHours - a.openLaborHours)[0];
+  const matchingWorkCount = bestCapacityDay ? findWorkForDay(state, bestCapacityDay.dateKey).length : 0;
   const secondaryStats = [
     { label: "Active customers", value: legacyMetrics.activeCustomers, icon: Users },
     { label: "Active vehicles", value: legacyMetrics.activeVehicles, icon: Car },
@@ -65,10 +83,10 @@ export default function DashboardPage() {
           </p>
         </div>
         <Link
-          href="/automation"
+          href="/appointments"
           className="inline-flex items-center gap-2 rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white"
         >
-          Work recovery queue
+          Open Calendar
           <ArrowRight className="h-4 w-4" />
         </Link>
       </div>
@@ -204,7 +222,9 @@ export default function DashboardPage() {
               );
             })}
             <p className="rounded-lg border border-violet-200 bg-violet-50 p-4 text-sm font-medium text-violet-800">
-              Wednesday has 11 open labor hours. Maintiva found {capacity14.matchingOpportunityCount} matching opportunities.
+              {bestCapacityDay
+                ? `${dateHeading(bestCapacityDay.dateKey, state.shop.timezone)} has ${bestCapacityDay.openLaborHours} open labor hours. Maintiva found ${matchingWorkCount} matching opportunities.`
+                : `Maintiva found ${capacity14.matchingOpportunityCount} matching opportunities for the next 14 days.`}
             </p>
           </CardContent>
         </Card>
