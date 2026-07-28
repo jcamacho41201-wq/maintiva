@@ -77,6 +77,7 @@ export default function ImportPage() {
   const [rowActions, setRowActions] = useState<Record<number, ImportRowAction>>({});
   const [completed, setCompleted] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const headers = Object.keys(rows[0] ?? {});
   const preview = useMemo(
     () => previewImport({ rows, mapping, importType, state }),
@@ -98,11 +99,14 @@ export default function ImportPage() {
     setMapping(detected);
     setRowActions({});
     setCompleted(false);
+    setSaveError("");
   }
 
-  function confirmImport() {
+  async function confirmImport() {
     setSaving(true);
-    store.importCsvRows({
+    setSaveError("");
+    setCompleted(false);
+    const result = await store.importCsvRows({
       fileName: fileName || "manual-import.csv",
       importType,
       duplicateMode,
@@ -112,6 +116,11 @@ export default function ImportPage() {
       rowActions: Object.fromEntries(Object.entries(rowActions).map(([key, value]) => [key, value])),
     });
     setSaving(false);
+    if (!result.ok) {
+      setCompleted(false);
+      setSaveError(result.message ?? "Import could not be saved. Check the database schema and try again.");
+      return;
+    }
     setCompleted(true);
   }
 
@@ -290,6 +299,11 @@ export default function ImportPage() {
             {completed && (
               <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700">
                 Import complete. Valid rows now create recovery opportunities and imported appointments where applicable.
+              </div>
+            )}
+            {saveError && (
+              <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">
+                {saveError}
               </div>
             )}
           </CardContent>

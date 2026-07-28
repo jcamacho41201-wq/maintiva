@@ -181,6 +181,7 @@ model Shop {
   appointments         Appointment[]
   appointmentServices  AppointmentService[]
   importHistory        ImportHistoryRecord[]
+  importRows           ImportRowRecord[]
   auditLogs            AuditLog[]
 
   @@index([status])
@@ -526,7 +527,28 @@ model ImportHistoryRecord {
   createdAt      DateTime     @default(now())
   shop           Shop         @relation(fields: [shopId], references: [id], onDelete: Cascade)
   user           User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+  rows           ImportRowRecord[]
 
   @@index([shopId, importedAt])
   @@index([shopId, importType])
+}
+
+model ImportRowRecord {
+  id                    String              @id @default(cuid())
+  shopId                String
+  importHistoryRecordId String
+  rowNumber             Int
+  action                String
+  status                String
+  entityType            String?
+  errorMessage          String?
+  sourceRow             Json
+  normalizedRow         Json
+  createdAt             DateTime            @default(now())
+  shop                  Shop                @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  importHistoryRecord   ImportHistoryRecord @relation(fields: [importHistoryRecordId], references: [id], onDelete: Cascade)
+
+  @@unique([importHistoryRecordId, rowNumber])
+  @@index([shopId, importHistoryRecordId])
+  @@index([shopId, status])
 }

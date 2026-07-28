@@ -12,13 +12,13 @@ Maintiva is a maintenance revenue recovery add-on for auto repair shops. It help
 - Multi-tenant tables scoped by `shopId` with `ShopMembership` verification before server-side reads and mutations
 - Existing dashboard, customer, vehicle, revenue queue, import, capacity, appointment, and service-library workflows preserved
 - Production mode hydrates and mutates through `/api/pilot/state` and `/api/pilot/mutate`
-- Local demo mode is available only when Supabase is not configured or `NEXT_PUBLIC_MAINTIVA_ENABLE_DEMO_RESET=true`
+- Local demo persistence and reset are available only when Supabase is not configured.
 
 ## Revenue Recovery MVP Features
 
 - Account creation and login through Supabase Auth
 - First-login onboarding for shop name, contact details, timezone, and bay capacity
-- Database-backed entities for `User`, `Shop`, `ShopMembership`, `Customer`, `Vehicle`, `ServiceDefinition`, `VehicleMaintenanceRecord`, `ServiceHistoryRecord`, `DeclinedWorkRecord`, `OutreachRecord`, `Appointment`, `AppointmentService`, and `ImportHistoryRecord`
+- Database-backed entities for `User`, `Shop`, `ShopMembership`, `Customer`, `Vehicle`, `ServiceDefinition`, `VehicleMaintenanceRecord`, `ServiceHistoryRecord`, `DeclinedWorkRecord`, `MaintenanceRevenueOpportunity`, `OutreachRecord`, `Appointment`, `AppointmentService`, `ImportHistoryRecord`, and `ImportRowRecord`
 - Customer and vehicle CRUD paths with validation and archive-ready fields
 - Shop-scoped services library seeded with common preventative services
 - CSV import workflow with template download, column mapping, validation, duplicate detection, preview, server-side accepted-row import, and import history
@@ -61,7 +61,22 @@ Pilot operating instructions are in [docs/PILOT-GUIDE.md](docs/PILOT-GUIDE.md).
 3. Use the Supabase PostgreSQL connection string for `DATABASE_URL`.
 4. In Supabase Auth, set the site URL to `APP_URL`.
 5. Add redirect URLs for `/onboarding` and `/password-reset`.
-6. Run Prisma migrations against the database.
+6. Link the local Supabase CLI project and push the version-controlled migrations:
+
+```bash
+npx supabase login
+npx supabase link --project-ref YOUR_PROJECT_REF
+npx supabase db push --dry-run
+npx supabase db push
+```
+
+The Supabase migration in `supabase/migrations/` creates the Prisma-backed application tables, timestamp triggers, Supabase Auth user trigger, and membership-based Row Level Security policies. Do not mark production ready until the migration has been pushed to the remote Supabase project.
+
+For local-only development against a local database, Prisma migrations remain useful:
+
+```bash
+pnpm prisma migrate dev
+```
 
 Required environment variables:
 
@@ -94,7 +109,9 @@ advisor@maintiva.dev
 
 These are Supabase Auth user IDs in seed data, not local passwords. For a live demo account, create matching users in Supabase Auth, then run `pnpm run db:seed` against a non-production demo database.
 
-Reset is intentionally not shown in production unless `NEXT_PUBLIC_MAINTIVA_ENABLE_DEMO_RESET=true`. Real pilot shops should keep that variable unset or `false`.
+Reset is intentionally local-demo-only and requires `NEXT_PUBLIC_MAINTIVA_ENABLE_DEMO_RESET=true`. Real pilot shops should keep that variable unset or `false`.
+
+When Supabase URL and anon key are configured, the demo reset flag does not switch data storage to localStorage. Production writes must go through the API and Supabase PostgreSQL.
 
 ## Commands
 
@@ -111,7 +128,22 @@ pnpm run db:seed
 
 ## Vercel Deployment
 
-Set the required Supabase and database environment variables in Vercel, run migrations against Supabase PostgreSQL, and deploy from GitHub. Do not set service-role secrets as public variables.
+Set the required Supabase and database environment variables in Vercel, push the Supabase migrations to Supabase PostgreSQL, and deploy from GitHub. Do not set service-role secrets as public variables.
+
+Required Supabase dashboard settings:
+
+- Auth Site URL: `APP_URL`
+- Auth Redirect URLs: `APP_URL/onboarding` and `APP_URL/password-reset`
+- Database connection string copied into `DATABASE_URL`
+
+Migration commands:
+
+```bash
+npx supabase login
+npx supabase link --project-ref YOUR_PROJECT_REF
+npx supabase db push --dry-run
+npx supabase db push
+```
 
 ## Deferred Until After First Pilot
 

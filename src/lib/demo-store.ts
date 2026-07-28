@@ -52,11 +52,10 @@ function normalizeState(state: DemoState): DemoState {
   };
 }
 
-function shouldUseLocalDemoPersistence() {
+export function shouldUseLocalDemoPersistence() {
   return (
     !process.env.NEXT_PUBLIC_SUPABASE_URL ||
-    !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-    process.env.NEXT_PUBLIC_MAINTIVA_ENABLE_DEMO_RESET === "true"
+    !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
   );
 }
 
@@ -111,17 +110,33 @@ async function hydratePilotState() {
   saveState(data.state);
 }
 
-async function mutatePilotState(body: unknown) {
-  if (shouldUseLocalDemoPersistence()) return;
-  const response = await fetch("/api/pilot/mutate", {
-    method: "POST",
-    credentials: "include",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) return;
-  const data = (await response.json()) as { state: DemoState };
-  saveState(data.state);
+export async function mutatePilotState(body: unknown): Promise<{ ok: boolean; message?: string }> {
+  if (shouldUseLocalDemoPersistence()) return { ok: true };
+
+  try {
+    const response = await fetch("/api/pilot/mutate", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = (await response.json().catch(() => ({}))) as { state?: DemoState; message?: string };
+
+    if (!response.ok || !data.state) {
+      return {
+        ok: false,
+        message: data.message ?? "Unable to save changes. Confirm the Supabase database schema has been applied.",
+      };
+    }
+
+    saveState(data.state);
+    return { ok: true };
+  } catch {
+    return {
+      ok: false,
+      message: "Unable to reach the server. Check your connection and try the import again.",
+    };
+  }
 }
 
 function subscribe(callback: () => void) {
@@ -155,6 +170,7 @@ export function useDemoStore() {
 
   return useMemo(() => {
     function update(mutator: (draft: DemoState) => DemoState) {
+      if (!shouldUseLocalDemoPersistence()) return;
       const next = mutator(structuredClone(readState()));
       saveState(next);
     }
@@ -163,6 +179,7 @@ export function useDemoStore() {
       state,
       ready: true,
       resetDemoData() {
+        if (!shouldUseLocalDemoPersistence()) return;
         saveState(createInitialDemoState());
       },
       addCustomer(input: Omit<Customer, "id" | "shopId" | "customerScore" | "lifetimeRevenueCents" | "lastVisit">) {
@@ -292,7 +309,10 @@ export function useDemoStore() {
         previewRows: ImportPreviewRow[];
         rowActions?: Record<number, ImportRowAction>;
       }) {
-        void mutatePilotState({ action: "importCsvRows", payload: input });
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "importCsvRows", payload: input });
+        }
+
         const summary = summarizeImport(input.previewRows, input.duplicateMode, input.rowActions);
         update((draft) => {
           function actionFor(row: ImportPreviewRow) {
@@ -481,6 +501,7 @@ export function useDemoStore() {
             ],
           };
         });
+        return Promise.resolve({ ok: true, message: undefined });
       },
       bookAppointment(input: {
         customerId: string;

@@ -7,7 +7,17 @@ Maintiva is positioned as a maintenance revenue recovery add-on. It should not r
 1. Create or select a Supabase project.
 2. Set `DATABASE_URL` to the Supabase PostgreSQL connection string.
 3. Set `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, and `APP_URL`.
-4. Run `pnpm prisma migrate deploy` against the pilot database.
+4. Push the version-controlled Supabase migrations against the pilot database:
+
+```bash
+npx supabase login
+npx supabase link --project-ref YOUR_PROJECT_REF
+npx supabase db push --dry-run
+npx supabase db push
+```
+
+The migration creates the Prisma-backed application tables, timestamp triggers, Supabase Auth user trigger, and active-membership RLS policies. The database is not ready until the migration has been pushed to the remote Supabase project.
+
 5. Run `pnpm run db:seed` only for a demo database, not a production pilot shop.
 6. In Supabase Auth, set the site URL to `APP_URL` and add redirects for `/onboarding` and `/password-reset`.
 7. Create the pilot owner user in Supabase Auth and let first login complete shop onboarding.
@@ -71,7 +81,7 @@ Use `/analytics` for the pilot ROI report. Export CSV or print the report for pi
 
 Production API routes derive `shopId` from the authenticated Supabase user and active `ShopMembership`. Browser payloads that include `shopId` are rejected before validation. Server mutations re-check fetched entity ownership before writes.
 
-Do not expose service-role keys in browser or Vercel public variables. Keep `NEXT_PUBLIC_MAINTIVA_ENABLE_DEMO_RESET` unset or `false` for real pilot shops.
+Do not expose service-role keys in browser or Vercel public variables. Keep `NEXT_PUBLIC_MAINTIVA_ENABLE_DEMO_RESET` unset or `false` for real pilot shops. When Supabase is configured, the reset flag does not switch production writes to localStorage.
 
 ## Acceptance Checklist
 

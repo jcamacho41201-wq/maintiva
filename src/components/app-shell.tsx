@@ -42,7 +42,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const { state, resetDemoData } = useDemoStore();
   const showDemoReset = process.env.NEXT_PUBLIC_MAINTIVA_ENABLE_DEMO_RESET === "true";
   const authConfigured = isBrowserSupabaseConfigured();
-  const canResetLocalDemo = state.shop.isDemo && (!authConfigured || showDemoReset);
+  const canResetLocalDemo = state.shop.isDemo && !authConfigured && showDemoReset;
 
   async function signOut() {
     if (!authConfigured) return;

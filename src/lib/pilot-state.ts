@@ -677,9 +677,12 @@ export async function importPilotCsvRows(
     importType: input.importType,
     state,
   });
-  const summary = summarizeImport(preview.rows, input.duplicateMode);
+  const rowActions = Object.fromEntries(
+    Object.entries(input.rowActions ?? {}).map(([rowNumber, action]) => [Number(rowNumber), action]),
+  ) as Record<number, ImportRowAction>;
+  const summary = summarizeImport(preview.rows, input.duplicateMode, rowActions);
   const rowAction = (row: (typeof preview.rows)[number]) => {
-    const override = input.rowActions?.[String(row.rowNumber)];
+    const override = rowActions[row.rowNumber];
     if (override) return override;
     if (row.status === "INVALID") return "HOLD" as const;
     if (row.entities.child.status === "DUPLICATE") {
@@ -941,7 +944,7 @@ export async function importPilotCsvRows(
       }
     }
 
-    await tx.importHistoryRecord.create({
+    const importHistory = await tx.importHistoryRecord.create({
       data: {
         shopId: context.shopId,
         userId: context.userId,
@@ -956,6 +959,33 @@ export async function importPilotCsvRows(
         failedRows: summary.failedRows,
         errorReportUrl: summary.failedRows > 0 ? "downloadable-error-report" : null,
       },
+    });
+
+    await tx.importRowRecord.createMany({
+      data: preview.rows.map((row) => {
+        const action = rowAction(row);
+        const status = row.status === "INVALID"
+          ? "FAILED"
+          : action === "HOLD"
+            ? "HELD"
+            : action === "SKIP"
+              ? "SKIPPED"
+              : action === "UPDATE"
+                ? "UPDATED"
+                : "IMPORTED";
+
+        return {
+          shopId: context.shopId,
+          importHistoryRecordId: importHistory.id,
+          rowNumber: row.rowNumber,
+          action,
+          status,
+          entityType: row.entities.child.entity,
+          errorMessage: row.errors.join("; ") || row.issue || null,
+          sourceRow: row.raw,
+          normalizedRow: row.normalized,
+        };
+      }),
     });
   });
 }
