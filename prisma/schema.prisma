@@ -74,6 +74,8 @@ enum CustomerResponseStatus {
 }
 
 enum AppointmentStatus {
+  TENTATIVE
+  SCHEDULED
   REQUESTED
   CONFIRMED
   IN_PROGRESS
@@ -471,6 +473,10 @@ model Appointment {
   outreachRecords       OutreachRecord[]
 
   @@index([shopId, scheduledStart, status])
+  @@index([shopId, status])
+  @@index([shopId, customerId, scheduledStart])
+  @@index([shopId, vehicleId, scheduledStart])
+  @@index([shopId, opportunityId])
   @@unique([shopId, vehicleId, scheduledStart])
 }
 

@@ -26,6 +26,7 @@ Maintiva is a maintenance revenue recovery add-on for auto repair shops. It help
 - Manual outreach workflow with channel, response, copied, manually sent, follow-up, booked, snoozed, declined, and stopped states
 - No live SMS/email sending in the pilot MVP; Maintiva generates editable copy and records manual advisor status only
 - Appointment creation with bundled services, duplicate prevention on vehicle/start time, cancellation/completion-ready statuses
+- Capacity calendar for day/week scheduling, Ready to Schedule opportunities, drag rescheduling, duration resizing, capacity warnings, and Maintiva revenue attribution
 - Capacity planning for 7, 14, and 30 day labor windows
 - ROI report for identified, contacted, responded, booked, completed, and recovered revenue
 - Dashboard metrics computed from the active shop state and Maintiva-attributed appointments
@@ -71,6 +72,13 @@ npx supabase db push
 ```
 
 The Supabase migration in `supabase/migrations/` creates the Prisma-backed application tables, timestamp triggers, Supabase Auth user trigger, and membership-based Row Level Security policies. Do not mark production ready until the migration has been pushed to the remote Supabase project.
+
+Calendar schema changes are versioned in `supabase/migrations/20260728202000_capacity_calendar.sql`. Apply migrations before testing calendar writes:
+
+```bash
+npx supabase db push --dry-run
+npx supabase db push
+```
 
 For local-only development against a local database, Prisma migrations remain useful:
 
@@ -127,6 +135,33 @@ pnpm prisma generate
 pnpm prisma migrate dev
 pnpm run db:seed
 ```
+
+## Capacity Calendar
+
+The `/appointments` page is a Maintiva-specific capacity calendar, not a replacement for the shop-management calendar. Revenue opportunities remain unscheduled work until a user intentionally creates an appointment. Only saved appointments consume labor capacity.
+
+- Day and week views render appointments by shop time zone, start time, and duration.
+- Empty slots open a manual appointment form with customer, vehicle, services, date, start time, status, notes, and attribution source.
+- Ready to Schedule keeps interested, contacted, high-priority, due, and declined-work opportunities in a side panel until the database confirms booking.
+- Dragging a Ready to Schedule card onto the calendar opens a confirmation form; saving links the appointment to maintenance/declined work and Maintiva attribution.
+- Dragging appointment blocks reschedules active appointments; dragging the lower resize handle updates duration and labor hours. Completed, canceled, and no-show appointments are not draggable.
+- Capacity warnings appear for over-capacity days, after-hours appointments, duplicate vehicle appointments, and overlapping customer appointments. Users must explicitly choose to save anyway.
+- Completing a Maintiva-attributed appointment moves it from booked revenue to recovered revenue in dashboard and ROI calculations.
+
+Manual calendar test path:
+
+1. Sign in and complete onboarding for a real pilot shop.
+2. Open `/appointments`, confirm the shop time zone shown in the calendar header, and switch between Day and Week.
+3. Create a manual appointment from an empty slot, refresh, and confirm it persists.
+4. Drag the appointment to another slot, refresh, and confirm the new time persists.
+5. Drag the resize handle to change duration, then confirm capacity updates.
+6. Drag a Ready to Schedule opportunity onto the calendar, save it, and confirm booked Maintiva revenue increases.
+7. Move or edit an appointment into an over-capacity day and confirm the warning appears before saving.
+8. Open Find Work to Fill This Day and schedule one listed opportunity.
+9. Mark an appointment confirmed, in progress, and complete with final revenue/labor, then confirm recovered revenue updates in `/analytics`.
+10. Log out and back in, then confirm appointment and revenue changes remain scoped to the same shop.
+
+Deferred calendar features: technician calendars, bay-specific scheduling, Google/Outlook sync, parts availability, customer self-booking, recurring appointments, multi-location scheduling, work orders, invoicing, payments, live reminders, SMS, email automation, and AI calling.
 
 ## Vercel Deployment
 

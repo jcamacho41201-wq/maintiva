@@ -7,6 +7,10 @@ const migrationPath = path.join(
   "supabase/migrations/20260728173000_initial_maintiva_schema.sql",
 );
 const migrationSql = fs.readFileSync(migrationPath, "utf8");
+const capacityCalendarMigrationSql = fs.readFileSync(
+  path.join(process.cwd(), "supabase/migrations/20260728202000_capacity_calendar.sql"),
+  "utf8",
+);
 
 describe("Supabase production schema migration", () => {
   it("creates the app tables used for shop creation, membership, customers, vehicles, imports, and customer queries", () => {
@@ -80,5 +84,21 @@ describe("Supabase production schema migration", () => {
     expect(migrationSql).toContain("maintiva_handle_new_auth_user");
     expect(migrationSql).toContain("AFTER INSERT ON auth.users");
     expect(migrationSql).toContain("maintiva_set_updated_at");
+  });
+
+  it("adds calendar statuses and appointment lookup indexes without loosening RLS", () => {
+    [
+      "ALTER TYPE \"AppointmentStatus\" ADD VALUE IF NOT EXISTS 'TENTATIVE'",
+      "ALTER TYPE \"AppointmentStatus\" ADD VALUE IF NOT EXISTS 'SCHEDULED'",
+      "Appointment_shopId_status_idx",
+      "Appointment_shopId_customerId_scheduledStart_idx",
+      "Appointment_shopId_vehicleId_scheduledStart_idx",
+      "Appointment_shopId_opportunityId_idx",
+    ].forEach((identifier) => {
+      expect(capacityCalendarMigrationSql).toContain(identifier);
+    });
+
+    expect(capacityCalendarMigrationSql).not.toContain("WITH CHECK (true)");
+    expect(capacityCalendarMigrationSql).not.toContain("USING (true)");
   });
 });

@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { CalendarCheck, CheckCircle2, Clipboard, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { appointmentStatusLabel, appointmentStatuses } from "@/lib/calendar";
 import {
   calculateAppointmentTotals,
   type Appointment,
@@ -341,9 +342,11 @@ export function RecommendationModal({
                     onChange={(event) => setStatus(event.target.value as Appointment["status"])}
                     className="mt-2 h-10 w-full rounded-lg border border-zinc-200 px-3 outline-none focus:border-violet-500"
                   >
-                    <option value="REQUESTED">Requested</option>
-                    <option value="CONFIRMED">Confirmed</option>
-                    <option value="IN_PROGRESS">In progress</option>
+                    {appointmentStatuses
+                      .filter((item) => !["COMPLETED", "CANCELLED", "NO_SHOW"].includes(item))
+                      .map((item) => (
+                        <option key={item} value={item}>{appointmentStatusLabel(item)}</option>
+                      ))}
                   </select>
                 </label>
               </div>

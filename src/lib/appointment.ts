@@ -33,10 +33,11 @@ export function hasActiveVehicleAppointmentAt(
     scheduledStart: string;
   },
 ) {
+  const requestedStart = new Date(input.scheduledStart).getTime();
   return appointments.some(
     (appointment) =>
       appointment.vehicleId === input.vehicleId &&
-      appointment.scheduledStart === input.scheduledStart &&
+      new Date(appointment.scheduledStart).getTime() === requestedStart &&
       !["CANCELLED", "NO_SHOW"].includes(appointment.status),
   );
 }

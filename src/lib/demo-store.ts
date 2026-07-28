@@ -21,12 +21,53 @@ import {
   type ImportType,
   type MaintivaField,
 } from "@/lib/csv-import";
+import {
+  addMinutesToIso,
+  dateKeyInTimeZone,
+  minutesInZone,
+  zonedDateTimeToIso,
+} from "@/lib/calendar";
 
 const storageKey = "maintiva-demo-state-v2";
 const changeEvent = "maintiva-demo-state";
 let cachedState: DemoState | undefined;
 const serverSnapshot = createInitialDemoState();
 export type MutationResult = { ok: boolean; message?: string };
+
+export type CalendarAppointmentInput = {
+  customerId: string;
+  vehicleId: string;
+  maintenanceRecordIds?: string[];
+  declinedWorkRecordIds?: string[];
+  serviceDefinitionIds?: string[];
+  opportunityId?: string;
+  outreachRecordId?: string;
+  date: string;
+  time: string;
+  status: Appointment["status"];
+  source: Appointment["source"];
+  attributionSource: Appointment["attributionSource"];
+  totalLaborHours: number;
+  totalPriceCents: number;
+  notes?: string;
+};
+
+export type CalendarAppointmentUpdateInput = {
+  appointmentId: string;
+  date?: string;
+  time?: string;
+  durationMinutes?: number;
+  totalLaborHours?: number;
+  totalPriceCents?: number;
+  status?: Appointment["status"];
+  notes?: string;
+};
+
+export type OpportunitySnoozeInput = {
+  maintenanceRecordIds?: string[];
+  declinedWorkRecordIds?: string[];
+  followUpDate: string;
+};
 
 function getServerSnapshot() {
   return serverSnapshot;
@@ -566,14 +607,182 @@ export function useDemoStore() {
 
         return appointment;
       },
-      completeAppointment(input: {
+      async createCalendarAppointment(input: CalendarAppointmentInput): Promise<MutationResult> {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "createCalendarAppointment", payload: input });
+        }
+
+        let saved = false;
+        update((draft) => {
+          const selectedServices = draft.services.filter((service) =>
+            input.serviceDefinitionIds?.includes(service.id),
+          );
+          const maintenanceRecords = draft.maintenanceRecords.filter((record) =>
+            input.maintenanceRecordIds?.includes(record.id),
+          );
+          const declinedWorkRecords = draft.declinedWorkRecords.filter((record) =>
+            input.declinedWorkRecordIds?.includes(record.id),
+          );
+          const serviceNames = Array.from(new Set([
+            ...selectedServices.map((service) => service.name),
+            ...maintenanceRecords.map((record) => record.serviceName),
+            ...declinedWorkRecords.map((record) => record.serviceName),
+          ]));
+          if (serviceNames.length === 0) return draft;
+
+          const scheduledStart = zonedDateTimeToIso(input.date, input.time, draft.shop.timezone);
+          if (
+            hasActiveVehicleAppointmentAt(draft.appointments, {
+              vehicleId: input.vehicleId,
+              scheduledStart,
+            })
+          ) {
+            return draft;
+          }
+
+          const appointmentId = `appt-${Date.now()}`;
+          saved = true;
+          return {
+            ...draft,
+            appointments: [
+              ...draft.appointments,
+              {
+                id: appointmentId,
+                shopId: draft.shop.id,
+                customerId: input.customerId,
+                vehicleId: input.vehicleId,
+                maintenanceRecordIds: input.maintenanceRecordIds ?? [],
+                serviceNames,
+                scheduledStart,
+                scheduledEnd: addMinutesToIso(scheduledStart, Math.round(input.totalLaborHours * 60)),
+                status: input.status,
+                totalPriceCents: input.totalPriceCents,
+                totalLaborHours: input.totalLaborHours,
+                source: input.source,
+                attributionSource: input.attributionSource,
+                opportunityId: input.opportunityId,
+                outreachRecordId: input.outreachRecordId,
+                notes: input.notes ?? "",
+              },
+            ],
+            maintenanceRecords: draft.maintenanceRecords.map((record) =>
+              input.maintenanceRecordIds?.includes(record.id)
+                ? { ...record, outreachStatus: "SCHEDULED", appointmentId }
+                : record,
+            ),
+            declinedWorkRecords: draft.declinedWorkRecords.map((record) =>
+              input.declinedWorkRecordIds?.includes(record.id)
+                ? { ...record, status: "BOOKED", outreachStatus: "SCHEDULED", appointmentId }
+                : record,
+            ),
+            outreachRecords: draft.outreachRecords.map((record) =>
+              record.id === input.outreachRecordId
+                ? { ...record, status: "SCHEDULED", responseStatus: "BOOKED", appointmentId }
+                : record,
+            ),
+          };
+        });
+
+        return {
+          ok: saved,
+          message: saved ? undefined : "Appointment could not be saved. Check selected services and duplicate time.",
+        };
+      },
+      async updateAppointment(input: CalendarAppointmentUpdateInput): Promise<MutationResult> {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "updateAppointment", payload: input });
+        }
+
+        let saved = false;
+        update((draft) => ({
+          ...draft,
+          appointments: draft.appointments.map((appointment) => {
+            if (appointment.id !== input.appointmentId) return appointment;
+            if (
+              appointment.status === "COMPLETED" &&
+              (input.date || input.time || input.durationMinutes || input.totalLaborHours)
+            ) {
+              return appointment;
+            }
+            const date = input.date ?? dateKeyInTimeZone(appointment.scheduledStart, draft.shop.timezone);
+            const currentMinutes = minutesInZone(appointment.scheduledStart, draft.shop.timezone);
+            const time = input.time ??
+              `${String(Math.floor(currentMinutes / 60)).padStart(2, "0")}:${String(currentMinutes % 60).padStart(2, "0")}`;
+            const scheduledStart = input.date || input.time
+              ? zonedDateTimeToIso(date, time, draft.shop.timezone)
+              : appointment.scheduledStart;
+            const durationMinutes = input.durationMinutes ??
+              Math.max(30, Math.round((new Date(appointment.scheduledEnd).getTime() - new Date(appointment.scheduledStart).getTime()) / 60_000));
+            saved = true;
+            return {
+              ...appointment,
+              scheduledStart,
+              scheduledEnd: addMinutesToIso(scheduledStart, durationMinutes),
+              totalLaborHours: input.totalLaborHours ?? (input.durationMinutes ? durationMinutes / 60 : appointment.totalLaborHours),
+              totalPriceCents: input.totalPriceCents ?? appointment.totalPriceCents,
+              status: input.status ?? appointment.status,
+              notes: input.notes ?? appointment.notes,
+            };
+          }),
+        }));
+
+        return {
+          ok: saved,
+          message: saved ? undefined : "Appointment could not be updated.",
+        };
+      },
+      async snoozeOpportunity(input: OpportunitySnoozeInput): Promise<MutationResult> {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "snoozeOpportunity", payload: input });
+        }
+
+        const maintenanceIds = input.maintenanceRecordIds ?? [];
+        const declinedIds = input.declinedWorkRecordIds ?? [];
+        let saved = false;
+        update((draft) => {
+          if (maintenanceIds.length === 0 && declinedIds.length === 0) return draft;
+          saved = true;
+          const snoozedOutreachIds = new Set(
+            draft.maintenanceRecords
+              .filter((record) => maintenanceIds.includes(record.id) && record.outreachRecordId)
+              .map((record) => record.outreachRecordId),
+          );
+          return {
+            ...draft,
+            maintenanceRecords: draft.maintenanceRecords.map((record) =>
+              maintenanceIds.includes(record.id)
+                ? { ...record, outreachStatus: "SNOOZED" }
+                : record,
+            ),
+            declinedWorkRecords: draft.declinedWorkRecords.map((record) =>
+              declinedIds.includes(record.id)
+                ? { ...record, status: "SNOOZED", outreachStatus: "SNOOZED" }
+                : record,
+            ),
+            outreachRecords: draft.outreachRecords.map((record) =>
+              snoozedOutreachIds.has(record.id)
+                ? { ...record, status: "SNOOZED", followUpDate: input.followUpDate }
+                : record,
+            ),
+          };
+        });
+
+        return {
+          ok: saved,
+          message: saved ? undefined : "Opportunity could not be snoozed.",
+        };
+      },
+      async completeAppointment(input: {
         appointmentId: string;
         completedRevenueCents: number;
         completedLaborHours: number;
         completedAt: string;
         notes?: string;
-      }) {
-        void mutatePilotState({ action: "completeAppointment", payload: input });
+      }): Promise<MutationResult> {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "completeAppointment", payload: input });
+        }
+
         update((draft) => ({
           ...draft,
           appointments: draft.appointments.map((appointment) =>
@@ -588,7 +797,13 @@ export function useDemoStore() {
                 }
               : appointment,
           ),
+          declinedWorkRecords: draft.declinedWorkRecords.map((record) =>
+            record.appointmentId === input.appointmentId
+              ? { ...record, status: "COMPLETED" }
+              : record,
+          ),
         }));
+        return { ok: true };
       },
     };
   }, [state]);
