@@ -20,6 +20,7 @@ import {
   summarizeImport,
   type CsvRow,
   type DuplicateImportMode,
+  type ImportRowAction,
   type ImportType,
   type MaintivaField,
 } from "@/lib/csv-import";
@@ -664,6 +665,7 @@ export async function importPilotCsvRows(
     fileName: string;
     importType: ImportType;
     duplicateMode: DuplicateImportMode;
+    rowActions?: Record<string, ImportRowAction>;
     rows: CsvRow[];
     mapping: Record<string, MaintivaField>;
   },
@@ -676,9 +678,20 @@ export async function importPilotCsvRows(
     state,
   });
   const summary = summarizeImport(preview.rows, input.duplicateMode);
+  const rowAction = (row: (typeof preview.rows)[number]) => {
+    const override = input.rowActions?.[String(row.rowNumber)];
+    if (override) return override;
+    if (row.status === "INVALID") return "HOLD" as const;
+    if (row.entities.child.status === "DUPLICATE") {
+      if (input.duplicateMode === "UPDATE") return "UPDATE" as const;
+      if (input.duplicateMode === "IMPORT_AS_NEW") return "IMPORT_AS_NEW" as const;
+      return "SKIP" as const;
+    }
+    return row.action;
+  };
   const rowsToImport = preview.rows.filter((row) => {
-    if (row.status === "VALID") return true;
-    return row.status === "DUPLICATE" && input.duplicateMode !== "SKIP";
+    const action = rowAction(row);
+    return action === "IMPORT" || action === "UPDATE" || action === "IMPORT_AS_NEW";
   });
   const defaultService = await prisma.serviceDefinition.findFirst({
     where: { shopId: context.shopId, isActive: true },
@@ -686,6 +699,9 @@ export async function importPilotCsvRows(
   });
 
   await prisma.$transaction(async (tx) => {
+    const customerByKey = new Map<string, { id: string; firstName: string; lastName: string; email: string | null; phone: string | null }>();
+    const vehicleByKey = new Map<string, { id: string; customerId: string; year: number; make: string; model: string; vin: string | null; currentMileage: number; licensePlate: string | null }>();
+
     for (const row of rowsToImport) {
       const normalized = row.normalized;
       const email = stringValue(normalized, "customerEmail").toLowerCase();
@@ -693,22 +709,21 @@ export async function importPilotCsvRows(
       const firstName = stringValue(normalized, "customerFirstName");
       const lastName = stringValue(normalized, "customerLastName");
       const vin = stringValue(normalized, "vin").toUpperCase();
-      const duplicateMode = row.status === "DUPLICATE" ? input.duplicateMode : "IMPORT_AS_NEW";
+      const action = rowAction(row);
 
-      let customer = duplicateMode === "UPDATE"
-        ? await tx.customer.findFirst({
-            where: {
-              shopId: context.shopId,
-              OR: [
-                email ? { email } : undefined,
-                phone ? { phone } : undefined,
-                firstName && lastName ? { firstName, lastName } : undefined,
-              ].filter((item): item is Exclude<typeof item, undefined> => Boolean(item)),
-            },
-          })
-        : null;
+      let customer = row.entities.customer.key ? customerByKey.get(row.entities.customer.key) ?? null : null;
+      customer ??= await tx.customer.findFirst({
+        where: {
+          shopId: context.shopId,
+          OR: [
+            email ? { email } : undefined,
+            phone ? { phone } : undefined,
+            firstName && lastName ? { firstName, lastName } : undefined,
+          ].filter((item): item is Exclude<typeof item, undefined> => Boolean(item)),
+        },
+      });
 
-      if (customer) {
+      if (customer && action === "UPDATE") {
         customer = await tx.customer.update({
           where: { id: customer.id },
           data: {
@@ -719,34 +734,32 @@ export async function importPilotCsvRows(
             lastVisit: new Date(),
           },
         });
-      } else if (firstName && lastName) {
-        customer = await tx.customer.create({
-          data: {
-            shopId: context.shopId,
-            firstName,
-            lastName,
-            email: email || null,
-            phone: phone || null,
-            preferredContact: email ? "EMAIL" : "SMS",
-            smsConsent: Boolean(phone),
-            emailConsent: Boolean(email),
-            callConsent: Boolean(phone),
-            status: "ACTIVE",
-            lastVisit: new Date(),
-            notes: row.status === "DUPLICATE" ? "Imported as a new record after duplicate review." : null,
-          },
-        });
-      } else {
-        continue;
       }
+
+      customer ??= await tx.customer.create({
+        data: {
+          shopId: context.shopId,
+          firstName,
+          lastName,
+          email: email || null,
+          phone: phone || null,
+          preferredContact: email ? "EMAIL" : "SMS",
+          smsConsent: Boolean(phone),
+          emailConsent: Boolean(email),
+          callConsent: Boolean(phone),
+          status: "ACTIVE",
+          lastVisit: new Date(),
+          notes: row.status === "DUPLICATE" ? "Imported as a new record after duplicate review." : null,
+        },
+      });
+      if (row.entities.customer.key) customerByKey.set(row.entities.customer.key, customer);
 
       const existingVinVehicle = vin
         ? await tx.vehicle.findFirst({ where: { shopId: context.shopId, vin } })
         : null;
-      const vehicleVin = existingVinVehicle && duplicateMode === "IMPORT_AS_NEW" ? null : vin || null;
-      let vehicle = duplicateMode === "UPDATE" && existingVinVehicle
-        ? existingVinVehicle
-        : null;
+      const vehicleVin = existingVinVehicle && action === "IMPORT_AS_NEW" && row.entities.vehicle.status !== "MATCH" ? null : vin || null;
+      let vehicle = row.entities.vehicle.key ? vehicleByKey.get(row.entities.vehicle.key) ?? null : null;
+      vehicle ??= existingVinVehicle;
 
       if (vehicle) {
         vehicle = await tx.vehicle.update({
@@ -783,6 +796,7 @@ export async function importPilotCsvRows(
       } else {
         continue;
       }
+      if (row.entities.vehicle.key) vehicleByKey.set(row.entities.vehicle.key, vehicle);
 
       const serviceName = stringValue(normalized, "serviceName") || stringValue(normalized, "services");
       const priceCents = numberValue(normalized, "price");

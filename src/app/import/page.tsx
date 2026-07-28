@@ -12,6 +12,7 @@ import {
   previewImport,
   summarizeImport,
   type DuplicateImportMode,
+  type ImportRowAction,
   type ImportType,
   type MaintivaField,
 } from "@/lib/csv-import";
@@ -73,6 +74,7 @@ export default function ImportPage() {
   const [mapping, setMapping] = useState<Record<string, MaintivaField>>({});
   const [importType, setImportType] = useState<ImportType>("COMBINED");
   const [duplicateMode, setDuplicateMode] = useState<DuplicateImportMode>("SKIP");
+  const [rowActions, setRowActions] = useState<Record<number, ImportRowAction>>({});
   const [completed, setCompleted] = useState(false);
   const [saving, setSaving] = useState(false);
   const headers = Object.keys(rows[0] ?? {});
@@ -81,8 +83,8 @@ export default function ImportPage() {
     [rows, mapping, importType, state],
   );
   const summary = useMemo(
-    () => summarizeImport(preview.rows, duplicateMode),
-    [preview.rows, duplicateMode],
+    () => summarizeImport(preview.rows, duplicateMode, rowActions),
+    [preview.rows, duplicateMode, rowActions],
   );
 
   async function handleFile(event: ChangeEvent<HTMLInputElement>) {
@@ -94,6 +96,7 @@ export default function ImportPage() {
     setFileName(file.name);
     setRows(parsed);
     setMapping(detected);
+    setRowActions({});
     setCompleted(false);
   }
 
@@ -106,6 +109,7 @@ export default function ImportPage() {
       rows,
       mapping,
       previewRows: preview.rows,
+      rowActions: Object.fromEntries(Object.entries(rowActions).map(([key, value]) => [key, value])),
     });
     setSaving(false);
     setCompleted(true);
@@ -193,9 +197,14 @@ export default function ImportPage() {
             <div className="grid gap-3 sm:grid-cols-4">
               {[
                 ["Rows", summary.totalRows],
-                ["Successful", summary.successfulRows],
-                ["Updated", summary.updatedRows],
+                ["Ready", summary.readyRows],
+                ["Customers", `${summary.customersToCreate} new / ${summary.customersMatched} matched`],
+                ["Vehicles", `${summary.vehiclesToCreate} new / ${summary.vehiclesMatched} matched`],
                 ["Errors", summary.failedRows],
+                ["Services", summary.servicesToImport],
+                ["Declined", summary.declinedWorkToImport],
+                ["Appointments", summary.appointmentsToImport],
+                ["Held/skipped", `${summary.heldRows}/${summary.skippedRows}`],
               ].map(([label, value]) => (
                 <div key={label} className="rounded-lg border border-zinc-200 p-3">
                   <p className="text-xs text-zinc-500">{label}</p>
@@ -205,15 +214,16 @@ export default function ImportPage() {
             </div>
 
             <div className="max-h-[34rem] overflow-auto rounded-lg border border-zinc-200">
-              <table className="w-full min-w-[720px] text-left text-sm">
+              <table className="w-full min-w-[1120px] text-left text-sm">
                 <thead className="bg-zinc-50 text-xs uppercase tracking-wide text-zinc-500">
                   <tr>
                     <th className="px-4 py-3">Row</th>
                     <th className="px-4 py-3">Status</th>
                     <th className="px-4 py-3">Customer</th>
                     <th className="px-4 py-3">Vehicle</th>
-                    <th className="px-4 py-3">Service</th>
+                    <th className="px-4 py-3">Child record</th>
                     <th className="px-4 py-3">Issue</th>
+                    <th className="px-4 py-3">Action</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-zinc-100">
@@ -221,14 +231,39 @@ export default function ImportPage() {
                     <tr key={row.rowNumber}>
                       <td className="px-4 py-3">{row.rowNumber}</td>
                       <td className="px-4 py-3">
-                        <Badge variant={row.status === "VALID" ? "green" : row.status === "DUPLICATE" ? "yellow" : "red"}>
-                          {row.status}
+                        <Badge variant={row.status === "VALID" ? "green" : row.status === "DUPLICATE" ? "yellow" : row.status === "INVALID" ? "red" : "neutral"}>
+                          {row.status === "DUPLICATE" ? "Child duplicate" : row.status}
                         </Badge>
                       </td>
-                      <td className="px-4 py-3">{row.normalized.customerFirstName} {row.normalized.customerLastName}</td>
-                      <td className="px-4 py-3">{row.normalized.vehicleYear} {row.normalized.vehicleMake} {row.normalized.vehicleModel}</td>
-                      <td className="px-4 py-3">{row.normalized.serviceName || row.normalized.services}</td>
-                      <td className="px-4 py-3 text-zinc-500">{row.errors[0] || row.duplicateReason || "Ready"}</td>
+                      <td className="px-4 py-3">
+                        <p className="font-medium">{row.normalized.customerFirstName} {row.normalized.customerLastName}</p>
+                        <p className="text-xs text-zinc-500">{row.entities.customer.status}: {row.entities.customer.message}</p>
+                      </td>
+                      <td className="px-4 py-3">
+                        <p className="font-medium">{row.normalized.vehicleYear} {row.normalized.vehicleMake} {row.normalized.vehicleModel}</p>
+                        <p className="text-xs text-zinc-500">{row.entities.vehicle.status}: {row.entities.vehicle.message}</p>
+                      </td>
+                      <td className="px-4 py-3">
+                        <p className="font-medium">{row.entities.child.entity}: {row.normalized.serviceName || row.normalized.services}</p>
+                        <p className="text-xs text-zinc-500">{row.entities.child.status}: {row.entities.child.message}</p>
+                      </td>
+                      <td className="px-4 py-3 text-zinc-500">{row.errors[0] || row.issue}</td>
+                      <td className="px-4 py-3">
+                        <select
+                          value={rowActions[row.rowNumber] ?? row.action}
+                          onChange={(event) => setRowActions({
+                            ...rowActions,
+                            [row.rowNumber]: event.target.value as ImportRowAction,
+                          })}
+                          className="h-9 rounded-lg border border-zinc-200 px-2 text-sm outline-none focus:border-violet-500"
+                        >
+                          <option value="IMPORT">Import</option>
+                          <option value="HOLD">Hold for review</option>
+                          <option value="SKIP">Skip</option>
+                          <option value="UPDATE">Resolve duplicate / update</option>
+                          <option value="IMPORT_AS_NEW">Import as new</option>
+                        </select>
+                      </td>
                     </tr>
                   ))}
                 </tbody>

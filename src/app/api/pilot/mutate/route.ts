@@ -94,6 +94,7 @@ const mutationSchema = z.discriminatedUnion("action", [
         "COMBINED",
       ]),
       duplicateMode: z.enum(["SKIP", "UPDATE", "IMPORT_AS_NEW"]),
+      rowActions: z.record(z.string(), z.enum(["IMPORT", "HOLD", "SKIP", "UPDATE", "IMPORT_AS_NEW"])).optional(),
       rows: z.array(z.record(z.string(), z.string())).max(1000),
       mapping: z.record(z.string(), z.enum([
         "ignore",

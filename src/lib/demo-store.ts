@@ -17,6 +17,7 @@ import {
   type CsvRow,
   type DuplicateImportMode,
   type ImportPreviewRow,
+  type ImportRowAction,
   type ImportType,
   type MaintivaField,
 } from "@/lib/csv-import";
@@ -289,14 +290,25 @@ export function useDemoStore() {
         rows: CsvRow[];
         mapping: Record<string, MaintivaField>;
         previewRows: ImportPreviewRow[];
+        rowActions?: Record<number, ImportRowAction>;
       }) {
         void mutatePilotState({ action: "importCsvRows", payload: input });
-        const summary = summarizeImport(input.previewRows, input.duplicateMode);
+        const summary = summarizeImport(input.previewRows, input.duplicateMode, input.rowActions);
         update((draft) => {
-          const importedRows = input.previewRows.filter((row) => {
-            if (row.status === "VALID") return true;
-            return row.status === "DUPLICATE" && input.duplicateMode !== "SKIP";
-          });
+          function actionFor(row: ImportPreviewRow) {
+            const override = input.rowActions?.[row.rowNumber];
+            if (override) return override;
+            if (row.status === "INVALID") return "HOLD" as const;
+            if (row.entities.child.status === "DUPLICATE") {
+              if (input.duplicateMode === "UPDATE") return "UPDATE" as const;
+              if (input.duplicateMode === "IMPORT_AS_NEW") return "IMPORT_AS_NEW" as const;
+              return "SKIP" as const;
+            }
+            return row.action;
+          }
+          const importedRows = input.previewRows.filter((row) =>
+            ["IMPORT", "UPDATE", "IMPORT_AS_NEW"].includes(actionFor(row)),
+          );
           const now = Date.now();
           const customers = [...draft.customers];
           const vehicles = [...draft.vehicles];
@@ -304,11 +316,32 @@ export function useDemoStore() {
           const maintenanceRecords = [...draft.maintenanceRecords];
           const declinedWorkRecords = [...draft.declinedWorkRecords];
           const appointments = [...draft.appointments];
+          const customerByKey = new Map<string, string>();
+          const vehicleByKey = new Map<string, string>();
 
           importedRows.forEach((row, index) => {
             const normalized = row.normalized;
-            const customerId = `cust-import-${now}-${index}`;
-            const vehicleId = `veh-import-${now}-${index}`;
+            let customerId = row.entities.customer.key ? customerByKey.get(row.entities.customer.key) : undefined;
+            customerId ??= row.entities.customer.status === "MATCH"
+              ? customers.find((customer) =>
+                  customer.email.toLowerCase() === text(normalized.customerEmail).toLowerCase() ||
+                  customer.phone.replace(/\D/g, "") === text(normalized.customerPhone).replace(/\D/g, "") ||
+                  `${customer.firstName} ${customer.lastName}`.toLowerCase() === `${text(normalized.customerFirstName)} ${text(normalized.customerLastName)}`.toLowerCase(),
+                )?.id
+              : undefined;
+            customerId ??= `cust-import-${now}-${index}`;
+            let vehicleId = row.entities.vehicle.key ? vehicleByKey.get(row.entities.vehicle.key) : undefined;
+            vehicleId ??= row.entities.vehicle.status === "MATCH"
+              ? vehicles.find((vehicle) =>
+                  vehicle.vin.toUpperCase() === text(normalized.vin).toUpperCase() ||
+                  (
+                    vehicle.customerId === customerId &&
+                    vehicle.year === numeric(normalized.vehicleYear) &&
+                    vehicle.make.toLowerCase() === text(normalized.vehicleMake).toLowerCase() &&
+                    vehicle.model.toLowerCase() === text(normalized.vehicleModel).toLowerCase()
+                  ),
+                )?.id
+              : undefined;
             const serviceName = text(normalized.serviceName) || text(normalized.services);
             const priceCents = numeric(normalized.price);
             const laborHours = numeric(normalized.laborHours);
@@ -331,7 +364,7 @@ export function useDemoStore() {
               lastVisit: new Date().toISOString().slice(0, 10),
             };
             const vehicle = {
-              id: vehicleId,
+              id: vehicleId ?? `veh-import-${now}-${index}`,
               shopId: draft.shop.id,
               customerId,
               year: numeric(normalized.vehicleYear),
@@ -348,8 +381,11 @@ export function useDemoStore() {
               lastServiceDate: text(normalized.serviceDate) || new Date().toISOString().slice(0, 10),
             };
             if (!customer.firstName || !customer.lastName || !vehicle.make || !vehicle.model || !serviceName) return;
-            customers.push(customer);
-            vehicles.push(vehicle);
+            if (!customers.some((item) => item.id === customerId)) customers.push(customer);
+            vehicleId = vehicle.id;
+            if (!vehicles.some((item) => item.id === vehicleId)) vehicles.push(vehicle);
+            if (row.entities.customer.key) customerByKey.set(row.entities.customer.key, customerId);
+            if (row.entities.vehicle.key) vehicleByKey.set(row.entities.vehicle.key, vehicleId);
 
             const maintenanceRecordId = `item-import-${now}-${index}`;
             maintenanceRecords.push({
