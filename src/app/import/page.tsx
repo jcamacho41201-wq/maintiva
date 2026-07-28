@@ -10,6 +10,8 @@ import {
   maintivaCsvTemplate,
   parseCsv,
   previewImport,
+  summarizeImport,
+  type DuplicateImportMode,
   type ImportType,
   type MaintivaField,
 } from "@/lib/csv-import";
@@ -70,12 +72,17 @@ export default function ImportPage() {
   const [rows, setRows] = useState<Record<string, string>[]>([]);
   const [mapping, setMapping] = useState<Record<string, MaintivaField>>({});
   const [importType, setImportType] = useState<ImportType>("COMBINED");
-  const [duplicateMode, setDuplicateMode] = useState<"SKIP" | "UPDATE">("SKIP");
+  const [duplicateMode, setDuplicateMode] = useState<DuplicateImportMode>("SKIP");
   const [completed, setCompleted] = useState(false);
+  const [saving, setSaving] = useState(false);
   const headers = Object.keys(rows[0] ?? {});
   const preview = useMemo(
     () => previewImport({ rows, mapping, importType, state }),
     [rows, mapping, importType, state],
+  );
+  const summary = useMemo(
+    () => summarizeImport(preview.rows, duplicateMode),
+    [preview.rows, duplicateMode],
   );
 
   async function handleFile(event: ChangeEvent<HTMLInputElement>) {
@@ -91,18 +98,16 @@ export default function ImportPage() {
   }
 
   function confirmImport() {
-    store.addImportHistory({
+    setSaving(true);
+    store.importCsvRows({
       fileName: fileName || "manual-import.csv",
       importType,
-      status: preview.summary.failedRows > 0 ? "PARTIAL" : "COMPLETED",
-      totalRows: preview.summary.totalRows,
-      successfulRows: preview.summary.successfulRows,
-      duplicateRows: preview.summary.duplicateRows,
-      failedRows: preview.summary.failedRows,
-      updatedRows: duplicateMode === "UPDATE" ? preview.summary.duplicateRows : 0,
-      skippedRows: duplicateMode === "SKIP" ? preview.summary.duplicateRows : 0,
-      errorReportUrl: preview.summary.failedRows > 0 ? "downloadable-error-report" : undefined,
+      duplicateMode,
+      rows,
+      mapping,
+      previewRows: preview.rows,
     });
+    setSaving(false);
     setCompleted(true);
   }
 
@@ -151,11 +156,12 @@ export default function ImportPage() {
               Duplicate handling
               <select
                 value={duplicateMode}
-                onChange={(event) => setDuplicateMode(event.target.value as "SKIP" | "UPDATE")}
+                onChange={(event) => setDuplicateMode(event.target.value as DuplicateImportMode)}
                 className="mt-2 h-10 w-full rounded-lg border border-zinc-200 px-3 outline-none focus:border-violet-500"
               >
                 <option value="SKIP">Skip duplicate rows</option>
                 <option value="UPDATE">Update matching customers and vehicles</option>
+                <option value="IMPORT_AS_NEW">Import duplicate rows as new</option>
               </select>
             </label>
             {headers.length > 0 && (
@@ -186,10 +192,10 @@ export default function ImportPage() {
           <CardContent className="space-y-4">
             <div className="grid gap-3 sm:grid-cols-4">
               {[
-                ["Rows", preview.summary.totalRows],
-                ["Valid", preview.summary.validRows],
-                ["Duplicates", preview.summary.duplicateRows],
-                ["Errors", preview.summary.failedRows],
+                ["Rows", summary.totalRows],
+                ["Successful", summary.successfulRows],
+                ["Updated", summary.updatedRows],
+                ["Errors", summary.failedRows],
               ].map(([label, value]) => (
                 <div key={label} className="rounded-lg border border-zinc-200 p-3">
                   <p className="text-xs text-zinc-500">{label}</p>
@@ -232,7 +238,7 @@ export default function ImportPage() {
             <div className="flex flex-wrap justify-between gap-3">
               <button
                 onClick={() => downloadCsv("maintiva-import-errors.csv", buildImportErrorCsv(preview.rows))}
-                disabled={preview.summary.failedRows === 0}
+                disabled={summary.failedRows === 0}
                 className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 px-4 py-2 text-sm font-semibold text-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <TableProperties className="h-4 w-4" />
@@ -240,12 +246,17 @@ export default function ImportPage() {
               </button>
               <button
                 onClick={confirmImport}
-                disabled={preview.summary.totalRows === 0 || preview.summary.validRows === 0}
+                disabled={saving || summary.totalRows === 0 || summary.successfulRows + summary.updatedRows === 0}
                 className="rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {completed ? "Import recorded" : "Confirm import"}
+                {completed ? "Import complete" : saving ? "Importing..." : "Confirm import"}
               </button>
             </div>
+            {completed && (
+              <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700">
+                Import complete. Valid rows now create recovery opportunities and imported appointments where applicable.
+              </div>
+            )}
           </CardContent>
         </Card>
       </section>

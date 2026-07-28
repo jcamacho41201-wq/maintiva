@@ -2,7 +2,18 @@
 
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Building2, CheckCircle2 } from "lucide-react";
+import { Building2, CheckCircle2, Download, FileUp, Library, UserPlus } from "lucide-react";
+import { maintivaCsvTemplate } from "@/lib/csv-import";
+
+function downloadTemplate() {
+  const blob = new Blob([maintivaCsvTemplate], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = "maintiva-import-template.csv";
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
 
 export default function OnboardingPage() {
   const router = useRouter();
@@ -85,6 +96,29 @@ export default function OnboardingPage() {
           {loading ? "Creating..." : "Create shop workspace"}
         </button>
       </form>
+
+      <div className="mt-6 grid gap-3 sm:grid-cols-2">
+        {[
+          ["Confirm shop information", "Saved during this setup step.", Building2],
+          ["Configure labor capacity", "Daily bay hours power the capacity planner.", CheckCircle2],
+          ["Review service library", "Default maintenance intervals are seeded automatically.", Library],
+          ["Import existing data", "Use customers, vehicles, service history, and declined work exports.", FileUp],
+          ["Add one customer manually", "Useful for exceptions while the main list comes from CSV.", UserPlus],
+        ].map(([title, description, Icon]) => (
+          <div key={title as string} className="rounded-lg border border-zinc-200 bg-white p-4">
+            <Icon className="h-5 w-5 text-violet-900" />
+            <p className="mt-3 font-semibold">{title as string}</p>
+            <p className="mt-1 text-sm text-zinc-500">{description as string}</p>
+          </div>
+        ))}
+        <button
+          onClick={downloadTemplate}
+          className="inline-flex items-center justify-center gap-2 rounded-lg border border-violet-200 bg-violet-50 px-4 py-3 text-sm font-semibold text-violet-900"
+        >
+          <Download className="h-4 w-4" />
+          Download CSV template
+        </button>
+      </div>
     </div>
   );
 }

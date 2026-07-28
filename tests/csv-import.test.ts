@@ -5,6 +5,7 @@ import {
   detectColumnMapping,
   parseCsv,
   previewImport,
+  summarizeImport,
 } from "@/lib/csv-import";
 
 describe("CSV import workflow", () => {
@@ -54,6 +55,34 @@ describe("CSV import workflow", () => {
 
     expect(preview.rows[0].status).toBe("DUPLICATE");
     expect(preview.summary.skippedRows).toBe(1);
+  });
+
+  it("summarizes skip, update, and import-as-new duplicate choices", () => {
+    const rows = parseCsv(
+      "First Name,Last Name,Email,VIN,Year,Make,Model,Current Mileage,Service Name,Price,Labor Hours\nJustin,Camacho,justin@example.com,1J4FA49S03P123456,2003,Jeep,Wrangler,98600,Brake Pads,360,1.5",
+    );
+    const preview = previewImport({
+      rows,
+      mapping: detectColumnMapping(Object.keys(rows[0])),
+      importType: "COMBINED",
+      state: createInitialDemoState(),
+    });
+
+    expect(summarizeImport(preview.rows, "SKIP")).toMatchObject({
+      skippedRows: 1,
+      successfulRows: 0,
+      updatedRows: 0,
+    });
+    expect(summarizeImport(preview.rows, "UPDATE")).toMatchObject({
+      skippedRows: 0,
+      successfulRows: 0,
+      updatedRows: 1,
+    });
+    expect(summarizeImport(preview.rows, "IMPORT_AS_NEW")).toMatchObject({
+      skippedRows: 0,
+      successfulRows: 1,
+      updatedRows: 0,
+    });
   });
 
   it("exports rejected rows as a downloadable error report", () => {

@@ -28,7 +28,7 @@ Use `/import` for pilot imports.
 7. Download the error report if invalid rows exist.
 8. Confirm import to record import history.
 
-Current browser/demo import records history and validates data. Production write-through import mutations are intentionally deferred until the shop's real export format is verified.
+Authenticated pilot imports are written server-side through the current shop context. Duplicate rows can be skipped, updated, or imported as new after review. Direct integrations with shop management systems remain deferred until real pilot exports are verified.
 
 ## Revenue Recovery Workflow
 
@@ -77,7 +77,7 @@ Do not expose service-role keys in browser or Vercel public variables. Keep `NEX
 
 - Authenticated owner can onboard a shop.
 - Dashboard renders revenue recovery KPIs.
-- Import page parses a CSV, detects mapping, validates rows, detects duplicates, records import history, and downloads template/error reports.
+- Import page parses a CSV, detects mapping, validates rows, detects duplicates, writes accepted rows, records import history, and downloads template/error reports.
 - Revenue Recovery Queue explains due, overdue, and declined-work opportunities.
 - Manual outreach copy can be generated, copied, marked manually sent, and assigned a response status.
 - Appointment booking from outreach updates dashboard revenue, appointments, and capacity in demo/local mode.
@@ -89,6 +89,6 @@ Do not expose service-role keys in browser or Vercel public variables. Keep `NEX
 - Live messaging providers.
 - Calendar sync and customer self-booking.
 - Direct integrations with shop management systems.
-- Production write-through CSV import mutations.
+- Direct write integrations with shop management systems.
 - Fine-grained role permission UI.
 - VIN decoding and recall enrichment.

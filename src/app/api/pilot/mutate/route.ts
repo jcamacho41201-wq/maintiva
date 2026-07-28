@@ -11,6 +11,8 @@ import {
   addPilotVehicle,
   bookPilotAppointment,
   buildPilotState,
+  completePilotAppointment,
+  importPilotCsvRows,
   markPilotOutreachManuallySent,
   updatePilotCustomer,
   updatePilotVehicle,
@@ -69,6 +71,60 @@ const mutationSchema = z.discriminatedUnion("action", [
       notes: z.string().optional(),
     }),
   }),
+  z.object({
+    action: z.literal("completeAppointment"),
+    payload: z.object({
+      appointmentId: z.string().min(1),
+      completedRevenueCents: z.number().int().nonnegative(),
+      completedLaborHours: z.number().positive(),
+      completedAt: z.string().min(8),
+      notes: z.string().optional(),
+    }),
+  }),
+  z.object({
+    action: z.literal("importCsvRows"),
+    payload: z.object({
+      fileName: z.string().min(1),
+      importType: z.enum([
+        "CUSTOMERS",
+        "VEHICLES",
+        "SERVICE_HISTORY",
+        "DECLINED_WORK",
+        "APPOINTMENTS",
+        "COMBINED",
+      ]),
+      duplicateMode: z.enum(["SKIP", "UPDATE", "IMPORT_AS_NEW"]),
+      rows: z.array(z.record(z.string(), z.string())).max(1000),
+      mapping: z.record(z.string(), z.enum([
+        "ignore",
+        "customerExternalId",
+        "customerFirstName",
+        "customerLastName",
+        "customerFullName",
+        "customerEmail",
+        "customerPhone",
+        "vehicleExternalId",
+        "vehicleCustomerExternalId",
+        "vin",
+        "vehicleYear",
+        "vehicleMake",
+        "vehicleModel",
+        "licensePlate",
+        "currentMileage",
+        "serviceName",
+        "serviceDate",
+        "serviceMileage",
+        "price",
+        "laborHours",
+        "status",
+        "declinedDate",
+        "advisorNotes",
+        "appointmentDate",
+        "appointmentTime",
+        "services",
+      ])),
+    }),
+  }),
 ]);
 
 export async function POST(request: Request) {
@@ -96,6 +152,12 @@ export async function POST(request: Request) {
         break;
       case "bookAppointment":
         await bookPilotAppointment(context, body.payload);
+        break;
+      case "completeAppointment":
+        await completePilotAppointment(context, body.payload);
+        break;
+      case "importCsvRows":
+        await importPilotCsvRows(context, body.payload);
         break;
     }
 

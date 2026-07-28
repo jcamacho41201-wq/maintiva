@@ -8,6 +8,8 @@ export type ImportType =
   | "APPOINTMENTS"
   | "COMBINED";
 
+export type DuplicateImportMode = "SKIP" | "UPDATE" | "IMPORT_AS_NEW";
+
 export type MaintivaField =
   | "ignore"
   | "customerExternalId"
@@ -302,17 +304,23 @@ export function previewImport({
     };
   });
 
-  const summary: ImportSummary = {
-    totalRows: previewRows.length,
-    validRows: previewRows.filter((row) => row.status === "VALID").length,
-    duplicateRows: previewRows.filter((row) => row.status === "DUPLICATE").length,
-    failedRows: previewRows.filter((row) => row.status === "INVALID").length,
-    successfulRows: previewRows.filter((row) => row.status === "VALID").length,
-    updatedRows: 0,
-    skippedRows: previewRows.filter((row) => row.status === "DUPLICATE").length,
-  };
+  const summary = summarizeImport(previewRows, "SKIP");
 
   return { rows: previewRows, summary };
+}
+
+export function summarizeImport(rows: ImportPreviewRow[], duplicateMode: DuplicateImportMode): ImportSummary {
+  const validRows = rows.filter((row) => row.status === "VALID").length;
+  const duplicateRows = rows.filter((row) => row.status === "DUPLICATE").length;
+  return {
+    totalRows: rows.length,
+    validRows,
+    duplicateRows,
+    failedRows: rows.filter((row) => row.status === "INVALID").length,
+    successfulRows: validRows + (duplicateMode === "IMPORT_AS_NEW" ? duplicateRows : 0),
+    updatedRows: duplicateMode === "UPDATE" ? duplicateRows : 0,
+    skippedRows: duplicateMode === "SKIP" ? duplicateRows : 0,
+  };
 }
 
 export function buildImportErrorCsv(rows: ImportPreviewRow[]) {

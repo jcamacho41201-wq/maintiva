@@ -12,6 +12,14 @@ import {
 } from "@/lib/demo-data";
 import { hasActiveVehicleAppointmentAt } from "@/lib/appointment";
 import { createAppointmentFromRecords } from "@/lib/demo-calculations";
+import {
+  summarizeImport,
+  type CsvRow,
+  type DuplicateImportMode,
+  type ImportPreviewRow,
+  type ImportType,
+  type MaintivaField,
+} from "@/lib/csv-import";
 
 const storageKey = "maintiva-demo-state-v2";
 const changeEvent = "maintiva-demo-state";
@@ -127,6 +135,14 @@ function subscribe(callback: () => void) {
     window.removeEventListener("storage", sync);
     window.removeEventListener(changeEvent, callback);
   };
+}
+
+function text(value: string | number | undefined) {
+  return String(value ?? "").trim();
+}
+
+function numeric(value: string | number | undefined) {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 export function useDemoStore() {
@@ -266,6 +282,170 @@ export function useDemoStore() {
           ],
         }));
       },
+      importCsvRows(input: {
+        fileName: string;
+        importType: ImportType;
+        duplicateMode: DuplicateImportMode;
+        rows: CsvRow[];
+        mapping: Record<string, MaintivaField>;
+        previewRows: ImportPreviewRow[];
+      }) {
+        void mutatePilotState({ action: "importCsvRows", payload: input });
+        const summary = summarizeImport(input.previewRows, input.duplicateMode);
+        update((draft) => {
+          const importedRows = input.previewRows.filter((row) => {
+            if (row.status === "VALID") return true;
+            return row.status === "DUPLICATE" && input.duplicateMode !== "SKIP";
+          });
+          const now = Date.now();
+          const customers = [...draft.customers];
+          const vehicles = [...draft.vehicles];
+          const serviceRecords = [...draft.serviceRecords];
+          const maintenanceRecords = [...draft.maintenanceRecords];
+          const declinedWorkRecords = [...draft.declinedWorkRecords];
+          const appointments = [...draft.appointments];
+
+          importedRows.forEach((row, index) => {
+            const normalized = row.normalized;
+            const customerId = `cust-import-${now}-${index}`;
+            const vehicleId = `veh-import-${now}-${index}`;
+            const serviceName = text(normalized.serviceName) || text(normalized.services);
+            const priceCents = numeric(normalized.price);
+            const laborHours = numeric(normalized.laborHours);
+            const customer = {
+              id: customerId,
+              shopId: draft.shop.id,
+              firstName: text(normalized.customerFirstName),
+              lastName: text(normalized.customerLastName),
+              phone: text(normalized.customerPhone),
+              email: text(normalized.customerEmail),
+              preferredContact: "SMS" as const,
+              smsConsent: Boolean(text(normalized.customerPhone)),
+              emailConsent: Boolean(text(normalized.customerEmail)),
+              callConsent: Boolean(text(normalized.customerPhone)),
+              address: "",
+              notes: row.status === "DUPLICATE" ? "Imported after duplicate review." : "Imported from CSV.",
+              status: "ACTIVE" as const,
+              customerScore: 70,
+              lifetimeRevenueCents: 0,
+              lastVisit: new Date().toISOString().slice(0, 10),
+            };
+            const vehicle = {
+              id: vehicleId,
+              shopId: draft.shop.id,
+              customerId,
+              year: numeric(normalized.vehicleYear),
+              make: text(normalized.vehicleMake),
+              model: text(normalized.vehicleModel),
+              vin: text(normalized.vin),
+              licensePlate: text(normalized.licensePlate),
+              engine: "",
+              trim: "",
+              vehicleType: "Passenger vehicle",
+              currentMileage: numeric(normalized.currentMileage),
+              estimatedAnnualMileage: 12_000,
+              overallHealth: 76,
+              lastServiceDate: text(normalized.serviceDate) || new Date().toISOString().slice(0, 10),
+            };
+            if (!customer.firstName || !customer.lastName || !vehicle.make || !vehicle.model || !serviceName) return;
+            customers.push(customer);
+            vehicles.push(vehicle);
+
+            const maintenanceRecordId = `item-import-${now}-${index}`;
+            maintenanceRecords.push({
+              id: maintenanceRecordId,
+              shopId: draft.shop.id,
+              vehicleId,
+              serviceId: "svc-imported",
+              serviceName,
+              lastCompletedDate: text(normalized.serviceDate) || new Date().toISOString().slice(0, 10),
+              lastCompletedMileage: numeric(normalized.serviceMileage) || vehicle.currentMileage,
+              recommendedMileageInterval: 12_000,
+              recommendedTimeIntervalMonths: 12,
+              priceCents,
+              laborHours,
+              notificationThreshold: 10,
+              outreachStatus: "NEEDS_OUTREACH",
+            });
+            if (text(normalized.serviceDate)) {
+              serviceRecords.push({
+                id: `service-import-${now}-${index}`,
+                shopId: draft.shop.id,
+                customerId,
+                vehicleId,
+                serviceName,
+                completedAt: text(normalized.serviceDate),
+                mileage: numeric(normalized.serviceMileage),
+                priceCents,
+                notes: "Imported from CSV.",
+              });
+            }
+            if (text(normalized.declinedDate) || text(normalized.status).toLowerCase().includes("declin")) {
+              declinedWorkRecords.push({
+                id: `declined-import-${now}-${index}`,
+                shopId: draft.shop.id,
+                customerId,
+                vehicleId,
+                serviceName,
+                declinedAt: text(normalized.declinedDate) || new Date().toISOString().slice(0, 10),
+                recommendedPriceCents: priceCents,
+                laborHours,
+                advisorNotes: text(normalized.advisorNotes),
+                status: "OPEN",
+                outreachStatus: "NEEDS_OUTREACH",
+              });
+            }
+            if (text(normalized.appointmentDate) && text(normalized.appointmentTime)) {
+              const scheduledStart = new Date(`${text(normalized.appointmentDate)}T${text(normalized.appointmentTime)}:00`);
+              appointments.push({
+                id: `appt-import-${now}-${index}`,
+                shopId: draft.shop.id,
+                customerId,
+                vehicleId,
+                maintenanceRecordIds: [maintenanceRecordId],
+                serviceNames: [serviceName],
+                scheduledStart: scheduledStart.toISOString(),
+                scheduledEnd: new Date(scheduledStart.getTime() + laborHours * 60 * 60 * 1000).toISOString(),
+                status: "CONFIRMED",
+                totalPriceCents: priceCents,
+                totalLaborHours: laborHours,
+                source: "IMPORTED",
+                attributionSource: "IMPORTED_APPOINTMENT",
+                notes: "Imported from CSV.",
+              });
+            }
+          });
+
+          return {
+            ...draft,
+            customers,
+            vehicles,
+            serviceRecords,
+            maintenanceRecords,
+            declinedWorkRecords,
+            appointments,
+            importHistory: [
+              {
+                id: `import-${Date.now()}`,
+                shopId: draft.shop.id,
+                userId: draft.users[0]?.id ?? "user-owner",
+                fileName: input.fileName,
+                importType: input.importType,
+                status: summary.failedRows > 0 ? "PARTIAL" : "COMPLETED",
+                importedAt: new Date().toISOString(),
+                totalRows: summary.totalRows,
+                successfulRows: summary.successfulRows,
+                duplicateRows: summary.duplicateRows,
+                updatedRows: summary.updatedRows,
+                skippedRows: summary.skippedRows,
+                failedRows: summary.failedRows,
+                errorReportUrl: summary.failedRows > 0 ? "downloadable-error-report" : undefined,
+              },
+              ...draft.importHistory,
+            ],
+          };
+        });
+      },
       bookAppointment(input: {
         customerId: string;
         vehicleId: string;
@@ -305,6 +485,30 @@ export function useDemoStore() {
         });
 
         return appointment;
+      },
+      completeAppointment(input: {
+        appointmentId: string;
+        completedRevenueCents: number;
+        completedLaborHours: number;
+        completedAt: string;
+        notes?: string;
+      }) {
+        void mutatePilotState({ action: "completeAppointment", payload: input });
+        update((draft) => ({
+          ...draft,
+          appointments: draft.appointments.map((appointment) =>
+            appointment.id === input.appointmentId
+              ? {
+                  ...appointment,
+                  status: "COMPLETED",
+                  completedRevenueCents: input.completedRevenueCents,
+                  completedLaborHours: input.completedLaborHours,
+                  completedAt: input.completedAt,
+                  notes: input.notes ?? appointment.notes,
+                }
+              : appointment,
+          ),
+        }));
       },
     };
   }, [state]);

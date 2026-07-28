@@ -14,6 +14,22 @@ import {
 } from "@/lib/revenue-recovery";
 import { formatCurrency, formatDate } from "@/lib/utils";
 
+type QueueFilter =
+  | "ALL"
+  | "HIGH"
+  | "DUE"
+  | "OVERDUE"
+  | "DECLINED_WORK"
+  | "NEEDS_OUTREACH"
+  | "CONTACTED"
+  | "RESPONDED"
+  | "BOOKED"
+  | "COMPLETED"
+  | "DECLINED"
+  | "SNOOZED";
+
+type QueueSort = "PRIORITY" | "REVENUE" | "LABOR" | "OLDEST_DUE" | "MOST_OVERDUE" | "RECENT";
+
 function priorityVariant(priority: string) {
   if (priority === "HIGH") return "red" as const;
   if (priority === "MEDIUM") return "orange" as const;
@@ -30,16 +46,37 @@ export default function AutomationPage() {
   const store = useDemoStore();
   const { state } = store;
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
-  const [filter, setFilter] = useState<"ALL" | "HIGH" | "UNCONTACTED" | "BOOKED">("ALL");
+  const [filter, setFilter] = useState<QueueFilter>("ALL");
+  const [sort, setSort] = useState<QueueSort>("PRIORITY");
   const groups = useMemo(
     () => groupRevenueOpportunities(buildRevenueOpportunities(state)),
     [state],
   );
   const filteredGroups = groups.filter((group) => {
     if (filter === "HIGH") return group.priority === "HIGH";
-    if (filter === "UNCONTACTED") return group.outreachStatus === "Needs outreach";
+    if (filter === "DUE") return group.opportunities.some((item) => item.source === "DUE_MAINTENANCE");
+    if (filter === "OVERDUE") return group.opportunities.some((item) => item.source === "OVERDUE_MAINTENANCE");
+    if (filter === "DECLINED_WORK") return group.opportunities.some((item) => item.source === "DECLINED_WORK");
+    if (filter === "NEEDS_OUTREACH") return group.outreachStatus === "Needs outreach";
+    if (filter === "CONTACTED") return group.opportunities.some((item) => item.stage === "CONTACTED");
+    if (filter === "RESPONDED") return group.opportunities.some((item) => item.stage === "RESPONDED");
     if (filter === "BOOKED") return group.appointmentStatus === "Booked";
+    if (filter === "COMPLETED") return group.opportunities.some((item) => item.stage === "COMPLETED");
+    if (filter === "DECLINED") return group.opportunities.some((item) => item.stage === "LOST");
+    if (filter === "SNOOZED") return group.opportunities.some((item) => item.outreachStatus === "SNOOZED");
     return true;
+  }).sort((a, b) => {
+    const rank = { HIGH: 0, MEDIUM: 1, LOW: 2 };
+    if (sort === "REVENUE") return b.estimatedRevenueCents - a.estimatedRevenueCents;
+    if (sort === "LABOR") return b.estimatedLaborHours - a.estimatedLaborHours;
+    if (sort === "OLDEST_DUE") return a.opportunities[0].daysOverdue - b.opportunities[0].daysOverdue;
+    if (sort === "MOST_OVERDUE") {
+      return Math.max(...b.opportunities.map((item) => item.daysOverdue)) - Math.max(...a.opportunities.map((item) => item.daysOverdue));
+    }
+    if (sort === "RECENT") {
+      return new Date(b.lastContactedAt ?? 0).getTime() - new Date(a.lastContactedAt ?? 0).getTime();
+    }
+    return rank[a.priority] - rank[b.priority] || b.estimatedRevenueCents - a.estimatedRevenueCents;
   });
   const selected = groups.find((group) => group.vehicleId === selectedVehicleId);
   const selectedRecords = selected
@@ -55,16 +92,36 @@ export default function AutomationPage() {
             Prioritized maintenance and declined-work opportunities grouped by vehicle for advisor follow-up.
           </p>
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap justify-end gap-2">
+          <select
+            value={sort}
+            onChange={(event) => setSort(event.target.value as QueueSort)}
+            className="h-10 rounded-lg border border-zinc-200 bg-white px-3 text-sm font-semibold outline-none focus:border-violet-500"
+          >
+            <option value="PRIORITY">Sort by priority</option>
+            <option value="REVENUE">Sort by estimated revenue</option>
+            <option value="LABOR">Sort by labor hours</option>
+            <option value="OLDEST_DUE">Sort by oldest due date</option>
+            <option value="MOST_OVERDUE">Sort by most overdue</option>
+            <option value="RECENT">Sort by most recently imported/contacted</option>
+          </select>
           {[
             ["ALL", "All"],
             ["HIGH", "High priority"],
-            ["UNCONTACTED", "Needs outreach"],
+            ["DUE", "Due maintenance"],
+            ["OVERDUE", "Overdue"],
+            ["DECLINED_WORK", "Declined work"],
+            ["NEEDS_OUTREACH", "Needs outreach"],
+            ["CONTACTED", "Contacted"],
+            ["RESPONDED", "Responded"],
             ["BOOKED", "Booked"],
+            ["COMPLETED", "Completed"],
+            ["DECLINED", "Declined"],
+            ["SNOOZED", "Snoozed"],
           ].map(([value, label]) => (
             <button
               key={value}
-              onClick={() => setFilter(value as typeof filter)}
+              onClick={() => setFilter(value as QueueFilter)}
               className={`rounded-lg border px-3 py-2 text-sm font-semibold ${
                 filter === value
                   ? "border-violet-950 bg-violet-950 text-white"

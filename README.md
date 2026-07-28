@@ -21,7 +21,7 @@ Maintiva is a maintenance revenue recovery add-on for auto repair shops. It help
 - Database-backed entities for `User`, `Shop`, `ShopMembership`, `Customer`, `Vehicle`, `ServiceDefinition`, `VehicleMaintenanceRecord`, `ServiceHistoryRecord`, `DeclinedWorkRecord`, `OutreachRecord`, `Appointment`, `AppointmentService`, and `ImportHistoryRecord`
 - Customer and vehicle CRUD paths with validation and archive-ready fields
 - Shop-scoped services library seeded with common preventative services
-- CSV import workflow with template download, column mapping, validation, duplicate detection, preview, and import history
+- CSV import workflow with template download, column mapping, validation, duplicate detection, preview, server-side accepted-row import, and import history
 - Revenue Recovery Queue ranked by due maintenance, overdue maintenance, declined work, priority, value, and labor time
 - Manual outreach workflow with channel, response, copied, manually sent, follow-up, booked, snoozed, declined, and stopped states
 - No live SMS/email sending in the pilot MVP; Maintiva generates editable copy and records manual advisor status only
@@ -120,4 +120,4 @@ Set the required Supabase and database environment variables in Vercel, run migr
 - Direct shop-management integrations
 - Fine-grained role permission UI
 - VIN decoding, recall checks, and vehicle-history enrichment
-- Write-through server import mutations for production CSV ingestion
+- Source-specific import adapters for each shop management export format
