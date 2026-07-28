@@ -121,7 +121,21 @@ export async function mutatePilotState(body: unknown): Promise<MutationResult> {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    const data = (await response.json().catch(() => ({}))) as { state?: DemoState; message?: string };
+    const data = (await response.json().catch(() => ({}))) as {
+      code?: string;
+      state?: DemoState;
+      message?: string;
+    };
+
+    if (response.status === 409 && data.code === "ONBOARDING_REQUIRED") {
+      window.location.href = "/onboarding";
+      return { ok: false, message: data.message ?? "Shop onboarding is required." };
+    }
+
+    if (response.status === 401 && data.code === "AUTH_REQUIRED") {
+      window.location.href = "/login";
+      return { ok: false, message: data.message ?? "Authentication is required." };
+    }
 
     if (!response.ok || !data.state) {
       return {
