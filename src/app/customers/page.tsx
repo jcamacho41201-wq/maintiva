@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { FormEvent, useMemo, useState } from "react";
-import { Plus, Search, X } from "lucide-react";
+import { FileUp, Plus, Search, X } from "lucide-react";
 import { Badge, statusVariant } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { getRecommendedRecords, vehicleLabel } from "@/lib/demo-calculations";
@@ -94,13 +94,22 @@ export default function CustomersPage() {
             Search, filter, and prioritize customers by value, consent, and predicted maintenance.
           </p>
         </div>
-        <button
-          onClick={() => setAdding(true)}
-          className="inline-flex items-center gap-2 rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white"
-        >
-          <Plus className="h-4 w-4" />
-          Add Customer
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <Link
+            href="/import"
+            className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 bg-white px-4 py-2 text-sm font-semibold text-zinc-800"
+          >
+            <FileUp className="h-4 w-4" />
+            Import Data
+          </Link>
+          <button
+            onClick={() => setAdding(true)}
+            className="inline-flex items-center gap-2 rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white"
+          >
+            <Plus className="h-4 w-4" />
+            Add Customer
+          </button>
+        </div>
       </div>
 
       <Card>

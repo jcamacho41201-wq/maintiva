@@ -6,6 +6,7 @@ import {
   type Appointment,
   type Customer,
   type DemoState,
+  type ImportHistoryRecord,
   type OutreachRecord,
   type Vehicle,
 } from "@/lib/demo-data";
@@ -19,6 +20,27 @@ const serverSnapshot = createInitialDemoState();
 
 function getServerSnapshot() {
   return serverSnapshot;
+}
+
+function normalizeState(state: DemoState): DemoState {
+  const baseline = createInitialDemoState();
+  return {
+    ...baseline,
+    ...state,
+    declinedWorkRecords: state.declinedWorkRecords ?? baseline.declinedWorkRecords,
+    importHistory: state.importHistory ?? baseline.importHistory,
+    outreachRecords: (state.outreachRecords ?? baseline.outreachRecords).map((record) => ({
+      ...record,
+      channel: String(record.channel) === "SMS" ? "TEXT" : record.channel,
+      responseStatus: record.responseStatus ?? "NO_RESPONSE",
+    })),
+    appointments: (state.appointments ?? baseline.appointments).map((appointment) => ({
+      ...appointment,
+      attributionSource: appointment.attributionSource ?? (
+        appointment.source === "AUTOMATION" ? "MAINTIVA_OUTREACH" : "MANUAL_SHOP_ENTRY"
+      ),
+    })),
+  };
 }
 
 function shouldUseLocalDemoPersistence() {
@@ -44,7 +66,7 @@ function readState() {
 
   try {
     const existing = window.localStorage.getItem(storageKey);
-    cachedState = existing ? (JSON.parse(existing) as DemoState) : createInitialDemoState();
+    cachedState = existing ? normalizeState(JSON.parse(existing) as DemoState) : createInitialDemoState();
   } catch {
     cachedState = createInitialDemoState();
   }
@@ -184,6 +206,7 @@ export function useDemoStore() {
         maintenanceRecordIds: string[];
         message: string;
         channel?: OutreachRecord["channel"];
+        responseStatus?: OutreachRecord["responseStatus"];
       }) {
         const outreachId = `outreach-${Date.now()}`;
         void mutatePilotState({
@@ -206,10 +229,12 @@ export function useDemoStore() {
                 maintenanceRecordIds: input.maintenanceRecordIds,
                 serviceNames: selected.map((record) => record.serviceName),
                 message: input.message,
-                channel: input.channel ?? "SMS",
+                channel: input.channel ?? "TEXT",
                 sentAt: new Date().toISOString(),
                 copiedAt: new Date().toISOString(),
                 manuallySentAt: new Date().toISOString(),
+                responseStatus: input.responseStatus ?? "NO_RESPONSE",
+                performedByUserId: draft.users[0]?.id,
                 status: "MANUALLY_SENT",
               },
             ],
@@ -225,6 +250,21 @@ export function useDemoStore() {
           };
         });
         return outreachId;
+      },
+      addImportHistory(input: Omit<ImportHistoryRecord, "id" | "shopId" | "userId" | "importedAt">) {
+        update((draft) => ({
+          ...draft,
+          importHistory: [
+            {
+              ...input,
+              id: `import-${Date.now()}`,
+              shopId: draft.shop.id,
+              userId: draft.users[0]?.id ?? "user-owner",
+              importedAt: new Date().toISOString(),
+            },
+            ...draft.importHistory,
+          ],
+        }));
       },
       bookAppointment(input: {
         customerId: string;

@@ -4,8 +4,9 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   BarChart3,
-  Bot,
   CalendarDays,
+  ClipboardList,
+  FileUp,
   Gauge,
   LayoutDashboard,
   Library,
@@ -25,12 +26,14 @@ import { cn } from "@/lib/utils";
 
 const navItems = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/automation", label: "Revenue Queue", icon: ClipboardList },
   { href: "/customers", label: "Customers", icon: Users },
   { href: "/vehicles/veh-jeep", label: "Maintenance", icon: Wrench },
-  { href: "/automation", label: "Automation", icon: Bot },
+  { href: "/import", label: "Import Data", icon: FileUp },
+  { href: "/capacity", label: "Capacity", icon: Gauge },
   { href: "/appointments", label: "Appointments", icon: CalendarDays },
   { href: "/services", label: "Services Library", icon: Library },
-  { href: "/analytics", label: "Analytics", icon: BarChart3 },
+  { href: "/analytics", label: "ROI Report", icon: BarChart3 },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 
@@ -58,7 +61,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div>
             <p className="text-lg font-semibold tracking-tight">Maintiva</p>
             <p className="text-xs font-medium text-violet-700">
-              Predict Maintenance. Drive Revenue.
+              Recover Maintenance Revenue.
             </p>
           </div>
         </div>
@@ -67,6 +70,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             Current shop
           </p>
           <p className="mt-1 font-semibold">{state.shop.name}</p>
+          {state.shop.isDemo && (
+            <span className="mt-2 inline-flex rounded-full border border-violet-200 bg-violet-50 px-2.5 py-1 text-xs font-semibold text-violet-700">
+              Demo tenant
+            </span>
+          )}
         </div>
         <nav className="flex-1 space-y-1 px-4 py-5">
           {navItems.map((item) => {

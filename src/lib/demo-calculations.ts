@@ -148,12 +148,15 @@ export function getVehicleOpportunities(state: DemoState) {
     })
     .filter((item) => item.vehicle && item.customer)
     .sort((a, b) => {
-      const statusRank = {
+      const statusRank: Record<OutreachStatus, number> = {
         NEEDS_OUTREACH: 0,
         DRAFTED: 1,
         MANUALLY_SENT: 2,
-        DECLINED: 3,
-        SCHEDULED: 4,
+        RESPONDED: 3,
+        SNOOZED: 4,
+        DECLINED: 5,
+        STOPPED: 6,
+        SCHEDULED: 7,
       };
       return (
         statusRank[a.opportunityStatus] - statusRank[b.opportunityStatus] ||
@@ -257,6 +260,7 @@ export function createAppointmentFromRecords({
     totalPriceCents: totals.totalPriceCents,
     totalLaborHours: totals.recommendedHours,
     source: "AUTOMATION" as const,
+    attributionSource: "MAINTIVA_OUTREACH" as const,
     notes: notes ?? "",
   };
 }

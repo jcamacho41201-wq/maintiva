@@ -10,6 +10,8 @@ import {
   serviceRecords,
   vehicles,
   outreachRecords,
+  declinedWorkRecords,
+  importHistory,
 } from "../src/lib/demo-data";
 import { getRecordStatus } from "../src/lib/demo-calculations";
 
@@ -22,6 +24,8 @@ async function main() {
   await prisma.auditLog.deleteMany();
   await prisma.appointmentService.deleteMany();
   await prisma.appointment.deleteMany();
+  await prisma.importHistoryRecord.deleteMany();
+  await prisma.declinedWorkRecord.deleteMany();
   await prisma.vehicleMaintenanceRecord.deleteMany();
   await prisma.outreachRecord.deleteMany();
   await prisma.serviceHistoryRecord.deleteMany();
@@ -152,6 +156,9 @@ async function main() {
       status: record.status,
       copiedAt: record.copiedAt ? new Date(record.copiedAt) : null,
       manuallySentAt: record.manuallySentAt ? new Date(record.manuallySentAt) : null,
+      responseStatus: record.responseStatus,
+      appointmentId: null,
+      performedByUserId: record.performedByUserId ?? null,
       createdAt: new Date(record.sentAt),
     })),
   });
@@ -169,6 +176,8 @@ async function main() {
           serviceRecords,
           outreachRecords,
           appointments,
+          declinedWorkRecords,
+          importHistory,
           seededAt: new Date().toISOString(),
         },
         item,
@@ -194,6 +203,22 @@ async function main() {
     }),
   });
 
+  await prisma.declinedWorkRecord.createMany({
+    data: declinedWorkRecords.map((record) => ({
+      id: record.id,
+      shopId: record.shopId,
+      customerId: record.customerId,
+      vehicleId: record.vehicleId,
+      serviceName: record.serviceName,
+      declinedAt: new Date(record.declinedAt),
+      recommendedPriceCents: record.recommendedPriceCents,
+      laborMinutes: Math.round(record.laborHours * 60),
+      advisorNotes: record.advisorNotes,
+      status: record.status,
+      outreachStatus: record.outreachStatus,
+    })),
+  });
+
   for (const appointment of appointments) {
     await prisma.appointment.create({
       data: {
@@ -207,6 +232,14 @@ async function main() {
         totalLaborMinutes: Math.round(appointment.totalLaborHours * 60),
         totalPriceCents: appointment.totalPriceCents,
         source: appointment.source,
+        attributionSource: appointment.attributionSource,
+        opportunityId: appointment.opportunityId,
+        outreachRecordId: appointment.outreachRecordId,
+        completedRevenueCents: appointment.completedRevenueCents,
+        completedLaborMinutes: appointment.completedLaborHours
+          ? Math.round(appointment.completedLaborHours * 60)
+          : null,
+        completedAt: appointment.completedAt ? new Date(appointment.completedAt) : null,
         notes: appointment.notes,
         services: {
           create: appointment.maintenanceRecordIds.map((maintenanceRecordId) => {
@@ -231,6 +264,39 @@ async function main() {
       data: { appointmentId: item.appointmentId },
     });
   }
+
+  for (const item of declinedWorkRecords.filter((record) => record.appointmentId)) {
+    await prisma.declinedWorkRecord.update({
+      where: { id: item.id },
+      data: { appointmentId: item.appointmentId },
+    });
+  }
+
+  for (const item of outreachRecords.filter((record) => record.appointmentId)) {
+    await prisma.outreachRecord.update({
+      where: { id: item.id },
+      data: { appointmentId: item.appointmentId },
+    });
+  }
+
+  await prisma.importHistoryRecord.createMany({
+    data: importHistory.map((record) => ({
+      id: record.id,
+      shopId: record.shopId,
+      userId: record.userId,
+      fileName: record.fileName,
+      importType: record.importType,
+      status: record.status,
+      importedAt: new Date(record.importedAt),
+      totalRows: record.totalRows,
+      successfulRows: record.successfulRows,
+      duplicateRows: record.duplicateRows,
+      updatedRows: record.updatedRows,
+      skippedRows: record.skippedRows,
+      failedRows: record.failedRows,
+      errorReportUrl: record.errorReportUrl,
+    })),
+  });
 
   await prisma.auditLog.create({
     data: {

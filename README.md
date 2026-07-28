@@ -1,8 +1,8 @@
 # Maintiva
 
-**Predict Maintenance. Drive Revenue.**
+**Recover Maintenance Revenue.**
 
-Maintiva is a pilot-ready predictive maintenance and customer management platform for auto repair shops. It helps a shop owner create a secure workspace, manage real customers and vehicles, track service history, generate manual outreach drafts, and schedule bundled maintenance appointments.
+Maintiva is a maintenance revenue recovery add-on for auto repair shops. It helps a shop owner import customer, vehicle, service history, declined work, and appointment data from existing systems, identify recoverable maintenance revenue, generate manual advisor outreach, schedule bundled appointments, and attribute recovered revenue.
 
 ## Current Architecture
 
@@ -10,21 +10,25 @@ Maintiva is a pilot-ready predictive maintenance and customer management platfor
 - Supabase Auth for signup, signin, signout, and password reset
 - Supabase PostgreSQL accessed through Prisma as the single database layer
 - Multi-tenant tables scoped by `shopId` with `ShopMembership` verification before server-side reads and mutations
-- Existing dashboard, customer, vehicle, automation, appointment, and service-library workflows preserved
+- Existing dashboard, customer, vehicle, revenue queue, import, capacity, appointment, and service-library workflows preserved
 - Production mode hydrates and mutates through `/api/pilot/state` and `/api/pilot/mutate`
 - Local demo mode is available only when Supabase is not configured or `NEXT_PUBLIC_MAINTIVA_ENABLE_DEMO_RESET=true`
 
-## Pilot MVP Features
+## Revenue Recovery MVP Features
 
 - Account creation and login through Supabase Auth
 - First-login onboarding for shop name, contact details, timezone, and bay capacity
-- Database-backed entities for `User`, `Shop`, `ShopMembership`, `Customer`, `Vehicle`, `ServiceDefinition`, `VehicleMaintenanceRecord`, `ServiceHistoryRecord`, `OutreachRecord`, `Appointment`, and `AppointmentService`
+- Database-backed entities for `User`, `Shop`, `ShopMembership`, `Customer`, `Vehicle`, `ServiceDefinition`, `VehicleMaintenanceRecord`, `ServiceHistoryRecord`, `DeclinedWorkRecord`, `OutreachRecord`, `Appointment`, `AppointmentService`, and `ImportHistoryRecord`
 - Customer and vehicle CRUD paths with validation and archive-ready fields
 - Shop-scoped services library seeded with common preventative services
-- Manual outreach queue with statuses: Needs outreach, Drafted, Manually sent, Scheduled, Declined
-- No live SMS/email sending in the pilot MVP; Maintiva generates editable copy and records manual status only
+- CSV import workflow with template download, column mapping, validation, duplicate detection, preview, and import history
+- Revenue Recovery Queue ranked by due maintenance, overdue maintenance, declined work, priority, value, and labor time
+- Manual outreach workflow with channel, response, copied, manually sent, follow-up, booked, snoozed, declined, and stopped states
+- No live SMS/email sending in the pilot MVP; Maintiva generates editable copy and records manual advisor status only
 - Appointment creation with bundled services, duplicate prevention on vehicle/start time, cancellation/completion-ready statuses
-- Dashboard metrics computed from the active shop state
+- Capacity planning for 7, 14, and 30 day labor windows
+- ROI report for identified, contacted, responded, booked, completed, and recovered revenue
+- Dashboard metrics computed from the active shop state and Maintiva-attributed appointments
 - Public privacy and terms pages
 
 ## Tenant Security
@@ -47,6 +51,8 @@ pnpm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000).
+
+Pilot operating instructions are in [docs/PILOT-GUIDE.md](docs/PILOT-GUIDE.md).
 
 ## Supabase Setup
 
@@ -111,7 +117,7 @@ Set the required Supabase and database environment variables in Vercel, run migr
 
 - Live SMS, email, and call providers
 - Calendar sync and customer self-booking
-- Shop-management imports
+- Direct shop-management integrations
 - Fine-grained role permission UI
 - VIN decoding, recall checks, and vehicle-history enrichment
-- Advanced analytics beyond the dashboard command center
+- Write-through server import mutations for production CSV ingestion

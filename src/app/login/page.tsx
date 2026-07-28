@@ -84,7 +84,7 @@ function LoginForm() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Maintiva</h1>
           <p className="text-sm font-medium text-violet-700">
-            Predict Maintenance. Drive Revenue.
+            Recover Maintenance Revenue.
           </p>
         </div>
       </div>

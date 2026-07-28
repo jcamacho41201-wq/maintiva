@@ -1,135 +1,175 @@
 "use client";
 
-import Link from "next/link";
-import { useState } from "react";
-import { Mail, MessageSquare, Phone, Send } from "lucide-react";
+import { useMemo, useState } from "react";
+import { CalendarCheck, Clock3, Mail, MessageSquare, Phone, Send } from "lucide-react";
 import { RecommendationModal } from "@/components/recommendation-modal";
-import { Badge, statusVariant } from "@/components/ui/badge";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import {
-  getRecordStatus,
-  getVehicleOpportunities,
-  vehicleLabel,
-} from "@/lib/demo-calculations";
+import { Progress } from "@/components/ui/progress";
 import { useDemoStore } from "@/lib/demo-store";
+import {
+  buildRevenueOpportunities,
+  groupRevenueOpportunities,
+  type RevenueQueueGroup,
+} from "@/lib/revenue-recovery";
 import { formatCurrency, formatDate } from "@/lib/utils";
 
-function statusLabel(status: string) {
-  return status.replace("_", " ").toLowerCase().replace(/^\w/, (letter) => letter.toUpperCase());
+function priorityVariant(priority: string) {
+  if (priority === "HIGH") return "red" as const;
+  if (priority === "MEDIUM") return "orange" as const;
+  return "neutral" as const;
+}
+
+function selectedRecordIds(group: RevenueQueueGroup) {
+  return group.opportunities
+    .map((opportunity) => opportunity.id.replace(/^opp-/, ""))
+    .filter((id) => !id.startsWith("declined-"));
 }
 
 export default function AutomationPage() {
   const store = useDemoStore();
   const { state } = store;
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
-  const groups = getVehicleOpportunities(state);
-  const selected = groups.find((group) => group.vehicle?.id === selectedVehicleId);
+  const [filter, setFilter] = useState<"ALL" | "HIGH" | "UNCONTACTED" | "BOOKED">("ALL");
+  const groups = useMemo(
+    () => groupRevenueOpportunities(buildRevenueOpportunities(state)),
+    [state],
+  );
+  const filteredGroups = groups.filter((group) => {
+    if (filter === "HIGH") return group.priority === "HIGH";
+    if (filter === "UNCONTACTED") return group.outreachStatus === "Needs outreach";
+    if (filter === "BOOKED") return group.appointmentStatus === "Booked";
+    return true;
+  });
+  const selected = groups.find((group) => group.vehicleId === selectedVehicleId);
+  const selectedRecords = selected
+    ? state.maintenanceRecords.filter((record) => selectedRecordIds(selected).includes(record.id))
+    : [];
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-semibold tracking-tight">Automation Queue</h1>
-        <p className="mt-2 text-sm text-zinc-600">
-          Eligible services are grouped by customer and vehicle so outreach recommends one bundled appointment.
-        </p>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h1 className="text-3xl font-semibold tracking-tight">Revenue Recovery Queue</h1>
+          <p className="mt-2 max-w-3xl text-sm text-zinc-600">
+            Prioritized maintenance and declined-work opportunities grouped by vehicle for advisor follow-up.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {[
+            ["ALL", "All"],
+            ["HIGH", "High priority"],
+            ["UNCONTACTED", "Needs outreach"],
+            ["BOOKED", "Booked"],
+          ].map(([value, label]) => (
+            <button
+              key={value}
+              onClick={() => setFilter(value as typeof filter)}
+              className={`rounded-lg border px-3 py-2 text-sm font-semibold ${
+                filter === value
+                  ? "border-violet-950 bg-violet-950 text-white"
+                  : "border-zinc-200 bg-white text-zinc-700"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
       </div>
 
       <Card>
         <CardHeader className="flex flex-wrap gap-2">
           {[
-            "Due soon",
+            "Declined work",
+            "Due maintenance",
             "Overdue",
-            "Never contacted",
-            "Drafted",
-            "Manually sent",
-            "Appointment booked",
             "No response",
-            "Highest revenue",
-            "Highest urgency",
-          ].map((filter) => (
-            <Badge key={filter} variant="neutral">{filter}</Badge>
+            "Record callback",
+            "Snooze",
+            "Appointment attribution",
+          ].map((item) => (
+            <Badge key={item} variant="neutral">{item}</Badge>
           ))}
         </CardHeader>
         <CardContent className="grid gap-4 xl:grid-cols-2">
-          {groups.map((group) => {
-            const customer = group.customer;
-            const vehicle = group.vehicle;
-            if (!customer || !vehicle) return null;
-            const lastContact = state.outreachRecords
-              .filter((record) => record.vehicleId === vehicle.id)
-              .sort((a, b) => new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime())[0];
-
+          {filteredGroups.map((group) => {
+            const lastContact = group.lastContactedAt;
+            const canRecommend = selectedRecordIds(group).length > 0;
             return (
               <Card key={group.id} className="shadow-none">
                 <CardContent className="space-y-5">
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <h2 className="text-lg font-semibold">{customer.firstName} {customer.lastName}</h2>
-                      <p className="text-sm text-zinc-500">{vehicleLabel(vehicle)}</p>
+                      <h2 className="text-lg font-semibold">{group.customerName}</h2>
+                      <p className="text-sm text-zinc-500">{group.vehicleLabel}</p>
                     </div>
-                    <Badge variant={statusVariant(group.opportunityStatus)}>
-                      {statusLabel(group.opportunityStatus)}
+                    <Badge variant={priorityVariant(group.priority)}>
+                      {group.priority.toLowerCase()} priority
                     </Badge>
                   </div>
 
+                  <div className="flex flex-wrap gap-2">
+                    {group.sources.map((source) => <Badge key={source} variant="purple">{source}</Badge>)}
+                    <Badge>{group.outreachStatus}</Badge>
+                    <Badge>{group.nextAction}</Badge>
+                  </div>
+
                   <div className="space-y-2">
-                    {group.records.map((record) => {
-                      const status = getRecordStatus(state, record);
-                      return (
-                        <div key={record.id} className="flex items-center justify-between rounded-lg bg-zinc-50 px-3 py-2 text-sm">
-                          <span>{record.serviceName}</span>
-                          <span className="font-semibold">{status.dueText}</span>
+                    {group.opportunities.slice(0, 4).map((opportunity) => (
+                      <div key={opportunity.id} className="space-y-1 rounded-lg bg-zinc-50 px-3 py-2 text-sm">
+                        <div className="flex items-center justify-between gap-3">
+                          <span>{opportunity.serviceNames.join(", ")}</span>
+                          <span className="font-semibold">{formatCurrency(opportunity.estimatedRevenueCents)}</span>
                         </div>
-                      );
-                    })}
+                        <Progress value={opportunity.priority === "HIGH" ? 14 : opportunity.priority === "MEDIUM" ? 44 : 72} />
+                        <p className="text-xs text-zinc-500">{opportunity.explanation}</p>
+                      </div>
+                    ))}
                   </div>
 
                   <div className="grid grid-cols-3 gap-3 text-sm">
                     <div className="rounded-lg border border-zinc-200 p-3">
-                      <p className="text-zinc-500">Revenue</p>
-                      <p className="font-semibold">{formatCurrency(group.totalPriceCents)}</p>
+                      <p className="text-zinc-500">Value</p>
+                      <p className="font-semibold">{formatCurrency(group.estimatedRevenueCents)}</p>
                     </div>
                     <div className="rounded-lg border border-zinc-200 p-3">
                       <p className="text-zinc-500">Labor</p>
-                      <p className="font-semibold">{group.totalLaborHours} hr</p>
+                      <p className="font-semibold">{group.estimatedLaborHours} hr</p>
                     </div>
                     <div className="rounded-lg border border-zinc-200 p-3">
-                      <p className="text-zinc-500">Appointment</p>
-                      <p className="font-semibold">{group.recommendedHours} hr</p>
+                      <p className="text-zinc-500">Last touch</p>
+                      <p className="font-semibold">{lastContact ? formatDate(lastContact) : "Never"}</p>
                     </div>
-                  </div>
-
-                  <div className="rounded-lg border border-zinc-200 bg-white p-3 text-sm text-zinc-700">
-                    {lastContact
-                      ? lastContact.message
-                      : `Ready to send a bundled recommendation for ${group.records.map((record) => record.serviceName.toLowerCase()).join(", ")}.`}
                   </div>
 
                   <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div className="text-sm text-zinc-500">
-                      Last contact: {lastContact ? formatDate(lastContact.sentAt) : "Never"} · {statusLabel(group.opportunityStatus)}
-                    </div>
-                    <div className="flex gap-2">
-                      <button className="grid h-10 w-10 place-items-center rounded-lg border border-zinc-200" title="Manual SMS draft">
+                    <p className="text-sm text-zinc-500">{group.priorityReason}</p>
+                    <div className="flex flex-wrap gap-2">
+                      <button className="grid h-10 w-10 place-items-center rounded-lg border border-zinc-200" title="Manual text draft">
                         <MessageSquare className="h-4 w-4" />
                       </button>
                       <button className="grid h-10 w-10 place-items-center rounded-lg border border-zinc-200" title="Manual email draft">
                         <Mail className="h-4 w-4" />
                       </button>
-                      <button className="grid h-10 w-10 place-items-center rounded-lg border border-zinc-200" title="Manual call note">
+                      <button className="grid h-10 w-10 place-items-center rounded-lg border border-zinc-200" title="Call note">
                         <Phone className="h-4 w-4" />
                       </button>
-                      {group.opportunityStatus === "SCHEDULED" ? (
-                        <Link href="/appointments" className="inline-flex items-center gap-2 rounded-lg bg-violet-950 px-3 py-2 text-sm font-semibold text-white">
+                      <button className="grid h-10 w-10 place-items-center rounded-lg border border-zinc-200" title="Snooze follow-up">
+                        <Clock3 className="h-4 w-4" />
+                      </button>
+                      {group.appointmentStatus === "Booked" ? (
+                        <a href="/appointments" className="inline-flex items-center gap-2 rounded-lg bg-violet-950 px-3 py-2 text-sm font-semibold text-white">
+                          <CalendarCheck className="h-4 w-4" />
                           View appointment
-                        </Link>
+                        </a>
                       ) : (
                         <button
-                          onClick={() => setSelectedVehicleId(vehicle.id)}
-                          className="inline-flex items-center gap-2 rounded-lg bg-violet-950 px-3 py-2 text-sm font-semibold text-white"
+                          onClick={() => canRecommend && setSelectedVehicleId(group.vehicleId)}
+                          disabled={!canRecommend}
+                          className="inline-flex items-center gap-2 rounded-lg bg-violet-950 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           <Send className="h-4 w-4" />
-                          Recommend
+                          Generate message
                         </button>
                       )}
                     </div>
@@ -141,11 +181,11 @@ export default function AutomationPage() {
         </CardContent>
       </Card>
 
-      {selected?.customer && selected.vehicle && (
+      {selected && selectedRecords.length > 0 && (
         <RecommendationModal
-          customer={selected.customer}
-          vehicle={selected.vehicle}
-          records={selected.records}
+          customer={state.customers.find((customer) => customer.id === selected.customerId)!}
+          vehicle={state.vehicles.find((vehicle) => vehicle.id === selected.vehicleId)!}
+          records={selectedRecords}
           onClose={() => setSelectedVehicleId(null)}
           onSendRecommendation={store.sendRecommendation}
           onBookAppointment={store.bookAppointment}

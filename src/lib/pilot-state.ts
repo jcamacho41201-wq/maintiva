@@ -5,7 +5,9 @@ import {
   serviceDefinitions as defaultServices,
   type Appointment,
   type Customer,
+  type DeclinedWorkRecord,
   type DemoState,
+  type ImportHistoryRecord,
   type MaintenanceService,
   type OutreachRecord,
   type Vehicle,
@@ -140,7 +142,9 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
       serviceDefinitions: { orderBy: { name: "asc" } },
       maintenanceRecords: { where: { archivedAt: null }, orderBy: { updatedAt: "desc" } },
       serviceHistoryRecords: { orderBy: { completedAt: "desc" } },
+      declinedWorkRecords: { orderBy: { declinedAt: "desc" } },
       outreachRecords: { orderBy: { createdAt: "desc" } },
+      importHistory: { orderBy: { importedAt: "desc" } },
       appointments: {
         include: { services: true },
         orderBy: { scheduledStart: "asc" },
@@ -247,6 +251,20 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
       priceCents: record.priceCents,
       notes: record.notes ?? "",
     })),
+    declinedWorkRecords: shop.declinedWorkRecords.map((record): DeclinedWorkRecord => ({
+      id: record.id,
+      shopId: record.shopId,
+      customerId: record.customerId,
+      vehicleId: record.vehicleId,
+      serviceName: record.serviceName,
+      declinedAt: iso(record.declinedAt),
+      recommendedPriceCents: record.recommendedPriceCents,
+      laborHours: record.laborMinutes / 60,
+      advisorNotes: record.advisorNotes ?? "",
+      status: record.status,
+      outreachStatus: record.outreachStatus,
+      appointmentId: record.appointmentId ?? undefined,
+    })),
     outreachRecords: shop.outreachRecords.map((record): OutreachRecord => ({
       id: record.id,
       shopId: record.shopId,
@@ -263,7 +281,11 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
       sentAt: iso(record.manuallySentAt || record.createdAt),
       copiedAt: iso(record.copiedAt) || undefined,
       manuallySentAt: iso(record.manuallySentAt) || undefined,
-      status: record.status === "NEEDS_OUTREACH" ? "DRAFTED" : record.status,
+      responseStatus: record.responseStatus,
+      followUpDate: iso(record.followUpDate) || undefined,
+      appointmentId: record.appointmentId ?? undefined,
+      performedByUserId: record.performedByUserId ?? undefined,
+      status: record.status,
     })),
     appointments: shop.appointments.map((appointment): Appointment => ({
       id: appointment.id,
@@ -280,7 +302,29 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
       totalPriceCents: appointment.totalPriceCents,
       totalLaborHours: appointment.totalLaborMinutes / 60,
       source: appointment.source,
+      attributionSource: appointment.attributionSource,
+      opportunityId: appointment.opportunityId ?? undefined,
+      outreachRecordId: appointment.outreachRecordId ?? undefined,
+      completedRevenueCents: appointment.completedRevenueCents ?? undefined,
+      completedLaborHours: appointment.completedLaborMinutes ? appointment.completedLaborMinutes / 60 : undefined,
+      completedAt: iso(appointment.completedAt) || undefined,
       notes: appointment.notes ?? "",
+    })),
+    importHistory: shop.importHistory.map((record): ImportHistoryRecord => ({
+      id: record.id,
+      shopId: record.shopId,
+      userId: record.userId ?? "",
+      fileName: record.fileName,
+      importType: record.importType,
+      status: record.status,
+      importedAt: iso(record.importedAt),
+      totalRows: record.totalRows,
+      successfulRows: record.successfulRows,
+      duplicateRows: record.duplicateRows,
+      updatedRows: record.updatedRows,
+      skippedRows: record.skippedRows,
+      failedRows: record.failedRows,
+      errorReportUrl: record.errorReportUrl ?? undefined,
     })),
     seededAt: new Date().toISOString(),
   };
@@ -390,6 +434,7 @@ export async function markPilotOutreachManuallySent(
     maintenanceRecordIds: string[];
     message: string;
     channel?: OutreachRecord["channel"];
+    responseStatus?: OutreachRecord["responseStatus"];
   },
 ) {
   const records = await prisma.vehicleMaintenanceRecord.findMany({
@@ -420,10 +465,12 @@ export async function markPilotOutreachManuallySent(
         customerId: input.customerId,
         vehicleId: input.vehicleId,
         message: input.message,
-        channel: input.channel ?? "SMS",
+        channel: input.channel ?? "TEXT",
         status: "MANUALLY_SENT",
+        responseStatus: input.responseStatus ?? "NO_RESPONSE",
         copiedAt: new Date(),
         manuallySentAt: new Date(),
+        performedByUserId: context.userId,
       },
     });
     await tx.vehicleMaintenanceRecord.updateMany({
@@ -510,6 +557,7 @@ export async function bookPilotAppointment(
         totalLaborMinutes: Math.round(totals.recommendedHours * 60),
         totalPriceCents: totals.totalPriceCents,
         source: "AUTOMATION",
+        attributionSource: "MAINTIVA_OUTREACH",
         notes: input.notes,
         services: {
           create: records.map((record) => ({

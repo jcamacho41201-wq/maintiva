@@ -3,7 +3,15 @@
 import { useMemo, useState } from "react";
 import { CalendarCheck, CheckCircle2, Clipboard, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { calculateAppointmentTotals, type Appointment, type Customer, type Vehicle, type VehicleMaintenanceRecord } from "@/lib/demo-data";
+import {
+  calculateAppointmentTotals,
+  type Appointment,
+  type Customer,
+  type CustomerResponseStatus,
+  type OutreachChannel,
+  type Vehicle,
+  type VehicleMaintenanceRecord,
+} from "@/lib/demo-data";
 import { vehicleLabel } from "@/lib/demo-calculations";
 import { formatCurrency } from "@/lib/utils";
 
@@ -17,6 +25,8 @@ type Props = {
     vehicleId: string;
     maintenanceRecordIds: string[];
     message: string;
+    channel?: OutreachChannel;
+    responseStatus?: CustomerResponseStatus;
   }) => string;
   onBookAppointment: (input: {
     customerId: string;
@@ -49,6 +59,8 @@ export function RecommendationModal({
   const [date, setDate] = useState("2026-07-28");
   const [time, setTime] = useState("09:00");
   const [status, setStatus] = useState<Appointment["status"]>("CONFIRMED");
+  const [channel, setChannel] = useState<OutreachChannel>("TEXT");
+  const [responseStatus, setResponseStatus] = useState<CustomerResponseStatus>("NO_RESPONSE");
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
   const [sent, setSent] = useState(false);
@@ -111,6 +123,8 @@ export function RecommendationModal({
       vehicleId: vehicle.id,
       maintenanceRecordIds: selectedIds,
       message,
+      channel,
+      responseStatus,
     });
     setSaving(false);
     setSent(true);
@@ -235,6 +249,40 @@ export function RecommendationModal({
               className="mt-2 w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm font-normal outline-none focus:border-violet-500"
             />
           </label>
+
+          <div className="grid gap-4 rounded-lg border border-zinc-200 p-4 sm:grid-cols-2">
+            <label className="text-sm font-medium">
+              Manual outreach channel
+              <select
+                value={channel}
+                onChange={(event) => setChannel(event.target.value as OutreachChannel)}
+                className="mt-2 h-10 w-full rounded-lg border border-zinc-200 px-3 outline-none focus:border-violet-500"
+              >
+                <option value="TEXT">Text sent manually</option>
+                <option value="PHONE">Phone call</option>
+                <option value="EMAIL">Email sent manually</option>
+                <option value="IN_PERSON">In person</option>
+                <option value="OTHER">Other</option>
+              </select>
+            </label>
+            <label className="text-sm font-medium">
+              Customer response
+              <select
+                value={responseStatus}
+                onChange={(event) => setResponseStatus(event.target.value as CustomerResponseStatus)}
+                className="mt-2 h-10 w-full rounded-lg border border-zinc-200 px-3 outline-none focus:border-violet-500"
+              >
+                <option value="NO_RESPONSE">No response yet</option>
+                <option value="INTERESTED">Interested</option>
+                <option value="WANTS_CALLBACK">Wants callback</option>
+                <option value="BOOKED">Booked</option>
+                <option value="DECLINED">Declined</option>
+                <option value="NOT_NOW">Not now</option>
+                <option value="WRONG_CONTACT">Wrong contact</option>
+                <option value="DO_NOT_CONTACT">Do not contact</option>
+              </select>
+            </label>
+          </div>
 
           <div className="flex flex-wrap items-center justify-between gap-3 border-t border-zinc-100 pt-5">
             <div className="flex gap-2">

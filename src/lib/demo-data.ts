@@ -10,7 +10,26 @@ export type OutreachStatus =
   | "DRAFTED"
   | "MANUALLY_SENT"
   | "SCHEDULED"
-  | "DECLINED";
+  | "RESPONDED"
+  | "SNOOZED"
+  | "DECLINED"
+  | "STOPPED";
+export type OutreachChannel =
+  | "PHONE"
+  | "TEXT"
+  | "EMAIL"
+  | "CALL"
+  | "IN_PERSON"
+  | "OTHER";
+export type CustomerResponseStatus =
+  | "NO_RESPONSE"
+  | "INTERESTED"
+  | "WANTS_CALLBACK"
+  | "BOOKED"
+  | "DECLINED"
+  | "NOT_NOW"
+  | "WRONG_CONTACT"
+  | "DO_NOT_CONTACT";
 export type AppointmentStatus =
   | "REQUESTED"
   | "CONFIRMED"
@@ -123,6 +142,38 @@ export type ServiceRecord = {
   notes: string;
 };
 
+export type DeclinedWorkRecord = {
+  id: string;
+  shopId: string;
+  customerId: string;
+  vehicleId: string;
+  serviceName: string;
+  declinedAt: string;
+  recommendedPriceCents: number;
+  laborHours: number;
+  advisorNotes: string;
+  status: "OPEN" | "BOOKED" | "COMPLETED" | "DECLINED" | "SNOOZED";
+  outreachStatus: OutreachStatus;
+  appointmentId?: string;
+};
+
+export type ImportHistoryRecord = {
+  id: string;
+  shopId: string;
+  userId: string;
+  fileName: string;
+  importType: "CUSTOMERS" | "VEHICLES" | "SERVICE_HISTORY" | "DECLINED_WORK" | "APPOINTMENTS" | "COMBINED";
+  status: "PREVIEWED" | "COMPLETED" | "PARTIAL" | "FAILED";
+  importedAt: string;
+  totalRows: number;
+  successfulRows: number;
+  duplicateRows: number;
+  updatedRows: number;
+  skippedRows: number;
+  failedRows: number;
+  errorReportUrl?: string;
+};
+
 export type OutreachRecord = {
   id: string;
   shopId: string;
@@ -131,11 +182,15 @@ export type OutreachRecord = {
   maintenanceRecordIds: string[];
   serviceNames: string[];
   message: string;
-  channel: "SMS" | "EMAIL" | "CALL";
+  channel: OutreachChannel;
   sentAt: string;
   copiedAt?: string;
   manuallySentAt?: string;
-  status: "DRAFTED" | "MANUALLY_SENT" | "SCHEDULED" | "DECLINED";
+  responseStatus: CustomerResponseStatus;
+  followUpDate?: string;
+  appointmentId?: string;
+  performedByUserId?: string;
+  status: OutreachStatus;
 };
 
 export type Appointment = {
@@ -151,6 +206,12 @@ export type Appointment = {
   totalPriceCents: number;
   totalLaborHours: number;
   source: "AUTOMATION" | "CUSTOMER_BOOKING" | "MANUAL" | "IMPORTED";
+  attributionSource: "MAINTIVA_OUTREACH" | "MANUAL_SHOP_ENTRY" | "IMPORTED_APPOINTMENT" | "OTHER";
+  opportunityId?: string;
+  outreachRecordId?: string;
+  completedRevenueCents?: number;
+  completedLaborHours?: number;
+  completedAt?: string;
   notes: string;
 };
 
@@ -162,8 +223,10 @@ export type DemoState = {
   services: MaintenanceService[];
   maintenanceRecords: VehicleMaintenanceRecord[];
   serviceRecords: ServiceRecord[];
+  declinedWorkRecords: DeclinedWorkRecord[];
   outreachRecords: OutreachRecord[];
   appointments: Appointment[];
+  importHistory: ImportHistoryRecord[];
   seededAt: string;
 };
 
@@ -464,6 +527,49 @@ export const serviceRecords: ServiceRecord[] = [
   },
 ];
 
+export const declinedWorkRecords: DeclinedWorkRecord[] = [
+  {
+    id: "declined-accord-cabin-filter",
+    shopId: demoShop.id,
+    customerId: "cust-john",
+    vehicleId: "veh-accord",
+    serviceName: "Cabin Air Filter",
+    declinedAt: "2026-02-18",
+    recommendedPriceCents: 3800,
+    laborHours: 0.25,
+    advisorNotes: "Customer declined cabin filter during oil service.",
+    status: "OPEN",
+    outreachStatus: "MANUALLY_SENT",
+  },
+  {
+    id: "declined-jeep-brake-service",
+    shopId: demoShop.id,
+    customerId: "cust-justin",
+    vehicleId: "veh-jeep",
+    serviceName: "Brake Pads",
+    declinedAt: "2026-05-09",
+    recommendedPriceCents: 36000,
+    laborHours: 1.5,
+    advisorNotes: "Pads measured low; customer wanted to wait until summer.",
+    status: "OPEN",
+    outreachStatus: "NEEDS_OUTREACH",
+  },
+  {
+    id: "declined-telluride-battery",
+    shopId: demoShop.id,
+    customerId: "cust-victor",
+    vehicleId: "veh-telluride",
+    serviceName: "Battery",
+    declinedAt: "2026-06-24",
+    recommendedPriceCents: 22000,
+    laborHours: 0.5,
+    advisorNotes: "Battery tested weak and was later booked through Maintiva outreach.",
+    status: "BOOKED",
+    outreachStatus: "SCHEDULED",
+    appointmentId: "appt-1",
+  },
+];
+
 export const outreachRecords: OutreachRecord[] = [
   {
     id: "outreach-accord",
@@ -478,11 +584,34 @@ export const outreachRecords: OutreachRecord[] = [
     serviceNames: ["Oil Change", "Brake Fluid", "Cabin Air Filter"],
     message:
       "Hi John, your 2019 Honda Accord is ready for a bundled maintenance visit. We can handle oil, brake fluid, and cabin filter service in one appointment.",
-    channel: "SMS",
+    channel: "TEXT",
     sentAt: "2026-07-05T10:15:00-04:00",
     copiedAt: "2026-07-05T10:13:00-04:00",
     manuallySentAt: "2026-07-05T10:15:00-04:00",
+    responseStatus: "NO_RESPONSE",
+    performedByUserId: "user-owner",
     status: "MANUALLY_SENT",
+  },
+  {
+    id: "outreach-telluride",
+    shopId: demoShop.id,
+    customerId: "cust-victor",
+    vehicleId: "veh-telluride",
+    maintenanceRecordIds: [
+      "item-veh-telluride-battery",
+      "item-veh-telluride-coolant",
+    ],
+    serviceNames: ["Battery", "Coolant"],
+    message:
+      "Hi Victor, we can recover the battery work you deferred and complete coolant service in one visit on Tuesday.",
+    channel: "PHONE",
+    sentAt: "2026-07-22T11:30:00-04:00",
+    copiedAt: "2026-07-22T11:28:00-04:00",
+    manuallySentAt: "2026-07-22T11:30:00-04:00",
+    responseStatus: "BOOKED",
+    appointmentId: "appt-1",
+    performedByUserId: "user-advisor",
+    status: "SCHEDULED",
   },
 ];
 
@@ -502,8 +631,50 @@ export const appointments: Appointment[] = [
     status: "CONFIRMED",
     totalPriceCents: 40000,
     totalLaborHours: 2,
-    source: "CUSTOMER_BOOKING",
-    notes: "Booked from prior recommendation.",
+    source: "AUTOMATION",
+    attributionSource: "MAINTIVA_OUTREACH",
+    opportunityId: "opp-veh-telluride",
+    outreachRecordId: "outreach-telluride",
+    notes: "Booked from Maintiva revenue recovery outreach.",
+  },
+  {
+    id: "appt-2",
+    shopId: demoShop.id,
+    customerId: "cust-sam",
+    vehicleId: "veh-camry",
+    maintenanceRecordIds: ["item-veh-camry-tire-rotation"],
+    serviceNames: ["Tire Rotation", "Oil Change"],
+    scheduledStart: "2026-07-14T09:00:00-04:00",
+    scheduledEnd: "2026-07-14T10:00:00-04:00",
+    status: "COMPLETED",
+    totalPriceCents: 13000,
+    totalLaborHours: 1,
+    source: "AUTOMATION",
+    attributionSource: "MAINTIVA_OUTREACH",
+    opportunityId: "opp-veh-camry",
+    completedRevenueCents: 18200,
+    completedLaborHours: 1.1,
+    completedAt: "2026-07-14T10:15:00-04:00",
+    notes: "Completed recovered maintenance after manual text outreach.",
+  },
+];
+
+export const importHistory: ImportHistoryRecord[] = [
+  {
+    id: "import-demo-july",
+    shopId: demoShop.id,
+    userId: "user-owner",
+    fileName: "cedar-bay-export-july.csv",
+    importType: "COMBINED",
+    status: "PARTIAL",
+    importedAt: "2026-07-01T10:30:00-04:00",
+    totalRows: 32,
+    successfulRows: 29,
+    duplicateRows: 1,
+    updatedRows: 2,
+    skippedRows: 1,
+    failedRows: 2,
+    errorReportUrl: "downloadable-error-report",
   },
 ];
 
@@ -515,8 +686,10 @@ export const initialDemoState: DemoState = {
   services: serviceDefinitions,
   maintenanceRecords: maintenanceItems,
   serviceRecords,
+  declinedWorkRecords,
   outreachRecords,
   appointments,
+  importHistory,
   seededAt: asOfDate.toISOString(),
 };
 

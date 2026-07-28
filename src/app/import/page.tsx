@@ -1,0 +1,286 @@
+"use client";
+
+import { ChangeEvent, useMemo, useState } from "react";
+import { Download, FileUp, TableProperties } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import {
+  buildImportErrorCsv,
+  detectColumnMapping,
+  maintivaCsvTemplate,
+  parseCsv,
+  previewImport,
+  type ImportType,
+  type MaintivaField,
+} from "@/lib/csv-import";
+import { useDemoStore } from "@/lib/demo-store";
+
+const fields: { value: MaintivaField; label: string }[] = [
+  { value: "ignore", label: "Ignore" },
+  { value: "customerExternalId", label: "Customer external ID" },
+  { value: "customerFirstName", label: "Customer first name" },
+  { value: "customerLastName", label: "Customer last name" },
+  { value: "customerFullName", label: "Customer full name" },
+  { value: "customerEmail", label: "Customer email" },
+  { value: "customerPhone", label: "Customer phone" },
+  { value: "vehicleExternalId", label: "Vehicle external ID" },
+  { value: "vehicleCustomerExternalId", label: "Vehicle customer external ID" },
+  { value: "vin", label: "VIN" },
+  { value: "vehicleYear", label: "Vehicle year" },
+  { value: "vehicleMake", label: "Vehicle make" },
+  { value: "vehicleModel", label: "Vehicle model" },
+  { value: "licensePlate", label: "License plate" },
+  { value: "currentMileage", label: "Current mileage" },
+  { value: "serviceName", label: "Service name" },
+  { value: "serviceDate", label: "Service date" },
+  { value: "serviceMileage", label: "Service mileage" },
+  { value: "price", label: "Price" },
+  { value: "laborHours", label: "Labor hours" },
+  { value: "status", label: "Status" },
+  { value: "declinedDate", label: "Declined date" },
+  { value: "advisorNotes", label: "Advisor notes" },
+  { value: "appointmentDate", label: "Appointment date" },
+  { value: "appointmentTime", label: "Appointment time" },
+  { value: "services", label: "Services" },
+];
+
+const importTypes: { value: ImportType; label: string }[] = [
+  { value: "COMBINED", label: "Combined customer, vehicle, services" },
+  { value: "CUSTOMERS", label: "Customers only" },
+  { value: "VEHICLES", label: "Vehicles only" },
+  { value: "SERVICE_HISTORY", label: "Service history" },
+  { value: "DECLINED_WORK", label: "Declined work" },
+  { value: "APPOINTMENTS", label: "Appointments" },
+];
+
+function downloadCsv(filename: string, content: string) {
+  const blob = new Blob([content], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+export default function ImportPage() {
+  const store = useDemoStore();
+  const { state } = store;
+  const [fileName, setFileName] = useState("");
+  const [rows, setRows] = useState<Record<string, string>[]>([]);
+  const [mapping, setMapping] = useState<Record<string, MaintivaField>>({});
+  const [importType, setImportType] = useState<ImportType>("COMBINED");
+  const [duplicateMode, setDuplicateMode] = useState<"SKIP" | "UPDATE">("SKIP");
+  const [completed, setCompleted] = useState(false);
+  const headers = Object.keys(rows[0] ?? {});
+  const preview = useMemo(
+    () => previewImport({ rows, mapping, importType, state }),
+    [rows, mapping, importType, state],
+  );
+
+  async function handleFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    const parsed = parseCsv(text);
+    const detected = detectColumnMapping(Object.keys(parsed[0] ?? {}));
+    setFileName(file.name);
+    setRows(parsed);
+    setMapping(detected);
+    setCompleted(false);
+  }
+
+  function confirmImport() {
+    store.addImportHistory({
+      fileName: fileName || "manual-import.csv",
+      importType,
+      status: preview.summary.failedRows > 0 ? "PARTIAL" : "COMPLETED",
+      totalRows: preview.summary.totalRows,
+      successfulRows: preview.summary.successfulRows,
+      duplicateRows: preview.summary.duplicateRows,
+      failedRows: preview.summary.failedRows,
+      updatedRows: duplicateMode === "UPDATE" ? preview.summary.duplicateRows : 0,
+      skippedRows: duplicateMode === "SKIP" ? preview.summary.duplicateRows : 0,
+      errorReportUrl: preview.summary.failedRows > 0 ? "downloadable-error-report" : undefined,
+    });
+    setCompleted(true);
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h1 className="text-3xl font-semibold tracking-tight">Import Data</h1>
+          <p className="mt-2 max-w-3xl text-sm text-zinc-600">
+            Bring customer, vehicle, service history, declined work, and appointment exports into Maintiva.
+          </p>
+        </div>
+        <button
+          onClick={() => downloadCsv("maintiva-import-template.csv", maintivaCsvTemplate)}
+          className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 bg-white px-4 py-2 text-sm font-semibold text-zinc-800"
+        >
+          <Download className="h-4 w-4" />
+          Template
+        </button>
+      </div>
+
+      <section className="grid gap-4 lg:grid-cols-[0.8fr_1.2fr]">
+        <Card>
+          <CardHeader>
+            <h2 className="text-lg font-semibold">Upload and Map</h2>
+            <p className="mt-1 text-sm text-zinc-500">CSV files are previewed before anything is accepted.</p>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <label className="flex min-h-40 cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed border-zinc-300 bg-zinc-50 p-6 text-center">
+              <FileUp className="h-8 w-8 text-violet-800" />
+              <span className="mt-3 text-sm font-semibold">{fileName || "Choose CSV file"}</span>
+              <span className="mt-1 text-xs text-zinc-500">Export from a POS, CRM, or spreadsheet.</span>
+              <input type="file" accept=".csv,text/csv" onChange={handleFile} className="sr-only" />
+            </label>
+            <label className="text-sm font-medium">
+              Import type
+              <select
+                value={importType}
+                onChange={(event) => setImportType(event.target.value as ImportType)}
+                className="mt-2 h-10 w-full rounded-lg border border-zinc-200 px-3 outline-none focus:border-violet-500"
+              >
+                {importTypes.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}
+              </select>
+            </label>
+            <label className="text-sm font-medium">
+              Duplicate handling
+              <select
+                value={duplicateMode}
+                onChange={(event) => setDuplicateMode(event.target.value as "SKIP" | "UPDATE")}
+                className="mt-2 h-10 w-full rounded-lg border border-zinc-200 px-3 outline-none focus:border-violet-500"
+              >
+                <option value="SKIP">Skip duplicate rows</option>
+                <option value="UPDATE">Update matching customers and vehicles</option>
+              </select>
+            </label>
+            {headers.length > 0 && (
+              <div className="space-y-2">
+                <p className="text-sm font-semibold">Column mapping</p>
+                {headers.map((header) => (
+                  <label key={header} className="block text-sm">
+                    <span className="mb-1 block truncate text-zinc-600">{header}</span>
+                    <select
+                      value={mapping[header] ?? "ignore"}
+                      onChange={(event) => setMapping({ ...mapping, [header]: event.target.value as MaintivaField })}
+                      className="h-10 w-full rounded-lg border border-zinc-200 px-3 outline-none focus:border-violet-500"
+                    >
+                      {fields.map((field) => <option key={field.value} value={field.value}>{field.label}</option>)}
+                    </select>
+                  </label>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <h2 className="text-lg font-semibold">Preview</h2>
+            <p className="mt-1 text-sm text-zinc-500">Rows are validated for required fields, duplicates, and service economics.</p>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-3 sm:grid-cols-4">
+              {[
+                ["Rows", preview.summary.totalRows],
+                ["Valid", preview.summary.validRows],
+                ["Duplicates", preview.summary.duplicateRows],
+                ["Errors", preview.summary.failedRows],
+              ].map(([label, value]) => (
+                <div key={label} className="rounded-lg border border-zinc-200 p-3">
+                  <p className="text-xs text-zinc-500">{label}</p>
+                  <p className="mt-1 text-xl font-semibold">{value}</p>
+                </div>
+              ))}
+            </div>
+
+            <div className="max-h-[34rem] overflow-auto rounded-lg border border-zinc-200">
+              <table className="w-full min-w-[720px] text-left text-sm">
+                <thead className="bg-zinc-50 text-xs uppercase tracking-wide text-zinc-500">
+                  <tr>
+                    <th className="px-4 py-3">Row</th>
+                    <th className="px-4 py-3">Status</th>
+                    <th className="px-4 py-3">Customer</th>
+                    <th className="px-4 py-3">Vehicle</th>
+                    <th className="px-4 py-3">Service</th>
+                    <th className="px-4 py-3">Issue</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-100">
+                  {preview.rows.slice(0, 50).map((row) => (
+                    <tr key={row.rowNumber}>
+                      <td className="px-4 py-3">{row.rowNumber}</td>
+                      <td className="px-4 py-3">
+                        <Badge variant={row.status === "VALID" ? "green" : row.status === "DUPLICATE" ? "yellow" : "red"}>
+                          {row.status}
+                        </Badge>
+                      </td>
+                      <td className="px-4 py-3">{row.normalized.customerFirstName} {row.normalized.customerLastName}</td>
+                      <td className="px-4 py-3">{row.normalized.vehicleYear} {row.normalized.vehicleMake} {row.normalized.vehicleModel}</td>
+                      <td className="px-4 py-3">{row.normalized.serviceName || row.normalized.services}</td>
+                      <td className="px-4 py-3 text-zinc-500">{row.errors[0] || row.duplicateReason || "Ready"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="flex flex-wrap justify-between gap-3">
+              <button
+                onClick={() => downloadCsv("maintiva-import-errors.csv", buildImportErrorCsv(preview.rows))}
+                disabled={preview.summary.failedRows === 0}
+                className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 px-4 py-2 text-sm font-semibold text-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <TableProperties className="h-4 w-4" />
+                Error report
+              </button>
+              <button
+                onClick={confirmImport}
+                disabled={preview.summary.totalRows === 0 || preview.summary.validRows === 0}
+                className="rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {completed ? "Import recorded" : "Confirm import"}
+              </button>
+            </div>
+          </CardContent>
+        </Card>
+      </section>
+
+      <Card>
+        <CardHeader>
+          <h2 className="text-lg font-semibold">Import History</h2>
+        </CardHeader>
+        <CardContent className="overflow-x-auto p-0">
+          <table className="w-full min-w-[760px] text-left text-sm">
+            <thead className="border-b border-zinc-100 bg-zinc-50 text-xs uppercase tracking-wide text-zinc-500">
+              <tr>
+                <th className="px-5 py-3">File</th>
+                <th className="px-5 py-3">Type</th>
+                <th className="px-5 py-3">Status</th>
+                <th className="px-5 py-3">Successful</th>
+                <th className="px-5 py-3">Duplicates</th>
+                <th className="px-5 py-3">Failed</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-zinc-100">
+              {state.importHistory.map((item) => (
+                <tr key={item.id}>
+                  <td className="px-5 py-4 font-medium">{item.fileName}</td>
+                  <td className="px-5 py-4">{item.importType}</td>
+                  <td className="px-5 py-4"><Badge variant={item.status === "COMPLETED" ? "green" : "yellow"}>{item.status}</Badge></td>
+                  <td className="px-5 py-4">{item.successfulRows}</td>
+                  <td className="px-5 py-4">{item.duplicateRows}</td>
+                  <td className="px-5 py-4">{item.failedRows}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}

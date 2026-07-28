@@ -37,7 +37,17 @@ const mutationSchema = z.discriminatedUnion("action", [
       vehicleId: z.string().min(1),
       maintenanceRecordIds: z.array(z.string().min(1)).min(1),
       message: z.string().min(20),
-      channel: z.enum(["SMS", "EMAIL", "CALL"]).optional(),
+      channel: z.enum(["PHONE", "TEXT", "EMAIL", "CALL", "IN_PERSON", "OTHER"]).optional(),
+      responseStatus: z.enum([
+        "NO_RESPONSE",
+        "INTERESTED",
+        "WANTS_CALLBACK",
+        "BOOKED",
+        "DECLINED",
+        "NOT_NOW",
+        "WRONG_CONTACT",
+        "DO_NOT_CONTACT",
+      ]).optional(),
     }),
   }),
   z.object({

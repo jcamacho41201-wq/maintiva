@@ -36,7 +36,10 @@ export function statusVariant(status: string) {
     status === "HEALTHY" ||
     status === "CONFIRMED" ||
     status === "ACTIVE" ||
-    status === "SCHEDULED"
+    status === "SCHEDULED" ||
+    status === "BOOKED" ||
+    status === "COMPLETED" ||
+    status === "INTERESTED"
   ) {
     return "green" as const;
   }
@@ -45,14 +48,24 @@ export function statusVariant(status: string) {
     status === "REQUESTED" ||
     status === "WATCHLIST" ||
     status === "DRAFTED" ||
-    status === "MANUALLY_SENT"
+    status === "MANUALLY_SENT" ||
+    status === "RESPONDED" ||
+    status === "WANTS_CALLBACK" ||
+    status === "PARTIAL"
   ) {
     return "yellow" as const;
   }
-  if (status === "OVERDUE" || status === "NO_RESPONSE" || status === "DUE") {
+  if (
+    status === "OVERDUE" ||
+    status === "NO_RESPONSE" ||
+    status === "DUE" ||
+    status === "DECLINED" ||
+    status === "FAILED" ||
+    status === "DO_NOT_CONTACT"
+  ) {
     return "red" as const;
   }
-  if (status === "PAUSED") {
+  if (status === "PAUSED" || status === "SNOOZED" || status === "NOT_NOW") {
     return "orange" as const;
   }
   return "neutral" as const;

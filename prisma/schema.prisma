@@ -47,13 +47,30 @@ enum OutreachStatus {
   DRAFTED
   MANUALLY_SENT
   SCHEDULED
+  RESPONDED
+  SNOOZED
   DECLINED
+  STOPPED
 }
 
 enum OutreachChannel {
-  SMS
+  PHONE
+  TEXT
   EMAIL
   CALL
+  IN_PERSON
+  OTHER
+}
+
+enum CustomerResponseStatus {
+  NO_RESPONSE
+  INTERESTED
+  WANTS_CALLBACK
+  BOOKED
+  DECLINED
+  NOT_NOW
+  WRONG_CONTACT
+  DO_NOT_CONTACT
 }
 
 enum AppointmentStatus {
@@ -72,6 +89,60 @@ enum AppointmentSource {
   IMPORTED
 }
 
+enum AppointmentAttributionSource {
+  MAINTIVA_OUTREACH
+  MANUAL_SHOP_ENTRY
+  IMPORTED_APPOINTMENT
+  OTHER
+}
+
+enum OpportunitySource {
+  DUE_MAINTENANCE
+  OVERDUE_MAINTENANCE
+  DECLINED_WORK
+  DEFERRED_WORK
+  REACTIVATION
+}
+
+enum OpportunityStage {
+  IDENTIFIED
+  CONTACTED
+  RESPONDED
+  BOOKED
+  COMPLETED
+  LOST
+}
+
+enum OpportunityPriority {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum ImportType {
+  CUSTOMERS
+  VEHICLES
+  SERVICE_HISTORY
+  DECLINED_WORK
+  APPOINTMENTS
+  COMBINED
+}
+
+enum ImportStatus {
+  PREVIEWED
+  COMPLETED
+  PARTIAL
+  FAILED
+}
+
+enum DeclinedWorkStatus {
+  OPEN
+  BOOKED
+  COMPLETED
+  DECLINED
+  SNOOZED
+}
+
 model User {
   id          String           @id
   email       String           @unique
@@ -79,6 +150,8 @@ model User {
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @updatedAt
   memberships ShopMembership[]
+  outreachRecords OutreachRecord[]
+  importHistory ImportHistoryRecord[]
   auditLogs   AuditLog[]
 }
 
@@ -102,9 +175,12 @@ model Shop {
   serviceDefinitions   ServiceDefinition[]
   maintenanceRecords   VehicleMaintenanceRecord[]
   serviceHistoryRecords ServiceHistoryRecord[]
+  declinedWorkRecords  DeclinedWorkRecord[]
+  revenueOpportunities MaintenanceRevenueOpportunity[]
   outreachRecords      OutreachRecord[]
   appointments         Appointment[]
   appointmentServices  AppointmentService[]
+  importHistory        ImportHistoryRecord[]
   auditLogs            AuditLog[]
 
   @@index([status])
@@ -149,6 +225,8 @@ model Customer {
   shop                 Shop                   @relation(fields: [shopId], references: [id], onDelete: Cascade)
   vehicles             Vehicle[]
   serviceHistoryRecords ServiceHistoryRecord[]
+  declinedWorkRecords  DeclinedWorkRecord[]
+  revenueOpportunities MaintenanceRevenueOpportunity[]
   outreachRecords      OutreachRecord[]
   appointments         Appointment[]
 
@@ -180,6 +258,8 @@ model Vehicle {
   customer              Customer                   @relation(fields: [customerId], references: [id], onDelete: Cascade)
   maintenanceRecords    VehicleMaintenanceRecord[]
   serviceHistoryRecords ServiceHistoryRecord[]
+  declinedWorkRecords   DeclinedWorkRecord[]
+  revenueOpportunities  MaintenanceRevenueOpportunity[]
   outreachRecords       OutreachRecord[]
   appointments          Appointment[]
 
@@ -239,6 +319,7 @@ model VehicleMaintenanceRecord {
   appointment                     Appointment?           @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
   serviceHistoryRecords           ServiceHistoryRecord[]
   appointmentServices             AppointmentService[]
+  revenueOpportunities            MaintenanceRevenueOpportunity[]
 
   @@unique([shopId, vehicleId, serviceDefinitionId])
   @@index([shopId, vehicleId, status])
@@ -270,17 +351,79 @@ model ServiceHistoryRecord {
   @@index([shopId, vehicleId, completedAt])
 }
 
+model DeclinedWorkRecord {
+  id                      String             @id @default(cuid())
+  shopId                  String
+  customerId              String
+  vehicleId               String
+  serviceName             String
+  declinedAt              DateTime
+  recommendedPriceCents   Int
+  laborMinutes            Int
+  advisorNotes            String?
+  status                  DeclinedWorkStatus @default(OPEN)
+  outreachStatus          OutreachStatus     @default(NEEDS_OUTREACH)
+  appointmentId           String?
+  createdAt               DateTime           @default(now())
+  updatedAt               DateTime           @updatedAt
+  shop                    Shop               @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  customer                Customer           @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  vehicle                 Vehicle            @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  appointment             Appointment?       @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  revenueOpportunities    MaintenanceRevenueOpportunity[]
+
+  @@index([shopId, status, declinedAt])
+  @@index([shopId, customerId])
+  @@index([shopId, vehicleId])
+}
+
+model MaintenanceRevenueOpportunity {
+  id                    String              @id @default(cuid())
+  shopId                String
+  customerId            String
+  vehicleId             String
+  maintenanceRecordId   String?
+  declinedWorkRecordId  String?
+  source                OpportunitySource
+  stage                 OpportunityStage    @default(IDENTIFIED)
+  priority              OpportunityPriority @default(MEDIUM)
+  explanation           String
+  priorityReason        String
+  estimatedRevenueCents Int
+  estimatedLaborMinutes Int
+  dueDate               DateTime?
+  dueMileage            Int?
+  daysOverdue           Int                 @default(0)
+  milesOverdue          Int                 @default(0)
+  lastActivityAt        DateTime?
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+  shop                  Shop                @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  customer              Customer            @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  vehicle               Vehicle             @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  maintenanceRecord     VehicleMaintenanceRecord? @relation(fields: [maintenanceRecordId], references: [id], onDelete: SetNull)
+  declinedWorkRecord    DeclinedWorkRecord? @relation(fields: [declinedWorkRecordId], references: [id], onDelete: SetNull)
+
+  @@index([shopId, stage, priority])
+  @@index([shopId, source])
+  @@index([shopId, vehicleId])
+}
+
 model OutreachRecord {
   id                    String                     @id @default(cuid())
   shopId                String
   customerId            String
   vehicleId             String
   message               String
-  channel               OutreachChannel            @default(SMS)
+  channel               OutreachChannel            @default(TEXT)
   status                OutreachStatus             @default(DRAFTED)
   copiedAt              DateTime?
   manuallySentAt        DateTime?
   declinedAt            DateTime?
+  responseStatus        CustomerResponseStatus @default(NO_RESPONSE)
+  followUpDate          DateTime?
+  appointmentId         String?
+  performedByUserId     String?
   providerExternalId    String?
   providerPayload       Json?
   createdAt             DateTime                   @default(now())
@@ -288,6 +431,8 @@ model OutreachRecord {
   shop                  Shop                       @relation(fields: [shopId], references: [id], onDelete: Cascade)
   customer              Customer                   @relation(fields: [customerId], references: [id], onDelete: Cascade)
   vehicle               Vehicle                    @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  appointment           Appointment?               @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  performedBy           User?                      @relation(fields: [performedByUserId], references: [id], onDelete: SetNull)
   maintenanceRecords    VehicleMaintenanceRecord[]
 
   @@index([shopId, status, createdAt])
@@ -306,6 +451,11 @@ model Appointment {
   totalLaborMinutes     Int
   totalPriceCents       Int
   source                AppointmentSource          @default(MANUAL)
+  attributionSource     AppointmentAttributionSource @default(MANUAL_SHOP_ENTRY)
+  opportunityId         String?
+  outreachRecordId      String?
+  completedRevenueCents Int?
+  completedLaborMinutes Int?
   notes                 String?
   cancelledAt           DateTime?
   completedAt           DateTime?
@@ -316,6 +466,8 @@ model Appointment {
   vehicle               Vehicle                    @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
   services              AppointmentService[]
   maintenanceRecords    VehicleMaintenanceRecord[]
+  declinedWorkRecords   DeclinedWorkRecord[]
+  outreachRecords       OutreachRecord[]
 
   @@index([shopId, scheduledStart, status])
   @@unique([shopId, vehicleId, scheduledStart])
@@ -353,4 +505,28 @@ model AuditLog {
   actor       User?    @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
 
   @@index([shopId, createdAt])
+}
+
+model ImportHistoryRecord {
+  id             String       @id @default(cuid())
+  shopId         String
+  userId         String?
+  fileName       String
+  importType     ImportType
+  status         ImportStatus @default(COMPLETED)
+  importedAt     DateTime     @default(now())
+  totalRows      Int          @default(0)
+  successfulRows Int          @default(0)
+  duplicateRows  Int          @default(0)
+  updatedRows    Int          @default(0)
+  skippedRows    Int          @default(0)
+  failedRows     Int          @default(0)
+  errorReportUrl String?
+  errorReport    Json?
+  createdAt      DateTime     @default(now())
+  shop           Shop         @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  user           User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([shopId, importedAt])
+  @@index([shopId, importType])
 }
