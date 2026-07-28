@@ -21,14 +21,29 @@ function withPgSslCompatibility(connectionString: string) {
   return connectionString;
 }
 
-export function getDatabaseUrl() {
+export function getDatabaseUrl(options: { preferDirect?: boolean } = {}) {
+  const candidates = options.preferDirect
+    ? [
+        process.env.POSTGRES_URL_NON_POOLING,
+        process.env.POSTGRES_PRISMA_URL,
+        process.env.POSTGRES_URL,
+        process.env.DATABASE_URL,
+      ]
+    : [
+        process.env.DATABASE_URL,
+        process.env.POSTGRES_PRISMA_URL,
+        process.env.POSTGRES_URL_NON_POOLING,
+        process.env.POSTGRES_URL,
+      ];
+
   const connectionString = (
-    process.env.DATABASE_URL ||
-    process.env.POSTGRES_PRISMA_URL ||
-    process.env.POSTGRES_URL_NON_POOLING ||
-    process.env.POSTGRES_URL ||
+    candidates.find((candidate) => Boolean(candidate)) ||
     ""
   );
 
   return withPgSslCompatibility(connectionString);
+}
+
+export function getMigrationDatabaseUrl() {
+  return getDatabaseUrl({ preferDirect: true });
 }

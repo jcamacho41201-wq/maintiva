@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { getDatabaseUrl } from "@/lib/database-url";
+import { getDatabaseUrl, getMigrationDatabaseUrl } from "@/lib/database-url";
 
 const originalEnv = {
   DATABASE_URL: process.env.DATABASE_URL,
@@ -56,5 +56,13 @@ describe("database URL resolution", () => {
     expect(getDatabaseUrl()).toBe(
       "postgresql://user:pass@db.example.test:5432/postgres?sslmode=require&sslrootcert=/ca.pem",
     );
+  });
+
+  it("prefers the non-pooling URL for Prisma migrations", () => {
+    resetDatabaseEnv();
+    process.env.DATABASE_URL = "postgresql://pooled-url";
+    process.env.POSTGRES_URL_NON_POOLING = "postgresql://direct-url";
+
+    expect(getMigrationDatabaseUrl()).toBe("postgresql://direct-url");
   });
 });
