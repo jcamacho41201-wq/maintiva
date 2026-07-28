@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import {
+  type AuthenticatedShopContext,
   AuthRequiredError,
   OnboardingRequiredError,
   TenantAccessError,
@@ -17,6 +18,7 @@ import {
   updatePilotCustomer,
   updatePilotVehicle,
 } from "@/lib/pilot-state";
+import { logPilotMutationFailure } from "@/lib/server-diagnostics";
 import { BrowserShopIdError, rejectBrowserShopId } from "@/lib/tenant-security";
 
 const mutationSchema = z.discriminatedUnion("action", [
@@ -129,10 +131,12 @@ const mutationSchema = z.discriminatedUnion("action", [
 ]);
 
 export async function POST(request: Request) {
+  let context: AuthenticatedShopContext | undefined;
+  let json: unknown;
   try {
-    const context = await getAuthenticatedShopContext();
-    const json = await request.json();
+    json = await request.json();
     rejectBrowserShopId(json);
+    context = await getAuthenticatedShopContext();
     const body = mutationSchema.parse(json);
 
     switch (body.action) {
@@ -164,6 +168,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ state: await buildPilotState(context) });
   } catch (error) {
+    logPilotMutationFailure({ error, context, payload: json });
     if (error instanceof OnboardingRequiredError) {
       return NextResponse.json(
         { code: "ONBOARDING_REQUIRED", message: error.message },

@@ -68,7 +68,7 @@ export default function CustomersPage() {
     return item?.record.serviceName ?? "No services due";
   }
 
-  function submitCustomer(event: FormEvent<HTMLFormElement>) {
+  async function submitCustomer(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!form.firstName.trim() || !form.lastName.trim()) {
       setError("First and last name are required.");
@@ -79,7 +79,12 @@ export default function CustomersPage() {
       return;
     }
 
-    addCustomer(form);
+    const result = await addCustomer(form);
+    if (!result.ok) {
+      setError(result.message ?? "Customer could not be saved. Check the database connection and try again.");
+      return;
+    }
+
     setForm(emptyCustomerForm());
     setAdding(false);
     setError("");

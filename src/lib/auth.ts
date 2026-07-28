@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { createServerClient } from "@supabase/ssr";
 import { prisma } from "@/lib/prisma";
+import { safeDatabaseError } from "@/lib/server-diagnostics";
 
 export type AuthenticatedShopContext = {
   userId: string;
@@ -75,27 +76,46 @@ export async function getAuthenticatedShopContext(): Promise<AuthenticatedShopCo
   const authUser = data.user;
 
   if (error || !authUser?.email) {
+    if (error) {
+      console.error("Maintiva Supabase auth lookup failed", {
+        supabase: safeDatabaseError(error),
+        hasUserId: Boolean(authUser?.id),
+        hasEmail: Boolean(authUser?.email),
+      });
+    }
     throw new AuthRequiredError();
   }
 
-  const membership = await prisma.shopMembership.findFirst({
-    where: {
-      userId: authUser.id,
-      isActive: true,
-      shop: {
-        status: {
-          in: ["ONBOARDING", "ACTIVE"],
+  let membership;
+  try {
+    membership = await prisma.shopMembership.findFirst({
+      where: {
+        userId: authUser.id,
+        isActive: true,
+        shop: {
+          status: {
+            in: ["ONBOARDING", "ACTIVE"],
+          },
         },
       },
-    },
-    include: {
-      shop: true,
-      user: true,
-    },
-    orderBy: {
-      createdAt: "asc",
-    },
-  });
+      include: {
+        shop: true,
+        user: true,
+      },
+      orderBy: {
+        createdAt: "asc",
+      },
+    });
+  } catch (error) {
+    console.error("Maintiva shop membership lookup failed", {
+      auth: {
+        userId: authUser.id,
+        hasEmail: Boolean(authUser.email),
+      },
+      database: safeDatabaseError(error),
+    });
+    throw error;
+  }
 
   if (!membership) {
     throw new OnboardingRequiredError(authUser.id, authUser.email);

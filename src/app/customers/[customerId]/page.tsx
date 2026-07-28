@@ -75,12 +75,17 @@ export default function CustomerDetailPage() {
   const appointments = state.appointments.filter((appointment) => appointment.customerId === customer.id);
   const outreach = state.outreachRecords.filter((record) => record.customerId === customer.id);
 
-  function saveCustomer(input: ReturnType<typeof editableCustomerFields>) {
+  async function saveCustomer(input: ReturnType<typeof editableCustomerFields>) {
     if (!input.firstName.trim() || !input.lastName.trim()) {
       setError("First and last name are required.");
       return;
     }
-    store.updateCustomer(customerId, input);
+    const result = await store.updateCustomer(customerId, input);
+    if (!result.ok) {
+      setError(result.message ?? "Customer could not be saved. Check the database connection and try again.");
+      return;
+    }
+
     setEditingCustomer(false);
     setError("");
   }
@@ -309,7 +314,7 @@ function CustomerEditModal({
 }: {
   customer: Customer;
   onClose: () => void;
-  onSave: (input: ReturnType<typeof editableCustomerFields>) => void;
+  onSave: (input: ReturnType<typeof editableCustomerFields>) => Promise<void>;
 }) {
   const [form, setForm] = useState(editableCustomerFields(customer));
 
@@ -336,7 +341,7 @@ function CustomerEditModal({
         </div>
         <div className="flex justify-end gap-2 border-t border-zinc-100 p-5">
           <button onClick={onClose} className="rounded-lg border border-zinc-200 px-4 py-2 text-sm font-semibold">Cancel</button>
-          <button onClick={() => onSave(form)} className="rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white">Save changes</button>
+          <button onClick={() => void onSave(form)} className="rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white">Save changes</button>
         </div>
       </div>
     </div>

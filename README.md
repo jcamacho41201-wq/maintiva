@@ -85,6 +85,8 @@ Required environment variables:
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 - `APP_URL`
 
+When using the Vercel Supabase integration, `POSTGRES_PRISMA_URL` may be provided instead of `DATABASE_URL`; Maintiva will use it for Prisma server-side database writes and normalize Supabase `sslmode=require` URLs to libpq-compatible TLS semantics.
+
 Optional:
 
 - `SUPPORT_EMAIL`

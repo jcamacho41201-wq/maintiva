@@ -26,6 +26,7 @@ const storageKey = "maintiva-demo-state-v2";
 const changeEvent = "maintiva-demo-state";
 let cachedState: DemoState | undefined;
 const serverSnapshot = createInitialDemoState();
+export type MutationResult = { ok: boolean; message?: string };
 
 function getServerSnapshot() {
   return serverSnapshot;
@@ -110,7 +111,7 @@ async function hydratePilotState() {
   saveState(data.state);
 }
 
-export async function mutatePilotState(body: unknown): Promise<{ ok: boolean; message?: string }> {
+export async function mutatePilotState(body: unknown): Promise<MutationResult> {
   if (shouldUseLocalDemoPersistence()) return { ok: true };
 
   try {
@@ -183,7 +184,10 @@ export function useDemoStore() {
         saveState(createInitialDemoState());
       },
       addCustomer(input: Omit<Customer, "id" | "shopId" | "customerScore" | "lifetimeRevenueCents" | "lastVisit">) {
-        void mutatePilotState({ action: "addCustomer", payload: input });
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "addCustomer", payload: input });
+        }
+
         update((draft) => ({
           ...draft,
           customers: [
@@ -198,15 +202,20 @@ export function useDemoStore() {
             },
           ],
         }));
+        return Promise.resolve({ ok: true, message: undefined });
       },
       updateCustomer(customerId: string, input: Partial<Customer>) {
-        void mutatePilotState({ action: "updateCustomer", id: customerId, payload: input });
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "updateCustomer", id: customerId, payload: input });
+        }
+
         update((draft) => ({
           ...draft,
           customers: draft.customers.map((customer) =>
             customer.id === customerId ? { ...customer, ...input } : customer,
           ),
         }));
+        return Promise.resolve({ ok: true, message: undefined });
       },
       addVehicle(input: Omit<Vehicle, "id" | "shopId" | "overallHealth" | "lastServiceDate" | "vehicleType">) {
         void mutatePilotState({ action: "addVehicle", payload: input });
