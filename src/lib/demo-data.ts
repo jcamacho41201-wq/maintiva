@@ -37,6 +37,8 @@ export type AppointmentStatus =
   | "COMPLETED"
   | "CANCELLED"
   | "NO_SHOW";
+export type TimeIntervalUnit = "DAYS" | "MONTHS" | "YEARS";
+export type OutreachThresholdType = "MILES_BEFORE_DUE" | "DAYS_BEFORE_DUE" | "PERCENT_REMAINING";
 
 export type Shop = {
   id: string;
@@ -103,8 +105,10 @@ export type MaintenanceService = {
   shopId: string;
   name: string;
   category: string;
-  defaultMileageInterval: number;
-  defaultTimeIntervalMonths: number;
+  defaultMileageInterval: number | null;
+  defaultTimeIntervalMonths?: number | null;
+  defaultTimeIntervalValue: number | null;
+  defaultTimeIntervalUnit: TimeIntervalUnit;
   defaultNotificationThreshold: number;
   estimatedLaborMinutes: number;
   defaultPriceCents: number;
@@ -116,18 +120,31 @@ export type VehicleMaintenanceRecord = {
   id: string;
   shopId: string;
   vehicleId: string;
-  serviceId: string;
+  serviceId?: string | null;
   serviceName: string;
+  customServiceName?: string;
+  customCategory?: string;
   lastCompletedDate: string;
   lastCompletedMileage: number;
-  recommendedMileageInterval: number;
-  recommendedTimeIntervalMonths: number;
+  recommendedMileageInterval?: number | null;
+  recommendedTimeIntervalMonths?: number | null;
+  mileageIntervalOverride?: number | null;
+  timeIntervalValueOverride?: number | null;
+  timeIntervalUnitOverride?: TimeIntervalUnit | null;
   priceCents: number;
   laborHours: number;
+  priceOverrideCents?: number | null;
+  laborMinutesOverride?: number | null;
   notificationThreshold: number;
+  outreachThresholdType?: OutreachThresholdType;
+  outreachThresholdValue?: number;
   outreachStatus: OutreachStatus;
   outreachRecordId?: string;
   appointmentId?: string;
+  isActive?: boolean;
+  notes?: string;
+  createdByUserId?: string;
+  updatedByUserId?: string;
 };
 
 export type ServiceRecord = {
@@ -295,6 +312,8 @@ export const serviceDefinitions: MaintenanceService[] = serviceSeed.map(
     category,
     defaultMileageInterval,
     defaultTimeIntervalMonths,
+    defaultTimeIntervalValue: defaultTimeIntervalMonths,
+    defaultTimeIntervalUnit: "MONTHS",
     defaultNotificationThreshold,
     estimatedLaborMinutes,
     defaultPriceCents,
@@ -456,10 +475,18 @@ function maintenanceRecord(
     lastCompletedMileage,
     recommendedMileageInterval: service.defaultMileageInterval,
     recommendedTimeIntervalMonths: service.defaultTimeIntervalMonths,
+    mileageIntervalOverride: null,
+    timeIntervalValueOverride: null,
+    timeIntervalUnitOverride: null,
     priceCents: service.defaultPriceCents,
     laborHours: service.estimatedLaborMinutes / 60,
+    priceOverrideCents: null,
+    laborMinutesOverride: null,
     notificationThreshold: service.defaultNotificationThreshold,
+    outreachThresholdType: "MILES_BEFORE_DUE",
+    outreachThresholdValue: 500,
     outreachStatus: "NEEDS_OUTREACH",
+    isActive: true,
     ...overrides,
   };
 }

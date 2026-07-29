@@ -9,14 +9,21 @@ import {
 } from "@/lib/auth";
 import {
   addPilotCustomer,
+  addPilotMaintenanceItem,
+  addPilotServiceDefinition,
   addPilotVehicle,
   bookPilotAppointment,
   buildPilotState,
   completePilotAppointment,
+  deactivatePilotMaintenanceItem,
   importPilotCsvRows,
+  markPilotMaintenanceServiceComplete,
   markPilotOutreachManuallySent,
+  updatePilotMaintenanceItem,
   updatePilotCustomer,
+  updatePilotServiceDefinition,
   updatePilotVehicle,
+  updatePilotVehicleMileage,
 } from "@/lib/pilot-state";
 import { logPilotMutationFailure } from "@/lib/server-diagnostics";
 import { BrowserShopIdError, rejectBrowserShopId } from "@/lib/tenant-security";
@@ -34,6 +41,24 @@ const mutationSchema = z.discriminatedUnion("action", [
     id: z.string().min(1),
     payload: z.unknown(),
   }),
+  z.object({ action: z.literal("addServiceDefinition"), payload: z.unknown() }),
+  z.object({
+    action: z.literal("updateServiceDefinition"),
+    id: z.string().min(1),
+    payload: z.unknown(),
+  }),
+  z.object({ action: z.literal("addMaintenanceItem"), payload: z.unknown() }),
+  z.object({
+    action: z.literal("updateMaintenanceItem"),
+    id: z.string().min(1),
+    payload: z.unknown(),
+  }),
+  z.object({
+    action: z.literal("deactivateMaintenanceItem"),
+    id: z.string().min(1),
+  }),
+  z.object({ action: z.literal("markMaintenanceServiceComplete"), payload: z.unknown() }),
+  z.object({ action: z.literal("updateVehicleMileage"), payload: z.unknown() }),
   z.object({
     action: z.literal("markOutreachManuallySent"),
     payload: z.object({
@@ -151,6 +176,27 @@ export async function POST(request: Request) {
         break;
       case "updateVehicle":
         await updatePilotVehicle(context, body.id, body.payload);
+        break;
+      case "addServiceDefinition":
+        await addPilotServiceDefinition(context, body.payload);
+        break;
+      case "updateServiceDefinition":
+        await updatePilotServiceDefinition(context, body.id, body.payload);
+        break;
+      case "addMaintenanceItem":
+        await addPilotMaintenanceItem(context, body.payload);
+        break;
+      case "updateMaintenanceItem":
+        await updatePilotMaintenanceItem(context, body.id, body.payload);
+        break;
+      case "deactivateMaintenanceItem":
+        await deactivatePilotMaintenanceItem(context, body.id);
+        break;
+      case "markMaintenanceServiceComplete":
+        await markPilotMaintenanceServiceComplete(context, body.payload);
+        break;
+      case "updateVehicleMileage":
+        await updatePilotVehicleMileage(context, body.payload);
         break;
       case "markOutreachManuallySent":
         await markPilotOutreachManuallySent(context, body.payload);
