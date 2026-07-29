@@ -8,12 +8,7 @@ import {
   type Vehicle,
   type VehicleMaintenanceRecord,
 } from "@/lib/demo-data";
-
-const dayMs = 86_400_000;
-
-function monthsBetween(start: string, end: Date) {
-  return Math.max(0, (end.getTime() - new Date(start).getTime()) / dayMs / 30.4375);
-}
+import { resolveMaintenanceInterval } from "@/lib/service-intervals";
 
 function addHours(date: Date, hours: number) {
   return new Date(date.getTime() + hours * 60 * 60 * 1000);
@@ -32,47 +27,22 @@ export function calculateMaintenanceStatus(
   record: VehicleMaintenanceRecord,
   vehicle: Vehicle,
   asOf: Date = asOfDate,
+  state?: DemoState,
 ) {
-  const milesUntilDue =
-    record.lastCompletedMileage +
-    record.recommendedMileageInterval -
-    vehicle.currentMileage;
-  const elapsedMonths = monthsBetween(record.lastCompletedDate, asOf);
-  const monthsUntilDue = record.recommendedTimeIntervalMonths - elapsedMonths;
-  const daysUntilDue = Math.round(monthsUntilDue * 30.4375);
-  const mileageLife =
-    100 -
-    ((vehicle.currentMileage - record.lastCompletedMileage) /
-      record.recommendedMileageInterval) *
-      100;
-  const timeLife =
-    100 -
-    (elapsedMonths / record.recommendedTimeIntervalMonths) * 100;
-  const lifeRemaining = Math.max(0, Math.round(Math.min(mileageLife, timeLife)));
-
-  let status: MaintenanceStatus = "HEALTHY";
-  let dueText = `${lifeRemaining}% life remaining`;
-
-  if (milesUntilDue < 0 || daysUntilDue < 0) {
-    status = "OVERDUE";
-    dueText =
-      milesUntilDue < 0
-        ? `Overdue by ${Math.abs(Math.round(milesUntilDue)).toLocaleString()} miles`
-        : `Overdue by ${Math.abs(daysUntilDue).toLocaleString()} days`;
-  } else if (milesUntilDue <= 500 || daysUntilDue <= 7) {
-    status = "DUE";
-    dueText = milesUntilDue <= 0 ? "Due now" : `Due in ${Math.round(milesUntilDue).toLocaleString()} miles`;
-  } else if (milesUntilDue <= 1500 || daysUntilDue <= 45 || lifeRemaining <= 25) {
-    status = "DUE_SOON";
-    dueText = `Due in ${Math.round(milesUntilDue).toLocaleString()} miles`;
-  }
+  const service = state?.services.find((item) => item.id === record.serviceId);
+  const effective = resolveMaintenanceInterval({ record, service, vehicle, asOf });
 
   return {
-    status,
-    dueText,
-    lifeRemaining,
-    milesUntilDue: Math.round(milesUntilDue),
-    daysUntilDue,
+    status: effective.status === "NOT_ENOUGH_HISTORY" ? "HEALTHY" as MaintenanceStatus : effective.status,
+    displayStatus: effective.status,
+    dueText: effective.dueText,
+    lifeRemaining: effective.lifeRemaining,
+    milesUntilDue: effective.milesUntilDue ?? 0,
+    daysUntilDue: effective.daysUntilDue ?? 0,
+    nextDueMileage: effective.nextDueMileage,
+    nextDueDate: effective.nextDueDate,
+    sourceLabel: effective.sourceLabel,
+    thresholdCause: effective.thresholdCause,
   };
 }
 
@@ -88,12 +58,13 @@ export function getRecordStatus(state: DemoState, record: VehicleMaintenanceReco
     };
   }
 
-  return calculateMaintenanceStatus(record, vehicle);
+  return calculateMaintenanceStatus(record, vehicle, asOfDate, state);
 }
 
 export function getRecommendedRecords(state: DemoState, vehicleId?: string) {
   return state.maintenanceRecords
     .filter((record) => !vehicleId || record.vehicleId === vehicleId)
+    .filter((record) => record.isActive !== false)
     .map((record) => ({ record, calculation: getRecordStatus(state, record) }))
     .filter(({ calculation }) => calculation.status !== "HEALTHY")
     .sort((a, b) => a.calculation.lifeRemaining - b.calculation.lifeRemaining);

@@ -7,6 +7,11 @@ const migrationPath = path.join(
   "supabase/migrations/20260728173000_initial_maintiva_schema.sql",
 );
 const migrationSql = fs.readFileSync(migrationPath, "utf8");
+const intervalMigrationPath = path.join(
+  process.cwd(),
+  "supabase/migrations/20260728223000_vehicle_service_intervals.sql",
+);
+const intervalMigrationSql = fs.readFileSync(intervalMigrationPath, "utf8");
 
 describe("Supabase production schema migration", () => {
   it("creates the app tables used for shop creation, membership, customers, vehicles, imports, and customer queries", () => {
@@ -80,5 +85,26 @@ describe("Supabase production schema migration", () => {
     expect(migrationSql).toContain("maintiva_handle_new_auth_user");
     expect(migrationSql).toContain("AFTER INSERT ON auth.users");
     expect(migrationSql).toContain("maintiva_set_updated_at");
+  });
+
+  it("adds editable service defaults and vehicle-specific interval overrides without loosening RLS", () => {
+    [
+      'CREATE TYPE "TimeIntervalUnit"',
+      'CREATE TYPE "OutreachThresholdType"',
+      'ALTER COLUMN "serviceDefinitionId" DROP NOT NULL',
+      'ADD COLUMN "customServiceName" TEXT',
+      'ADD COLUMN "mileageIntervalOverride" INTEGER',
+      'ADD COLUMN "timeIntervalValueOverride" INTEGER',
+      'ADD COLUMN "outreachThresholdType" "OutreachThresholdType" NOT NULL DEFAULT \'MILES_BEFORE_DUE\'',
+      'ADD COLUMN "isActive" BOOLEAN NOT NULL DEFAULT true',
+      'VehicleMaintenanceRecord_active_service_definition_key',
+      'ON DELETE SET NULL',
+    ].forEach((identifier) => {
+      expect(intervalMigrationSql).toContain(identifier);
+    });
+
+    expect(intervalMigrationSql).not.toContain("DISABLE ROW LEVEL SECURITY");
+    expect(intervalMigrationSql).not.toContain("WITH CHECK (true)");
+    expect(intervalMigrationSql).not.toContain("USING (true)");
   });
 });
