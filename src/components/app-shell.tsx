@@ -30,6 +30,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const showDemoReset = process.env.NEXT_PUBLIC_MAINTIVA_ENABLE_DEMO_RESET === "true";
   const authConfigured = isBrowserSupabaseConfigured();
   const canResetLocalDemo = state.shop.isDemo && !authConfigured && showDemoReset;
+  const currentUser = state.users.find((user) => user.id === state.currentUserId) ?? state.users[0];
   const firstVehicleHref = state.vehicles[0] ? `/vehicles/${state.vehicles[0].id}` : "/customers";
   const navItems = [
     { href: "/", activeHref: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -101,8 +102,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </nav>
         <div className="border-t border-zinc-100 p-4">
           <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-3">
-            <p className="text-sm font-semibold">{state.users[0]?.name ?? (ready ? "Team member" : "Loading user")}</p>
-            <p className="text-xs text-zinc-500">{state.users[0]?.role ?? ""}</p>
+            <p className="text-sm font-semibold">{currentUser?.name ?? (ready ? "Team member" : "Loading user")}</p>
+            <p className="text-xs text-zinc-500">{currentUser?.role ?? ""}</p>
           </div>
         </div>
       </aside>

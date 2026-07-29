@@ -296,6 +296,7 @@ export type Appointment = {
 
 export type DemoState = {
   shop: Shop;
+  currentUserId?: string;
   users: User[];
   customers: Customer[];
   vehicles: Vehicle[];
@@ -853,6 +854,7 @@ export const drivingProfiles: VehicleDrivingProfile[] = vehicles.map((vehicle) =
 
 export const initialDemoState: DemoState = {
   shop: demoShop,
+  currentUserId: "user-owner",
   users: demoUsers,
   customers,
   vehicles,

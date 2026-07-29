@@ -43,6 +43,7 @@ const authenticatedLoadingSnapshot: DemoState = {
     isDemo: false,
     onboardingCompletedAt: null,
   },
+  currentUserId: undefined,
   users: [],
   customers: [],
   vehicles: [],
@@ -99,6 +100,7 @@ function normalizeState(state: DemoState): DemoState {
   return {
     ...baseline,
     ...state,
+    currentUserId: state.currentUserId ?? state.users?.[0]?.id ?? baseline.currentUserId,
     services,
     mileageReadings: state.mileageReadings ?? baseline.mileageReadings,
     drivingProfiles: state.drivingProfiles ?? baseline.drivingProfiles,
@@ -128,6 +130,10 @@ function normalizeState(state: DemoState): DemoState {
       ),
     })),
   };
+}
+
+function actorUserId(draft: DemoState) {
+  return draft.currentUserId ?? draft.users[0]?.id;
 }
 
 export function shouldUseLocalDemoPersistence() {
@@ -409,7 +415,7 @@ export function useDemoStore() {
                 verificationStatus: "VERIFIED" as const,
                 anomalyStatus: "NONE" as const,
                 includedInForecast: true,
-                recordedByUserId: draft.users[0]?.id,
+                recordedByUserId: actorUserId(draft),
                 createdAt: new Date().toISOString(),
               },
             ],
@@ -442,7 +448,7 @@ export function useDemoStore() {
                       verificationStatus: "VERIFIED",
                       anomalyStatus: "NONE",
                       includedInForecast: true,
-                      recordedByUserId: draft.users[0]?.id,
+                      recordedByUserId: actorUserId(draft),
                       createdAt: new Date().toISOString(),
                     },
                   ],
@@ -580,8 +586,8 @@ export function useDemoStore() {
                 outreachStatus: "NEEDS_OUTREACH",
                 isActive: true,
                 notes: input.notes,
-                createdByUserId: draft.users[0]?.id,
-                updatedByUserId: draft.users[0]?.id,
+                createdByUserId: actorUserId(draft),
+                updatedByUserId: actorUserId(draft),
               },
             ],
           };
@@ -619,7 +625,7 @@ export function useDemoStore() {
               outreachThresholdType: input.outreachThresholdType ?? record.outreachThresholdType,
               outreachThresholdValue: input.outreachThresholdValue ?? record.outreachThresholdValue,
               notes: input.notes ?? record.notes,
-              updatedByUserId: draft.users[0]?.id,
+              updatedByUserId: actorUserId(draft),
             };
           }),
         }));
@@ -634,7 +640,7 @@ export function useDemoStore() {
           ...draft,
           maintenanceRecords: draft.maintenanceRecords.map((record) =>
             record.id === recordId
-              ? { ...record, isActive: false, outreachStatus: "STOPPED", updatedByUserId: draft.users[0]?.id }
+              ? { ...record, isActive: false, outreachStatus: "STOPPED", updatedByUserId: actorUserId(draft) }
               : record,
           ),
         }));
@@ -676,7 +682,7 @@ export function useDemoStore() {
                 anomalyStatus: "NONE" as const,
                 includedInForecast: true,
                 sourceReferenceType: "ServiceHistoryRecord",
-                recordedByUserId: draft.users[0]?.id,
+                recordedByUserId: actorUserId(draft),
               },
             ],
             serviceRecords: [
@@ -703,7 +709,7 @@ export function useDemoStore() {
                     laborHours: input.finalLaborMinutes / 60,
                     outreachStatus: "NEEDS_OUTREACH" as const,
                     appointmentId: undefined,
-                    updatedByUserId: draft.users[0]?.id,
+                    updatedByUserId: actorUserId(draft),
                   }
                 : item,
             ),
@@ -716,6 +722,9 @@ export function useDemoStore() {
         vehicleId: string;
         currentMileage: number;
         readingDate: string;
+        source?: VehicleMileageReading["source"];
+        verificationStatus?: VehicleMileageReading["verificationStatus"];
+        notes?: string;
         allowLowerCorrection?: boolean;
         correctionReason?: string;
       }) {
@@ -748,12 +757,13 @@ export function useDemoStore() {
                 vehicleId: input.vehicleId,
                 readingMileage: input.currentMileage,
                 readingDate: input.readingDate,
-                source: input.allowLowerCorrection ? "CORRECTION" as const : "SHOP_MANUAL_ENTRY" as const,
-                verificationStatus: "VERIFIED" as const,
+                source: input.allowLowerCorrection ? "CORRECTION" as const : input.source ?? "SHOP_MANUAL_ENTRY" as const,
+                verificationStatus: input.verificationStatus ?? "VERIFIED" as const,
                 anomalyStatus: input.allowLowerCorrection ? "RESOLVED" as const : "NONE" as const,
                 includedInForecast: true,
                 correctionReason: input.correctionReason,
-                recordedByUserId: draft.users[0]?.id,
+                reviewNotes: input.notes,
+                recordedByUserId: actorUserId(draft),
                 createdAt: new Date().toISOString(),
               },
             ],
@@ -777,11 +787,18 @@ export function useDemoStore() {
         }, input.vehicleId, {
           customerReportedAnnualMileage: input.annualMileage,
           customerReportedAt: new Date().toISOString(),
-          customerReportedByUserId: draft.users[0]?.id,
+          customerReportedByUserId: actorUserId(draft),
         }));
         return Promise.resolve({ ok: true, message: undefined });
       },
-      setManualMileageOverride(input: { vehicleId: string; annualMileage: number; reason: string; notes?: string }) {
+      setManualMileageOverride(input: {
+        vehicleId: string;
+        annualMileage: number;
+        reason: string;
+        notes?: string;
+        reviewCondition?: string;
+        reviewDate?: string;
+      }) {
         if (!shouldUseLocalDemoPersistence()) {
           return mutatePilotState({ action: "setManualMileageOverride", payload: input });
         }
@@ -789,9 +806,11 @@ export function useDemoStore() {
         update((draft) => upsertLocalDrivingProfile(draft, input.vehicleId, {
           manualAnnualMileageOverride: input.annualMileage,
           manualOverrideReason: input.reason,
-          manualOverrideNotes: input.notes ?? null,
+          manualOverrideNotes: [input.notes, input.reviewCondition ? `Review: ${input.reviewCondition}` : "", input.reviewDate ? `Review date: ${input.reviewDate}` : ""]
+            .filter(Boolean)
+            .join("\n") || null,
           manualOverrideSetAt: new Date().toISOString(),
-          manualOverrideSetByUserId: draft.users[0]?.id,
+          manualOverrideSetByUserId: actorUserId(draft),
         }));
         return Promise.resolve({ ok: true, message: undefined });
       },
@@ -873,7 +892,7 @@ export function useDemoStore() {
                 copiedAt: new Date().toISOString(),
                 manuallySentAt: new Date().toISOString(),
                 responseStatus: input.responseStatus ?? "NO_RESPONSE",
-                performedByUserId: draft.users[0]?.id,
+                performedByUserId: actorUserId(draft),
                 status: "MANUALLY_SENT",
               },
             ],
@@ -898,7 +917,7 @@ export function useDemoStore() {
               ...input,
               id: `import-${Date.now()}`,
               shopId: draft.shop.id,
-              userId: draft.users[0]?.id ?? "user-owner",
+              userId: actorUserId(draft) ?? "user-owner",
               importedAt: new Date().toISOString(),
             },
             ...draft.importHistory,
@@ -1050,8 +1069,8 @@ export function useDemoStore() {
               outreachThresholdValue: 500,
               outreachStatus: "NEEDS_OUTREACH",
               isActive: true,
-              createdByUserId: draft.users[0]?.id,
-              updatedByUserId: draft.users[0]?.id,
+              createdByUserId: actorUserId(draft),
+              updatedByUserId: actorUserId(draft),
             });
             if (text(normalized.serviceDate)) {
               if (numeric(normalized.serviceMileage) > 0 && numeric(normalized.serviceMileage) !== numeric(normalized.currentMileage)) {
@@ -1132,7 +1151,7 @@ export function useDemoStore() {
               {
                 id: `import-${Date.now()}`,
                 shopId: draft.shop.id,
-                userId: draft.users[0]?.id ?? "user-owner",
+                userId: actorUserId(draft) ?? "user-owner",
                 fileName: input.fileName,
                 importType: input.importType,
                 status: summary.failedRows > 0 ? "PARTIAL" : "COMPLETED",

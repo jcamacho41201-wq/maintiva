@@ -60,14 +60,55 @@ function compactLabel(value: string) {
 
 function sourceLabel(value: VehicleDrivingProfile["estimateSource"]) {
   const labels: Record<VehicleDrivingProfile["estimateSource"], string> = {
-    SHOP_VERIFIED_READINGS: "Verified shop readings",
-    IMPORTED_READINGS: "Imported readings",
+    SHOP_VERIFIED_READINGS: "Based on verified readings",
+    IMPORTED_READINGS: "Imported service history",
     CUSTOMER_REPORTED: "Customer reported",
-    VERIFIED_PLUS_DEFAULT: "One reading + shop default",
-    SHOP_DEFAULT: "Shop default",
-    MANUAL_OVERRIDE: "Manual override",
+    VERIFIED_PLUS_DEFAULT: "One verified reading + shop default",
+    SHOP_DEFAULT: "Maintiva default",
+    MANUAL_OVERRIDE: "Temporary shop estimate",
   };
   return labels[value];
+}
+
+function canManageDrivingEstimates(role?: User["role"]) {
+  return role === "OWNER" || role === "MANAGER";
+}
+
+function readableReviewCondition(value: string) {
+  const labels: Record<string, string> = {
+    AFTER_2_VERIFIED_READINGS: "After two verified readings",
+    NEXT_SERVICE_VISIT: "At next service visit",
+    ON_REVIEW_DATE: "On review date",
+  };
+  return labels[value] ?? value;
+}
+
+function mileageHistoryStats(readings: VehicleMileageReading[]) {
+  const usable = readings
+    .filter((reading) =>
+      reading.includedInForecast &&
+      reading.anomalyStatus !== "NEEDS_REVIEW" &&
+      reading.verificationStatus !== "EXCLUDED",
+    )
+    .sort((a, b) => a.readingDate.localeCompare(b.readingDate));
+  const verified = usable.filter((reading) => reading.verificationStatus === "VERIFIED");
+  const first = usable[0];
+  const latest = usable.at(-1);
+  const daysCovered = first && latest
+    ? Math.max(0, (new Date(`${latest.readingDate}T12:00:00Z`).getTime() - new Date(`${first.readingDate}T12:00:00Z`).getTime()) / 86_400_000)
+    : 0;
+  const recent = usable.slice(-3);
+  const trend = recent.length >= 2
+    ? Math.round(((recent.at(-1)!.readingMileage - recent[0].readingMileage) / Math.max(1, (new Date(`${recent.at(-1)!.readingDate}T12:00:00Z`).getTime() - new Date(`${recent[0].readingDate}T12:00:00Z`).getTime()) / 86_400_000)) * 365)
+    : null;
+
+  return {
+    latest,
+    verifiedCount: verified.length,
+    daysCovered,
+    trend,
+    periodLabel: daysCovered > 0 ? `${Math.round(daysCovered).toLocaleString()} days` : "Not enough history",
+  };
 }
 
 function parseOptionalInt(value: string) {
@@ -191,6 +232,9 @@ function MileageModal({
   const today = currentDateInTimeZone(shopTimezone);
   const [mileage, setMileage] = useState((initialMileage ?? vehicle.currentMileage).toString());
   const [readingDate, setReadingDate] = useState(initialReadingDate ?? today);
+  const [source, setSource] = useState<VehicleMileageReading["source"]>(initialMileage ? "CORRECTION" : "SHOP_MANUAL_ENTRY");
+  const [verificationStatus, setVerificationStatus] = useState<VehicleMileageReading["verificationStatus"]>("VERIFIED");
+  const [notes, setNotes] = useState("");
   const [allowLower, setAllowLower] = useState(false);
   const [reason, setReason] = useState("");
   const [error, setError] = useState("");
@@ -221,11 +265,14 @@ function MileageModal({
       vehicleId: vehicle.id,
       currentMileage,
       readingDate,
+      source,
+      verificationStatus,
+      notes: notes.trim() || undefined,
       allowLowerCorrection: allowLower,
       correctionReason: reason.trim() || undefined,
     });
     if (!result.ok) {
-      setError(result.message ?? "Unable to update mileage.");
+      setError(result.message ?? "Unable to add odometer reading.");
       return;
     }
     onClose();
@@ -235,14 +282,19 @@ function MileageModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
       <form onSubmit={submit} className="w-full max-w-md rounded-lg bg-white shadow-xl">
         <div className="flex items-center justify-between border-b border-zinc-100 p-5">
-          <h2 className="text-lg font-semibold">Update mileage</h2>
+          <div>
+            <h2 className="text-lg font-semibold">Add Odometer Reading</h2>
+            <p className="mt-1 text-sm text-zinc-500">
+              Records a dated odometer reading and updates the vehicle&apos;s driving profile.
+            </p>
+          </div>
           <button type="button" onClick={onClose} className="rounded-lg border border-zinc-200 p-2">
             <X className="h-4 w-4" />
           </button>
         </div>
         <div className="space-y-4 p-5">
           <label className="space-y-1 text-sm">
-            <span className="font-medium">Current mileage</span>
+            <span className="font-medium">Mileage</span>
             <input
               type="number"
               min="0"
@@ -262,6 +314,41 @@ function MileageModal({
               className="w-full rounded-lg border border-zinc-200 px-3 py-2"
             />
             <span className="block text-xs text-zinc-500">The date this odometer reading was observed.</span>
+          </label>
+          <label className="space-y-1 text-sm">
+            <span className="font-medium">Source</span>
+            <select
+              value={source}
+              onChange={(event) => setSource(event.target.value as VehicleMileageReading["source"])}
+              className="w-full rounded-lg border border-zinc-200 px-3 py-2"
+            >
+              <option value="SHOP_MANUAL_ENTRY">Shop manual entry</option>
+              <option value="SHOP_REPAIR_ORDER">Shop repair order</option>
+              <option value="APPOINTMENT_INTAKE">Appointment intake</option>
+              <option value="CUSTOMER_REPORTED">Customer reported</option>
+              <option value="CORRECTION">Correction</option>
+              <option value="OTHER">Other</option>
+            </select>
+          </label>
+          <label className="space-y-1 text-sm">
+            <span className="font-medium">Verification status</span>
+            <select
+              value={verificationStatus}
+              onChange={(event) => setVerificationStatus(event.target.value as VehicleMileageReading["verificationStatus"])}
+              className="w-full rounded-lg border border-zinc-200 px-3 py-2"
+            >
+              <option value="VERIFIED">Verified</option>
+              <option value="CUSTOMER_REPORTED">Customer reported</option>
+              <option value="UNVERIFIED">Unverified</option>
+            </select>
+          </label>
+          <label className="space-y-1 text-sm">
+            <span className="font-medium">Optional notes</span>
+            <textarea
+              value={notes}
+              onChange={(event) => setNotes(event.target.value)}
+              className="min-h-20 w-full rounded-lg border border-zinc-200 px-3 py-2"
+            />
           </label>
           {warnings.length > 0 && (
             <div className="rounded-lg border border-yellow-200 bg-yellow-50 p-3 text-sm text-yellow-900">
@@ -297,7 +384,7 @@ function MileageModal({
           </button>
           <button className="inline-flex items-center gap-2 rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white">
             <Save className="h-4 w-4" />
-            Save
+            Add Odometer Reading
           </button>
         </div>
       </form>
@@ -310,15 +397,22 @@ function DrivingProfilePanel({
   profile,
   readings,
   users,
+  currentUserId,
   shopTimezone,
+  shopDefaultAnnualMileage,
 }: {
   vehicle: Vehicle;
   profile: VehicleDrivingProfile;
   readings: VehicleMileageReading[];
   users: User[];
+  currentUserId?: string;
   shopTimezone: string;
+  shopDefaultAnnualMileage: number;
 }) {
   const store = useDemoStore();
+  const usersById = useMemo(() => new Map(users.map((user) => [user.id, user])), [users]);
+  const currentUser = usersById.get(currentUserId ?? "") ?? users[0];
+  const canEditDrivingEstimates = canManageDrivingEstimates(currentUser?.role);
   const sortedReadings = [...readings].sort((a, b) =>
     b.readingDate.localeCompare(a.readingDate) ||
     String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? "")),
@@ -327,12 +421,31 @@ function DrivingProfilePanel({
   const [overrideMileage, setOverrideMileage] = useState((profile.manualAnnualMileageOverride ?? "").toString());
   const [overrideReason, setOverrideReason] = useState(profile.manualOverrideReason ?? "");
   const [overrideNotes, setOverrideNotes] = useState(profile.manualOverrideNotes ?? "");
+  const [reviewCondition, setReviewCondition] = useState("AFTER_2_VERIFIED_READINGS");
+  const [reviewDate, setReviewDate] = useState("");
   const [correctingReading, setCorrectingReading] = useState<VehicleMileageReading | null>(null);
   const [error, setError] = useState("");
   const dailyMileage = Math.round(profile.calculatedAnnualMileage / 365);
   const monthlyMileage = Math.round(profile.calculatedAnnualMileage / 12);
-  const latestReading = sortedReadings.find((reading) => reading.includedInForecast && reading.anomalyStatus !== "NEEDS_REVIEW");
-  const usersById = useMemo(() => new Map(users.map((user) => [user.id, user])), [users]);
+  const stats = mileageHistoryStats(readings);
+  const latestReading = stats.latest;
+  const maintivaCalculatedProfile = calculateDrivingProfile({
+    shopId: vehicle.shopId,
+    vehicleId: vehicle.id,
+    readings,
+    shopDefaultAnnualMileage,
+    customerReportedAnnualMileage: profile.customerReportedAnnualMileage ?? vehicle.estimatedAnnualMileage,
+    customerReportedAt: profile.customerReportedAt ?? null,
+    customerReportedByUserId: profile.customerReportedByUserId ?? null,
+    existingProfile: {
+      ...profile,
+      manualAnnualMileageOverride: null,
+      manualOverrideReason: null,
+      manualOverrideNotes: null,
+      manualOverrideSetAt: null,
+      manualOverrideSetByUserId: null,
+    },
+  });
 
   async function saveReported() {
     const annualMileage = parseRequiredInt(reportedMileage);
@@ -342,7 +455,7 @@ function DrivingProfilePanel({
     }
     const result = await store.setCustomerReportedMileage({ vehicleId: vehicle.id, annualMileage });
     if (!result.ok) {
-      setError(result.message ?? "Unable to save reported mileage.");
+      setError(result.message ?? "Unable to save customer driving estimate.");
       return;
     }
     setError("");
@@ -351,7 +464,11 @@ function DrivingProfilePanel({
   async function saveOverride() {
     const annualMileage = parseRequiredInt(overrideMileage);
     if (annualMileage <= 0 || overrideReason.trim().length < 3) {
-      setError("Manual override requires annual mileage and a reason.");
+      setError("Set Temporary Driving Estimate requires annual mileage and a reason.");
+      return;
+    }
+    if (reviewCondition === "ON_REVIEW_DATE" && !reviewDate) {
+      setError("Choose a review date or a different review condition.");
       return;
     }
     const result = await store.setManualMileageOverride({
@@ -359,9 +476,11 @@ function DrivingProfilePanel({
       annualMileage,
       reason: overrideReason.trim(),
       notes: overrideNotes.trim() || undefined,
+      reviewCondition,
+      reviewDate: reviewDate || undefined,
     });
     if (!result.ok) {
-      setError(result.message ?? "Unable to save manual override.");
+      setError(result.message ?? "Unable to save temporary driving estimate.");
       return;
     }
     setError("");
@@ -370,7 +489,7 @@ function DrivingProfilePanel({
   async function resetOverride() {
     const result = await store.resetManualMileageOverride({ vehicleId: vehicle.id });
     if (!result.ok) {
-      setError(result.message ?? "Unable to reset override.");
+      setError(result.message ?? "Unable to use Maintiva calculation.");
       return;
     }
     setOverrideMileage("");
@@ -390,7 +509,7 @@ function DrivingProfilePanel({
   }
 
   return (
-    <div className="grid gap-4 xl:grid-cols-[360px_1fr]">
+    <div className="grid gap-4 xl:grid-cols-[minmax(0,480px)_1fr]">
       <Card>
         <CardHeader>
           <div className="flex items-center gap-2">
@@ -400,10 +519,14 @@ function DrivingProfilePanel({
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid grid-cols-2 gap-3">
-            <DetailTile label="Annual pace" value={`${profile.calculatedAnnualMileage.toLocaleString()} mi`} />
-            <DetailTile label="Daily pace" value={`${dailyMileage.toLocaleString()} mi`} />
-            <DetailTile label="Monthly pace" value={`${monthlyMileage.toLocaleString()} mi`} />
+            <DetailTile label="Current mileage" value={`${vehicle.currentMileage.toLocaleString()} mi`} />
+            <DetailTile label="Last reading date" value={latestReading ? formatDate(latestReading.readingDate) : "Not recorded"} />
+            <DetailTile label="Estimated annual mileage" value={`${profile.calculatedAnnualMileage.toLocaleString()} mi`} />
             <DetailTile label="Confidence" value={profile.confidence} />
+            <DetailTile label="Source" value={sourceLabel(profile.estimateSource)} />
+            <DetailTile label="Verified readings" value={stats.verifiedCount.toLocaleString()} />
+            <DetailTile label="Time period covered" value={stats.periodLabel} />
+            <DetailTile label="Recent trend" value={stats.trend ? `${stats.trend.toLocaleString()} mi/yr` : "Not enough history"} />
           </div>
           <div className="rounded-lg border border-zinc-200 p-3 text-sm">
             <p className="font-semibold">{sourceLabel(profile.estimateSource)}</p>
@@ -411,54 +534,133 @@ function DrivingProfilePanel({
             <p className="mt-2 text-zinc-500">
               Latest fact: {latestReading ? `${latestReading.readingMileage.toLocaleString()} mi on ${formatDate(latestReading.readingDate)}` : "unknown"}
             </p>
+            <p className="mt-1 text-zinc-500">
+              Pace: {dailyMileage.toLocaleString()} mi/day · {monthlyMileage.toLocaleString()} mi/month
+            </p>
           </div>
-          <div className="grid gap-2 text-sm">
-            <label className="font-medium">
-              Customer-reported annual mileage
-              <input
-                type="number"
-                min="1"
-                value={reportedMileage}
-                onChange={(event) => setReportedMileage(event.target.value)}
-                className="mt-1 w-full rounded-lg border border-zinc-200 px-3 py-2"
-              />
-            </label>
-            <button onClick={() => void saveReported()} className="rounded-lg border border-violet-200 px-3 py-2 font-semibold text-violet-950">
-              Save reported mileage
-            </button>
-          </div>
-          <div className="space-y-2 rounded-lg border border-zinc-200 p-3 text-sm">
-            <label className="font-medium">
-              Manual annual override
-              <input
-                type="number"
-                min="1"
-                value={overrideMileage}
-                onChange={(event) => setOverrideMileage(event.target.value)}
-                className="mt-1 w-full rounded-lg border border-zinc-200 px-3 py-2"
-              />
-            </label>
-            <input
-              value={overrideReason}
-              onChange={(event) => setOverrideReason(event.target.value)}
-              placeholder="Reason"
-              className="w-full rounded-lg border border-zinc-200 px-3 py-2"
-            />
-            <textarea
-              value={overrideNotes}
-              onChange={(event) => setOverrideNotes(event.target.value)}
-              placeholder="Notes"
-              className="min-h-16 w-full rounded-lg border border-zinc-200 px-3 py-2"
-            />
-            <div className="flex flex-wrap gap-2">
-              <button onClick={() => void saveOverride()} className="rounded-lg bg-violet-950 px-3 py-2 font-semibold text-white">
-                Save override
-              </button>
-              <button onClick={() => void resetOverride()} className="rounded-lg border border-zinc-200 px-3 py-2 font-semibold">
-                Reset
-              </button>
+          {profile.manualAnnualMileageOverride && (
+            <div className="rounded-lg border border-violet-200 bg-violet-50 p-3 text-sm text-violet-950">
+              <p className="font-semibold">Temporary Driving Estimate is active</p>
+              <p className="mt-1">Maintiva calculation: {maintivaCalculatedProfile.calculatedAnnualMileage.toLocaleString()} mi/yr</p>
+              {profile.manualOverrideSetAt && (
+                <p className="mt-1 text-violet-800">
+                  Set {formatDate(profile.manualOverrideSetAt)} by {usersById.get(profile.manualOverrideSetByUserId ?? "")?.name ?? "Shop user"}.
+                </p>
+              )}
             </div>
-          </div>
+          )}
+          <details className="rounded-lg border border-zinc-200 p-3 text-sm">
+            <summary className="cursor-pointer font-semibold">Estimate Details</summary>
+            <div className="mt-3 space-y-4">
+              <div className="rounded-lg bg-zinc-50 p-3">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+                  <label className="flex-1 font-medium">
+                    Customer&apos;s Driving Estimate
+                    <input
+                      type="number"
+                      min="1"
+                      disabled={!canEditDrivingEstimates}
+                      value={reportedMileage}
+                      onChange={(event) => setReportedMileage(event.target.value)}
+                      className="mt-1 w-full rounded-lg border border-zinc-200 px-3 py-2 disabled:bg-zinc-100"
+                    />
+                    <span className="mt-1 block text-xs font-normal text-zinc-500">
+                      Optional intake answer, stored separately from odometer readings.
+                    </span>
+                  </label>
+                  {canEditDrivingEstimates && (
+                    <button onClick={() => void saveReported()} className="rounded-lg border border-violet-200 bg-white px-3 py-2 font-semibold text-violet-950">
+                      Save Customer Estimate
+                    </button>
+                  )}
+                </div>
+              </div>
+              <details className="rounded-lg border border-zinc-200 bg-white p-3">
+                <summary className="cursor-pointer font-semibold">More</summary>
+                <div className="mt-3 space-y-3">
+                  <div className="rounded-lg bg-zinc-50 p-3 text-zinc-600">
+                    <p className="font-medium text-zinc-900">Set Temporary Driving Estimate</p>
+                    <p className="mt-1">
+                      Owners and managers can use a temporary estimate while Maintiva keeps calculating from verified odometer history.
+                    </p>
+                  </div>
+                  <label className="font-medium">
+                    Annual estimate
+                    <input
+                      type="number"
+                      min="1"
+                      disabled={!canEditDrivingEstimates}
+                      value={overrideMileage}
+                      onChange={(event) => setOverrideMileage(event.target.value)}
+                      className="mt-1 w-full rounded-lg border border-zinc-200 px-3 py-2 disabled:bg-zinc-100"
+                    />
+                  </label>
+                  <label className="font-medium">
+                    Reason
+                    <input
+                      value={overrideReason}
+                      disabled={!canEditDrivingEstimates}
+                      onChange={(event) => setOverrideReason(event.target.value)}
+                      className="mt-1 w-full rounded-lg border border-zinc-200 px-3 py-2 disabled:bg-zinc-100"
+                    />
+                  </label>
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <label className="font-medium">
+                      Review option
+                      <select
+                        value={reviewCondition}
+                        disabled={!canEditDrivingEstimates}
+                        onChange={(event) => setReviewCondition(event.target.value)}
+                        className="mt-1 w-full rounded-lg border border-zinc-200 px-3 py-2 disabled:bg-zinc-100"
+                      >
+                        <option value="AFTER_2_VERIFIED_READINGS">{readableReviewCondition("AFTER_2_VERIFIED_READINGS")}</option>
+                        <option value="NEXT_SERVICE_VISIT">{readableReviewCondition("NEXT_SERVICE_VISIT")}</option>
+                        <option value="ON_REVIEW_DATE">{readableReviewCondition("ON_REVIEW_DATE")}</option>
+                      </select>
+                    </label>
+                    <label className="font-medium">
+                      Review date
+                      <input
+                        type="date"
+                        value={reviewDate}
+                        disabled={!canEditDrivingEstimates}
+                        onChange={(event) => setReviewDate(event.target.value)}
+                        className="mt-1 w-full rounded-lg border border-zinc-200 px-3 py-2 disabled:bg-zinc-100"
+                      />
+                    </label>
+                  </div>
+                  <label className="font-medium">
+                    Notes
+                    <textarea
+                      value={overrideNotes}
+                      disabled={!canEditDrivingEstimates}
+                      onChange={(event) => setOverrideNotes(event.target.value)}
+                      className="mt-1 min-h-16 w-full rounded-lg border border-zinc-200 px-3 py-2 disabled:bg-zinc-100"
+                    />
+                  </label>
+                  {profile.manualOverrideReason && (
+                    <div className="rounded-lg border border-zinc-200 p-3 text-zinc-600">
+                      <p><span className="font-medium text-zinc-900">Reason:</span> {profile.manualOverrideReason}</p>
+                      {profile.manualOverrideNotes && <p className="mt-1 whitespace-pre-line">{profile.manualOverrideNotes}</p>}
+                    </div>
+                  )}
+                  {canEditDrivingEstimates ? (
+                    <div className="flex flex-wrap gap-2">
+                      <button onClick={() => void saveOverride()} className="rounded-lg bg-violet-950 px-3 py-2 font-semibold text-white">
+                        Set Temporary Driving Estimate
+                      </button>
+                      <button onClick={() => void resetOverride()} className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 px-3 py-2 font-semibold">
+                        <RotateCcw className="h-4 w-4" />
+                        Use Maintiva Calculation
+                      </button>
+                    </div>
+                  ) : (
+                    <p className="text-zinc-500">Owners and managers can edit driving estimates.</p>
+                  )}
+                </div>
+              </details>
+            </div>
+          </details>
           {error && <p className="text-sm font-medium text-red-600">{error}</p>}
         </CardContent>
       </Card>
@@ -516,12 +718,14 @@ function DrivingProfilePanel({
                 >
                   Correct
                 </button>
-                <button
-                  onClick={() => void toggleReading(reading)}
-                  className="rounded-lg border border-zinc-200 px-3 py-2 font-semibold"
-                >
-                  {reading.includedInForecast ? "Exclude" : "Include"}
-                </button>
+                {canEditDrivingEstimates && (
+                  <button
+                    onClick={() => void toggleReading(reading)}
+                    className="rounded-lg border border-zinc-200 px-3 py-2 font-semibold"
+                  >
+                    {reading.includedInForecast ? "Exclude" : "Include"}
+                  </button>
+                )}
               </div>
             </div>
           ))}
@@ -1088,15 +1292,15 @@ export default function VehicleMaintenancePage() {
         <div className="flex flex-wrap gap-2">
           <button
             onClick={() => setMileageOpen(true)}
-            className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 bg-white px-4 py-2 text-sm font-semibold"
+            className="inline-flex items-center gap-2 rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white"
           >
             <Gauge className="h-4 w-4" />
-            Update mileage
+            Add Odometer Reading
           </button>
           <button
             onClick={() => setRecommendationOpen(true)}
             disabled={openRecommended.length === 0}
-            className="inline-flex items-center gap-2 rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+            className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 bg-white px-4 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60"
           >
             <MessageSquare className="h-4 w-4" />
             Recommend appointment
@@ -1125,7 +1329,9 @@ export default function VehicleMaintenancePage() {
         profile={drivingProfile}
         readings={mileageReadings}
         users={state.users}
+        currentUserId={state.currentUserId}
         shopTimezone={state.shop.timezone}
+        shopDefaultAnnualMileage={state.shop.defaultAnnualMileage}
       />
 
       <Card>

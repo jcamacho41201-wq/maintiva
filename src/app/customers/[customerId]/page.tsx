@@ -274,12 +274,34 @@ export default function CustomerDetailPage() {
               </button>
             </div>
             <div className="grid gap-4 p-5 sm:grid-cols-2">
-              {Object.entries(emptyVehicleForm(customer.id)).filter(([key]) => key !== "customerId").map(([key, value]) => (
-                <label key={key} className="text-sm font-medium">
-                  {key.replace(/([A-Z])/g, " $1").replace(/^\w/, (letter) => letter.toUpperCase())}
-                  <input name={key} defaultValue={value} type={typeof value === "number" ? "number" : "text"} className="mt-2 h-10 w-full rounded-lg border border-zinc-200 px-3 outline-none focus:border-violet-500" />
-                </label>
-              ))}
+              {Object.entries(emptyVehicleForm(customer.id)).filter(([key]) => key !== "customerId").map(([key, value]) => {
+                const isCustomerEstimate = key === "estimatedAnnualMileage";
+                return (
+                  <label key={key} className="text-sm font-medium">
+                    {isCustomerEstimate
+                      ? "Customer's Driving Estimate"
+                      : key.replace(/([A-Z])/g, " $1").replace(/^\w/, (letter) => letter.toUpperCase())}
+                    <input
+                      name={key}
+                      defaultValue={value}
+                      type={typeof value === "number" ? "number" : "text"}
+                      list={isCustomerEstimate ? "annual-mileage-estimates" : undefined}
+                      className="mt-2 h-10 w-full rounded-lg border border-zinc-200 px-3 outline-none focus:border-violet-500"
+                    />
+                    {isCustomerEstimate && (
+                      <span className="mt-1 block text-xs font-normal text-zinc-500">
+                        About how many miles do you drive each year?
+                      </span>
+                    )}
+                  </label>
+                );
+              })}
+              <datalist id="annual-mileage-estimates">
+                <option value="6000" />
+                <option value="12000" />
+                <option value="18000" />
+                <option value="24000" />
+              </datalist>
                 <label className="text-sm font-medium">
                   Reading Date
                   <input

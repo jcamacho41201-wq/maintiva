@@ -102,6 +102,17 @@ const mileageUpdateSchema = z.object({
   vehicleId: z.string().min(1),
   currentMileage: z.number().int().nonnegative(),
   readingDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Reading Date is required."),
+  source: z.enum([
+    "SHOP_REPAIR_ORDER",
+    "SHOP_MANUAL_ENTRY",
+    "SERVICE_HISTORY_IMPORT",
+    "CUSTOMER_REPORTED",
+    "APPOINTMENT_INTAKE",
+    "CORRECTION",
+    "OTHER",
+  ]).default("SHOP_MANUAL_ENTRY"),
+  verificationStatus: z.enum(["VERIFIED", "CUSTOMER_REPORTED", "IMPORTED", "UNVERIFIED", "EXCLUDED"]).default("VERIFIED"),
+  notes: z.string().optional(),
   allowLowerCorrection: z.boolean().optional(),
   correctionReason: z.string().optional(),
 });
@@ -116,6 +127,8 @@ const manualMileageOverrideSchema = z.object({
   annualMileage: z.number().int().positive(),
   reason: z.string().min(3),
   notes: z.string().optional(),
+  reviewCondition: z.enum(["AFTER_2_VERIFIED_READINGS", "NEXT_SERVICE_VISIT", "ON_REVIEW_DATE"]).default("AFTER_2_VERIFIED_READINGS"),
+  reviewDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().or(z.literal("")),
 });
 
 const mileageReadingReviewSchema = z.object({
@@ -314,6 +327,21 @@ function assertProductionEntityId(id: string, entityName: string) {
       status: 400,
     });
   }
+}
+
+export function canManageDrivingEstimates(role: AuthenticatedShopContext["role"]) {
+  return role === "OWNER" || role === "MANAGER";
+}
+
+function requireDrivingEstimateManager(context: AuthenticatedShopContext) {
+  if (canManageDrivingEstimates(context.role)) return;
+  throw new SafeActionError({
+    code: "DRIVING_ESTIMATE_MANAGER_REQUIRED",
+    message: "Only owners and managers can edit driving estimates.",
+    status: 403,
+    table: "VehicleDrivingProfile",
+    operation: "UPDATE",
+  });
 }
 
 async function requireVehicleInActiveShop(context: AuthenticatedShopContext, vehicleId: string) {
@@ -775,6 +803,7 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
       isDemo: shop.isDemo,
       onboardingCompletedAt: iso(shop.onboardingCompletedAt) || null,
     },
+    currentUserId: context.userId,
     users: shop.memberships.map((membership) => ({
       id: membership.userId,
       shopId: membership.shopId,
@@ -1641,12 +1670,15 @@ export async function updatePilotVehicleMileage(context: AuthenticatedShopContex
         vehicleId: vehicle.id,
         readingMileage: parsed.currentMileage,
         readingDate: dateFromDateOnly(parsed.readingDate),
-        source: parsed.currentMileage < vehicle.currentMileage ? "CORRECTION" : "SHOP_MANUAL_ENTRY",
-        verificationStatus: "VERIFIED",
+        source: parsed.currentMileage < vehicle.currentMileage ? "CORRECTION" : parsed.source,
+        verificationStatus: parsed.verificationStatus,
         anomalyStatus: needsReview ? "NEEDS_REVIEW" : parsed.currentMileage < vehicle.currentMileage ? "RESOLVED" : "NONE",
         includedInForecast: !needsReview,
         correctionReason: parsed.correctionReason || null,
-        reviewNotes: warningMessages.join(" ") || null,
+        reviewNotes: [parsed.notes?.trim(), warningMessages.join(" ")]
+          .filter(Boolean)
+          .join(" ")
+          || null,
         recordedByUserId: context.userId,
       },
     });
@@ -1679,6 +1711,7 @@ export async function updatePilotVehicleMileage(context: AuthenticatedShopContex
 }
 
 export async function setPilotCustomerReportedMileage(context: AuthenticatedShopContext, input: unknown) {
+  requireDrivingEstimateManager(context);
   const parsed = customerReportedMileageSchema.parse(input);
   const vehicle = await requireVehicleInActiveShop(context, parsed.vehicleId);
 
@@ -1707,8 +1740,14 @@ export async function setPilotCustomerReportedMileage(context: AuthenticatedShop
 }
 
 export async function setPilotManualMileageOverride(context: AuthenticatedShopContext, input: unknown) {
+  requireDrivingEstimateManager(context);
   const parsed = manualMileageOverrideSchema.parse(input);
   const vehicle = await requireVehicleInActiveShop(context, parsed.vehicleId);
+  const reviewNote = [
+    parsed.notes?.trim(),
+    `Review condition: ${parsed.reviewCondition.replaceAll("_", " ").toLowerCase()}.`,
+    parsed.reviewDate ? `Review date: ${parsed.reviewDate}.` : "",
+  ].filter(Boolean).join("\n");
 
   await prisma.$transaction(async (tx) => {
     await recalculatePersistedDrivingProfile({
@@ -1717,7 +1756,7 @@ export async function setPilotManualMileageOverride(context: AuthenticatedShopCo
       vehicleId: vehicle.id,
       manualAnnualMileageOverride: parsed.annualMileage,
       manualOverrideReason: parsed.reason,
-      manualOverrideNotes: parsed.notes ?? null,
+      manualOverrideNotes: reviewNote || null,
     });
     await tx.auditLog.create({
       data: {
@@ -1729,6 +1768,8 @@ export async function setPilotManualMileageOverride(context: AuthenticatedShopCo
         metadata: {
           annualMileage: parsed.annualMileage,
           reason: parsed.reason,
+          reviewCondition: parsed.reviewCondition,
+          reviewDate: parsed.reviewDate || null,
         },
       },
     });
@@ -1736,6 +1777,7 @@ export async function setPilotManualMileageOverride(context: AuthenticatedShopCo
 }
 
 export async function resetPilotManualMileageOverride(context: AuthenticatedShopContext, input: unknown) {
+  requireDrivingEstimateManager(context);
   const parsed = z.object({ vehicleId: z.string().min(1) }).parse(input);
   const vehicle = await requireVehicleInActiveShop(context, parsed.vehicleId);
 
@@ -1759,6 +1801,7 @@ export async function resetPilotManualMileageOverride(context: AuthenticatedShop
 }
 
 export async function reviewPilotMileageReading(context: AuthenticatedShopContext, input: unknown) {
+  requireDrivingEstimateManager(context);
   const parsed = mileageReadingReviewSchema.parse(input);
   const reading = await prisma.vehicleMileageReading.findUnique({ where: { id: parsed.readingId } });
   assertSameShop(context, reading?.shopId);

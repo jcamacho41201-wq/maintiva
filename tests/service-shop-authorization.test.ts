@@ -24,6 +24,11 @@ vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 import {
   addPilotMaintenanceItem,
   addPilotServiceDefinition,
+  canManageDrivingEstimates,
+  resetPilotManualMileageOverride,
+  reviewPilotMileageReading,
+  setPilotCustomerReportedMileage,
+  setPilotManualMileageOverride,
   updatePilotMaintenanceItem,
   updatePilotServiceDefinition,
   isMissingAdaptiveMileageSchema,
@@ -40,6 +45,13 @@ const context: AuthenticatedShopContext = {
   shopTimezone: "America/New_York",
   role: "OWNER",
   isDemo: false,
+};
+
+const advisorContext: AuthenticatedShopContext = {
+  ...context,
+  userId: "user-advisor",
+  email: "advisor@example.com",
+  role: "SERVICE_ADVISOR",
 };
 
 beforeEach(() => {
@@ -257,6 +269,44 @@ describe("service shop authorization", () => {
 
     expect(clientMutationError(error, { action: "addMaintenanceItem" })).toMatchObject({
       code: "VEHICLE_NOT_IN_ACTIVE_SHOP",
+      status: 403,
+    });
+  });
+
+  it("limits driving-estimate edits to owners and managers", async () => {
+    expect(canManageDrivingEstimates("OWNER")).toBe(true);
+    expect(canManageDrivingEstimates("MANAGER")).toBe(true);
+    expect(canManageDrivingEstimates("SERVICE_ADVISOR")).toBe(false);
+    expect(canManageDrivingEstimates("TECHNICIAN")).toBe(false);
+
+    await expect(setPilotCustomerReportedMileage(advisorContext, {
+      vehicleId: "cmvehicle00000000000000001",
+      annualMileage: 12_000,
+    })).rejects.toMatchObject({
+      code: "DRIVING_ESTIMATE_MANAGER_REQUIRED",
+      status: 403,
+    });
+    await expect(setPilotManualMileageOverride(advisorContext, {
+      vehicleId: "cmvehicle00000000000000001",
+      annualMileage: 9_000,
+      reason: "Temporary seasonal estimate",
+      reviewCondition: "NEXT_SERVICE_VISIT",
+    })).rejects.toMatchObject({
+      code: "DRIVING_ESTIMATE_MANAGER_REQUIRED",
+      status: 403,
+    });
+    await expect(resetPilotManualMileageOverride(advisorContext, {
+      vehicleId: "cmvehicle00000000000000001",
+    })).rejects.toMatchObject({
+      code: "DRIVING_ESTIMATE_MANAGER_REQUIRED",
+      status: 403,
+    });
+    await expect(reviewPilotMileageReading(advisorContext, {
+      readingId: "cmmileage000000000000001",
+      includedInForecast: false,
+      anomalyStatus: "RESOLVED",
+    })).rejects.toMatchObject({
+      code: "DRIVING_ESTIMATE_MANAGER_REQUIRED",
       status: 403,
     });
   });

@@ -63,12 +63,12 @@ Maintiva does not send live SMS, email, or calls in this MVP.
 
 ## Mileage Workflow
 
-Use a vehicle page to review and update mileage.
+Use a vehicle page to review mileage and add dated odometer readings.
 
 1. Confirm Current mileage is sourced from the latest valid included mileage reading when readings exist.
 2. Open Driving Profile and review annual, monthly, daily, source, and confidence values.
-3. Save customer-reported annual mileage when the customer gives a representative estimate.
-4. Use a manual override only with a reason, then reset it when enough mileage history exists.
+3. Save Customer's Driving Estimate when the customer gives a representative annual estimate.
+4. Owners/managers can set a Temporary Driving Estimate with a reason and review condition, then choose Use Maintiva Calculation when enough mileage history exists.
 5. Review Mileage History rows and exclude readings that are corrections, duplicates, or unresolved anomalies.
 6. Use each maintenance item forecast preview to compare mileage-based and time-based due dates.
 
@@ -110,8 +110,8 @@ Do not expose service-role keys in browser or Vercel public variables. Keep `NEX
 - Dashboard renders revenue recovery KPIs.
 - Import page parses a CSV, detects mapping, validates rows, detects duplicates, writes accepted rows, records import history, and downloads template/error reports.
 - Revenue Recovery Queue explains due, overdue, and declined-work opportunities.
-- Vehicle page shows Driving Profile, Mileage History, latest valid mileage, confidence, source, manual override/reset, and service forecast preview.
-- Updating vehicle mileage creates a mileage reading and keeps it visible after refresh once the adaptive mileage migration is applied.
+- Vehicle page shows Driving Profile, Mileage History, latest valid mileage, confidence, source, Customer's Driving Estimate, Temporary Driving Estimate controls for owners/managers, and service forecast preview.
+- Add Odometer Reading creates a mileage reading and keeps it visible after refresh once the adaptive mileage migration is applied.
 - Manual outreach copy can be generated, copied, marked manually sent, and assigned a response status.
 - Appointment booking from outreach updates dashboard revenue, appointments, and capacity in demo/local mode.
 - Capacity and ROI pages render without console or page errors.
