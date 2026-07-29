@@ -39,11 +39,11 @@ Driving profiles use this source hierarchy:
 
 1. Multiple verified shop readings
 2. Multiple usable imported readings
-3. Customer-reported annual mileage
+3. Customer's Driving Estimate
 4. One verified reading plus the shop default
 5. Shop default annual mileage
 
-The default shop annual-mileage estimate is `12,500`, equivalent to about `1,042` miles monthly or `34.25` miles daily. Manual annual-mileage overrides temporarily take priority, require a reason, and can be reset back to calculated/default behavior. The vehicle page includes a Driving Profile panel, Mileage History review, and read-only service due-date preview; it does not automatically create, close, suppress, or mutate revenue opportunities.
+The default shop annual-mileage estimate is `12,500`, equivalent to about `1,042` miles monthly or `34.25` miles daily. Temporary Driving Estimates can be set by owners/managers, require a reason and review condition, and can be reset with Use Maintiva Calculation. The primary vehicle-page workflow is Add Odometer Reading; Customer's Driving Estimate stays separate from odometer readings. The vehicle page includes a Driving Profile panel, Mileage History review, and read-only service due-date preview; it does not automatically create, close, suppress, or mutate revenue opportunities.
 
 The version-controlled Supabase migration for this foundation is:
 
