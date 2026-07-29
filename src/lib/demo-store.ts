@@ -29,6 +29,28 @@ const storageKey = "maintiva-demo-state-v2";
 const changeEvent = "maintiva-demo-state";
 let cachedState: DemoState | undefined;
 const serverSnapshot = createInitialDemoState();
+const authenticatedLoadingSnapshot: DemoState = {
+  ...serverSnapshot,
+  shop: {
+    ...serverSnapshot.shop,
+    id: "",
+    name: "Loading shop",
+    slug: "",
+    isDemo: false,
+    onboardingCompletedAt: null,
+  },
+  users: [],
+  customers: [],
+  vehicles: [],
+  services: [],
+  maintenanceRecords: [],
+  serviceRecords: [],
+  declinedWorkRecords: [],
+  importHistory: [],
+  outreachRecords: [],
+  appointments: [],
+  seededAt: "",
+};
 export type MutationResult = { ok: boolean; message?: string };
 
 export type ServiceDefinitionInput = Omit<MaintenanceService, "id" | "shopId">;
@@ -113,7 +135,7 @@ function readState() {
   }
 
   if (!shouldUseLocalDemoPersistence()) {
-    return cachedState ?? getServerSnapshot();
+    return cachedState ?? authenticatedLoadingSnapshot;
   }
 
   if (cachedState) {
@@ -250,7 +272,7 @@ export function useDemoStore() {
 
     return {
       state,
-      ready: true,
+      ready: shouldUseLocalDemoPersistence() || Boolean(state.shop.id),
       resetDemoData() {
         if (!shouldUseLocalDemoPersistence()) return;
         saveState(createInitialDemoState());

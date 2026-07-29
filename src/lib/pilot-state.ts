@@ -17,6 +17,7 @@ import {
 import { assertSameShop, type AuthenticatedShopContext } from "@/lib/auth";
 import { customerSchema, vehicleSchema } from "@/lib/validation";
 import { resolveMaintenanceInterval, timeIntervalToMonths } from "@/lib/service-intervals";
+import { SafeActionError } from "@/lib/server-diagnostics";
 import {
   previewImport,
   summarizeImport,
@@ -133,6 +134,117 @@ function appointmentDateTime(date: string, time: string) {
 function monthsFromTime(value: number | null | undefined, unit: TimeIntervalUnit | null | undefined) {
   const months = timeIntervalToMonths(value, unit);
   return months === null ? null : Math.max(1, Math.round(months));
+}
+
+function isDemoEntityId(id: string) {
+  return /^(cust|veh|svc|item|appt|hist|service|outreach|declined|import)-/.test(id);
+}
+
+function shortId(id: string | null | undefined) {
+  if (!id) return undefined;
+  return id.length <= 14 ? id : `${id.slice(0, 8)}...${id.slice(-4)}`;
+}
+
+function assertProductionEntityId(id: string, entityName: string) {
+  if (isDemoEntityId(id)) {
+    throw new SafeActionError({
+      code: "DEMO_ID_NOT_PERSISTED",
+      message: `${entityName} is not a persisted production record. Refresh the page and try again.`,
+      status: 400,
+    });
+  }
+}
+
+async function requireVehicleInActiveShop(context: AuthenticatedShopContext, vehicleId: string) {
+  assertProductionEntityId(vehicleId, "The selected vehicle");
+  const vehicle = await prisma.vehicle.findFirst({
+    where: {
+      id: vehicleId,
+      shopId: context.shopId,
+      archivedAt: null,
+    },
+  });
+
+  if (vehicle) return vehicle;
+
+  const target = await prisma.vehicle.findUnique({
+    where: { id: vehicleId },
+    select: { shopId: true },
+  });
+
+  throw new SafeActionError({
+    code: "VEHICLE_NOT_IN_ACTIVE_SHOP",
+    message: "The selected vehicle does not belong to your active shop.",
+    status: target ? 403 : 404,
+    table: "Vehicle",
+    operation: "SELECT",
+    details: target?.shopId
+      ? `Vehicle exists in a different shop: ${shortId(target.shopId)}.`
+      : "Vehicle was not found.",
+  });
+}
+
+async function requireServiceDefinitionInActiveShop(
+  context: AuthenticatedShopContext,
+  serviceDefinitionId: string,
+) {
+  assertProductionEntityId(serviceDefinitionId, "The selected service");
+  const service = await prisma.serviceDefinition.findFirst({
+    where: {
+      id: serviceDefinitionId,
+      shopId: context.shopId,
+    },
+  });
+
+  if (service) return service;
+
+  const target = await prisma.serviceDefinition.findUnique({
+    where: { id: serviceDefinitionId },
+    select: { shopId: true },
+  });
+
+  throw new SafeActionError({
+    code: "SERVICE_NOT_IN_ACTIVE_SHOP",
+    message: "The selected service does not belong to your active shop.",
+    status: target ? 403 : 404,
+    table: "ServiceDefinition",
+    operation: "SELECT",
+    details: target?.shopId
+      ? `Service exists in a different shop: ${shortId(target.shopId)}.`
+      : "Service was not found.",
+  });
+}
+
+async function requireMaintenanceRecordInActiveShop(
+  context: AuthenticatedShopContext,
+  maintenanceRecordId: string,
+) {
+  assertProductionEntityId(maintenanceRecordId, "The selected maintenance item");
+  const record = await prisma.vehicleMaintenanceRecord.findFirst({
+    where: {
+      id: maintenanceRecordId,
+      shopId: context.shopId,
+      archivedAt: null,
+    },
+  });
+
+  if (record) return record;
+
+  const target = await prisma.vehicleMaintenanceRecord.findUnique({
+    where: { id: maintenanceRecordId },
+    select: { shopId: true },
+  });
+
+  throw new SafeActionError({
+    code: "MAINTENANCE_ITEM_NOT_IN_ACTIVE_SHOP",
+    message: "The selected maintenance item does not belong to your active shop.",
+    status: target ? 403 : 404,
+    table: "VehicleMaintenanceRecord",
+    operation: "SELECT",
+    details: target?.shopId
+      ? `Maintenance item exists in a different shop: ${shortId(target.shopId)}.`
+      : "Maintenance item was not found.",
+  });
 }
 
 export async function seedDefaultServicesForShop(shopId: string) {
@@ -580,10 +692,33 @@ export async function updatePilotVehicle(
 export async function addPilotServiceDefinition(context: AuthenticatedShopContext, input: unknown) {
   const parsed = serviceDefinitionSchema.parse(input);
   if (!parsed.defaultMileageInterval && !parsed.defaultTimeIntervalValue && parsed.category.toLowerCase().includes("maintenance")) {
-    throw new Error("Preventive maintenance services need a mileage or time interval.");
+    throw new SafeActionError({
+      code: "SERVICE_INTERVAL_REQUIRED",
+      message: "A recurring maintenance service needs a mileage or time interval.",
+      table: "ServiceDefinition",
+      operation: "INSERT",
+    });
   }
 
-  await prisma.serviceDefinition.create({
+  const duplicate = await prisma.serviceDefinition.findUnique({
+    where: {
+      shopId_name: {
+        shopId: context.shopId,
+        name: parsed.name,
+      },
+    },
+  });
+  if (duplicate) {
+    throw new SafeActionError({
+      code: "DUPLICATE_SERVICE_DEFINITION",
+      message: "A service with this name already exists for your shop.",
+      status: 409,
+      table: "ServiceDefinition",
+      operation: "INSERT",
+    });
+  }
+
+  const service = await prisma.serviceDefinition.create({
     data: {
       shopId: context.shopId,
       name: parsed.name,
@@ -599,6 +734,7 @@ export async function addPilotServiceDefinition(context: AuthenticatedShopContex
       isActive: parsed.isActive,
     },
   });
+  assertSameShop(context, service.shopId);
 }
 
 export async function updatePilotServiceDefinition(
@@ -606,8 +742,7 @@ export async function updatePilotServiceDefinition(
   serviceDefinitionId: string,
   input: unknown,
 ) {
-  const existing = await prisma.serviceDefinition.findUnique({ where: { id: serviceDefinitionId } });
-  assertSameShop(context, existing?.shopId);
+  const existing = await requireServiceDefinitionInActiveShop(context, serviceDefinitionId);
   const parsed = serviceDefinitionSchema.partial().parse(input);
   await prisma.serviceDefinition.update({
     where: { id: serviceDefinitionId },
@@ -626,17 +761,19 @@ export async function updatePilotServiceDefinition(
 
 export async function addPilotMaintenanceItem(context: AuthenticatedShopContext, input: unknown) {
   const parsed = maintenanceItemSchema.parse(input);
-  const vehicle = await prisma.vehicle.findUnique({ where: { id: parsed.vehicleId } });
-  assertSameShop(context, vehicle?.shopId);
-  if (!vehicle) throw new Error("Vehicle not found.");
+  const vehicle = await requireVehicleInActiveShop(context, parsed.vehicleId);
 
   let service = parsed.serviceDefinitionId
-    ? await prisma.serviceDefinition.findUnique({ where: { id: parsed.serviceDefinitionId } })
+    ? await requireServiceDefinitionInActiveShop(context, parsed.serviceDefinitionId)
     : null;
-  if (service) assertSameShop(context, service.shopId);
 
   if (!service && !parsed.customServiceName?.trim()) {
-    throw new Error("Choose a service or enter a custom service name.");
+    throw new SafeActionError({
+      code: "SERVICE_REQUIRED",
+      message: "Choose a service or enter a custom service name.",
+      table: "VehicleMaintenanceRecord",
+      operation: "INSERT",
+    });
   }
 
   if (service && !parsed.allowDuplicate) {
@@ -650,7 +787,13 @@ export async function addPilotMaintenanceItem(context: AuthenticatedShopContext,
       },
     });
     if (duplicate) {
-      throw new Error("This active service is already assigned to the vehicle.");
+      throw new SafeActionError({
+        code: "DUPLICATE_VEHICLE_SERVICE",
+        message: "This service already exists for the vehicle.",
+        status: 409,
+        table: "VehicleMaintenanceRecord",
+        operation: "INSERT",
+      });
     }
   }
 
@@ -679,7 +822,7 @@ export async function addPilotMaintenanceItem(context: AuthenticatedShopContext,
   const timeUnitOverride = useDefaults ? null : parsed.timeIntervalUnitOverride ?? null;
   const priceOverride = useDefaults ? null : parsed.priceOverrideCents ?? null;
   const laborOverride = useDefaults ? null : parsed.laborMinutesOverride ?? null;
-  await prisma.vehicleMaintenanceRecord.create({
+  const maintenance = await prisma.vehicleMaintenanceRecord.create({
     data: {
       shopId: context.shopId,
       vehicleId: vehicle.id,
@@ -709,6 +852,7 @@ export async function addPilotMaintenanceItem(context: AuthenticatedShopContext,
       updatedByUserId: context.userId,
     },
   });
+  assertSameShop(context, maintenance.shopId);
 }
 
 export async function updatePilotMaintenanceItem(
@@ -716,9 +860,7 @@ export async function updatePilotMaintenanceItem(
   maintenanceRecordId: string,
   input: unknown,
 ) {
-  const existing = await prisma.vehicleMaintenanceRecord.findUnique({ where: { id: maintenanceRecordId } });
-  assertSameShop(context, existing?.shopId);
-  if (!existing) throw new Error("Maintenance item not found.");
+  const existing = await requireMaintenanceRecordInActiveShop(context, maintenanceRecordId);
   const parsed = maintenanceItemUpdateSchema.parse(input);
   const clearOverrides = parsed.useShopDefaults === true;
 
@@ -754,9 +896,7 @@ export async function deactivatePilotMaintenanceItem(
   context: AuthenticatedShopContext,
   maintenanceRecordId: string,
 ) {
-  const existing = await prisma.vehicleMaintenanceRecord.findUnique({ where: { id: maintenanceRecordId } });
-  assertSameShop(context, existing?.shopId);
-  if (!existing) throw new Error("Maintenance item not found.");
+  await requireMaintenanceRecordInActiveShop(context, maintenanceRecordId);
   await prisma.$transaction(async (tx) => {
     await tx.vehicleMaintenanceRecord.update({
       where: { id: maintenanceRecordId },
@@ -786,12 +926,24 @@ export async function markPilotMaintenanceServiceComplete(
   input: unknown,
 ) {
   const parsed = serviceCompletionSchema.parse(input);
-  const record = await prisma.vehicleMaintenanceRecord.findUnique({
-    where: { id: parsed.maintenanceRecordId },
+  assertProductionEntityId(parsed.maintenanceRecordId, "The selected maintenance item");
+  const record = await prisma.vehicleMaintenanceRecord.findFirst({
+    where: {
+      id: parsed.maintenanceRecordId,
+      shopId: context.shopId,
+      archivedAt: null,
+    },
     include: { vehicle: true },
   });
-  assertSameShop(context, record?.shopId);
-  if (!record) throw new Error("Maintenance item not found.");
+  if (!record) {
+    throw new SafeActionError({
+      code: "MAINTENANCE_ITEM_NOT_IN_ACTIVE_SHOP",
+      message: "The selected maintenance item does not belong to your active shop.",
+      status: 404,
+      table: "VehicleMaintenanceRecord",
+      operation: "SELECT",
+    });
+  }
 
   await prisma.$transaction(async (tx) => {
     await tx.serviceHistoryRecord.create({
@@ -852,14 +1004,22 @@ export async function markPilotMaintenanceServiceComplete(
 
 export async function updatePilotVehicleMileage(context: AuthenticatedShopContext, input: unknown) {
   const parsed = mileageUpdateSchema.parse(input);
-  const vehicle = await prisma.vehicle.findUnique({ where: { id: parsed.vehicleId } });
-  assertSameShop(context, vehicle?.shopId);
-  if (!vehicle) throw new Error("Vehicle not found.");
+  const vehicle = await requireVehicleInActiveShop(context, parsed.vehicleId);
   if (parsed.currentMileage < vehicle.currentMileage && !parsed.allowLowerCorrection) {
-    throw new Error("Mileage is below the current reading. Confirm a correction and provide a reason.");
+    throw new SafeActionError({
+      code: "MILEAGE_CORRECTION_REQUIRED",
+      message: "Mileage is below the current reading. Confirm a correction and provide a reason.",
+      table: "Vehicle",
+      operation: "UPDATE",
+    });
   }
   if (parsed.currentMileage < vehicle.currentMileage && !parsed.correctionReason?.trim()) {
-    throw new Error("A correction reason is required for lower mileage.");
+    throw new SafeActionError({
+      code: "MILEAGE_CORRECTION_REASON_REQUIRED",
+      message: "A correction reason is required for lower mileage.",
+      table: "Vehicle",
+      operation: "UPDATE",
+    });
   }
 
   await prisma.$transaction(async (tx) => {

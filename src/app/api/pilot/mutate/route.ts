@@ -5,7 +5,7 @@ import {
   AuthRequiredError,
   OnboardingRequiredError,
   TenantAccessError,
-  getAuthenticatedShopContext,
+  requireActiveShopMembership,
 } from "@/lib/auth";
 import {
   addPilotCustomer,
@@ -25,7 +25,11 @@ import {
   updatePilotVehicle,
   updatePilotVehicleMileage,
 } from "@/lib/pilot-state";
-import { logPilotMutationFailure } from "@/lib/server-diagnostics";
+import {
+  clientMutationError,
+  logPilotMutationFailure,
+  safeMutationOperation,
+} from "@/lib/server-diagnostics";
 import { BrowserShopIdError, rejectBrowserShopId } from "@/lib/tenant-security";
 
 const mutationSchema = z.discriminatedUnion("action", [
@@ -158,11 +162,14 @@ const mutationSchema = z.discriminatedUnion("action", [
 export async function POST(request: Request) {
   let context: AuthenticatedShopContext | undefined;
   let json: unknown;
+  let operation = safeMutationOperation(undefined);
   try {
     json = await request.json();
     rejectBrowserShopId(json);
-    context = await getAuthenticatedShopContext();
+    operation = safeMutationOperation(json);
+    context = await requireActiveShopMembership();
     const body = mutationSchema.parse(json);
+    operation = safeMutationOperation(body);
 
     switch (body.action) {
       case "addCustomer":
@@ -214,7 +221,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ state: await buildPilotState(context) });
   } catch (error) {
-    logPilotMutationFailure({ error, context, payload: json });
+    logPilotMutationFailure({ error, context, payload: json, operation });
     if (error instanceof OnboardingRequiredError) {
       return NextResponse.json(
         { code: "ONBOARDING_REQUIRED", message: error.message },
@@ -233,9 +240,16 @@ export async function POST(request: Request) {
         { status: 403 },
       );
     }
+    const clientError = clientMutationError(error, operation);
+    if (clientError) {
+      return NextResponse.json(
+        { code: clientError.code, message: clientError.message },
+        { status: clientError.status },
+      );
+    }
     if (error instanceof z.ZodError) {
       return NextResponse.json(
-        { code: "VALIDATION_FAILED", message: "Invalid request payload.", issues: error.issues },
+        { code: "VALIDATION_FAILED", message: "A required service field is missing or invalid.", issues: error.issues },
         { status: 400 },
       );
     }
