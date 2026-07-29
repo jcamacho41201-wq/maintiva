@@ -1,6 +1,7 @@
 "use client";
 
 import { ChangeEvent, useMemo, useState } from "react";
+import Link from "next/link";
 import { Download, FileUp, TableProperties } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -80,7 +81,7 @@ export default function ImportPage() {
   const [saveError, setSaveError] = useState("");
   const headers = Object.keys(rows[0] ?? {});
   const preview = useMemo(
-    () => previewImport({ rows, mapping, importType, state }),
+    () => previewImport({ rows, mapping, importType, state, timeZone: state.shop.timezone }),
     [rows, mapping, importType, state],
   );
   const summary = useMemo(
@@ -297,8 +298,19 @@ export default function ImportPage() {
               </button>
             </div>
             {completed && (
-              <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700">
-                Import complete. Valid rows now create recovery opportunities and imported appointments where applicable.
+              <div className="space-y-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-3 text-sm font-medium text-emerald-700">
+                <p>Import complete. Valid rows now create recovery opportunities and imported appointments where applicable.</p>
+                <div className="flex flex-wrap gap-2">
+                  <Link href="/customers" className="rounded-lg border border-emerald-200 bg-white px-3 py-2 text-xs font-semibold text-emerald-900">
+                    View imported customers
+                  </Link>
+                  <Link href="/automation" className="rounded-lg border border-emerald-200 bg-white px-3 py-2 text-xs font-semibold text-emerald-900">
+                    Review opportunities
+                  </Link>
+                  <a href="#import-history" className="rounded-lg border border-emerald-200 bg-white px-3 py-2 text-xs font-semibold text-emerald-900">
+                    View import history
+                  </a>
+                </div>
               </div>
             )}
             {saveError && (
@@ -312,7 +324,7 @@ export default function ImportPage() {
 
       <Card>
         <CardHeader>
-          <h2 className="text-lg font-semibold">Import History</h2>
+          <h2 id="import-history" className="text-lg font-semibold">Import History</h2>
         </CardHeader>
         <CardContent className="overflow-x-auto p-0">
           <table className="w-full min-w-[760px] text-left text-sm">

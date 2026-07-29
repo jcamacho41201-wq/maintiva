@@ -32,6 +32,7 @@ export default function CustomersPage() {
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState(emptyCustomerForm());
   const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
 
   const filteredCustomers = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -47,6 +48,7 @@ export default function CustomersPage() {
         ...vehicles.flatMap((vehicle) => [
           vehicleLabel(vehicle),
           vehicle.vin,
+          vehicle.licensePlate,
           vehicle.make,
           vehicle.model,
         ]),
@@ -79,7 +81,9 @@ export default function CustomersPage() {
       return;
     }
 
+    setSaving(true);
     const result = await addCustomer(form);
+    setSaving(false);
     if (!result.ok) {
       setError(result.message ?? "Customer could not be saved. Check the database connection and try again.");
       return;
@@ -234,8 +238,8 @@ export default function CustomersPage() {
               </label>
             </div>
             <div className="flex justify-end gap-2 border-t border-zinc-100 p-5">
-              <button type="button" onClick={() => setAdding(false)} className="rounded-lg border border-zinc-200 px-4 py-2 text-sm font-semibold">Cancel</button>
-              <button className="rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white">Save customer</button>
+              <button type="button" onClick={() => setAdding(false)} disabled={saving} className="rounded-lg border border-zinc-200 px-4 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60">Cancel</button>
+              <button disabled={saving} className="rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60">{saving ? "Saving..." : "Save customer"}</button>
             </div>
           </form>
         </div>

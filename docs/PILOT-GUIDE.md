@@ -2,6 +2,8 @@
 
 Maintiva is positioned as a maintenance revenue recovery add-on. It should not replace the shop management system during the pilot. Shops keep using their current POS/calendar workflow, export data to CSV, work the Maintiva queue, and manually record outreach and appointment outcomes.
 
+The complete release gate is maintained in [PILOT-RELEASE-CHECKLIST.md](PILOT-RELEASE-CHECKLIST.md). Do not describe a deployment as ready for one controlled pilot shop until that checklist passes against a real non-demo tenant.
+
 ## Pilot Setup
 
 1. Create or select a Supabase project.
@@ -16,7 +18,7 @@ npx supabase db push --dry-run
 npx supabase db push
 ```
 
-The migration creates the Prisma-backed application tables, timestamp triggers, Supabase Auth user trigger, and active-membership RLS policies. The database is not ready until the migration has been pushed to the remote Supabase project.
+The migrations create the Prisma-backed application tables, timestamp triggers, Supabase Auth user trigger, active-membership RLS policies, calendar schema, and pilot policy tightening. The database is not ready until every migration, including `20260728211500_pilot_readiness_security.sql`, has been pushed to the remote Supabase project.
 
 5. Run `pnpm run db:seed` only for a demo database, not a production pilot shop.
 6. In Supabase Auth, set the site URL to `APP_URL` and add redirects for `/onboarding` and `/password-reset`.
@@ -39,6 +41,8 @@ Use `/import` for pilot imports.
 8. Confirm import to record import history.
 
 Authenticated pilot imports are written server-side through the current shop context. Duplicate rows can be skipped, updated, or imported as new after review. Direct integrations with shop management systems remain deferred until real pilot exports are verified.
+
+After a successful import, use the post-import links to inspect imported customers, revenue opportunities, and import history before contacting customers.
 
 ## Revenue Recovery Workflow
 
@@ -109,6 +113,7 @@ Do not expose service-role keys in browser or Vercel public variables. Keep `NEX
 ## Acceptance Checklist
 
 - Authenticated owner can onboard a shop.
+- Active user has an active `ShopMembership`; customer and vehicle writes reject missing or cross-shop membership.
 - Dashboard renders revenue recovery KPIs.
 - Import page parses a CSV, detects mapping, validates rows, detects duplicates, writes accepted rows, records import history, and downloads template/error reports.
 - Revenue Recovery Queue explains due, overdue, and declined-work opportunities.
@@ -117,6 +122,8 @@ Do not expose service-role keys in browser or Vercel public variables. Keep `NEX
 - Capacity calendar creates manual appointments, schedules ready opportunities, warns before overbooking, preserves shop-time selections after refresh, and keeps each shop tenant-isolated.
 - Capacity and ROI pages render without console or page errors.
 - `pnpm run lint`, `pnpm test`, and `pnpm run build` pass.
+
+Use [PILOT-RELEASE-CHECKLIST.md](PILOT-RELEASE-CHECKLIST.md) for the full real-tenant acceptance test.
 
 ## Deferred
 

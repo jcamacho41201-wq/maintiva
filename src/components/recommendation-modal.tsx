@@ -14,6 +14,7 @@ import {
   type VehicleMaintenanceRecord,
 } from "@/lib/demo-data";
 import { vehicleLabel } from "@/lib/demo-calculations";
+import type { BookAppointmentResult, RecommendationResult } from "@/lib/demo-store";
 import { formatCurrency } from "@/lib/utils";
 
 type Props = {
@@ -28,7 +29,7 @@ type Props = {
     message: string;
     channel?: OutreachChannel;
     responseStatus?: CustomerResponseStatus;
-  }) => string;
+  }) => Promise<RecommendationResult>;
   onBookAppointment: (input: {
     customerId: string;
     vehicleId: string;
@@ -37,7 +38,7 @@ type Props = {
     time: string;
     status: Appointment["status"];
     notes?: string;
-  }) => Appointment | undefined;
+  }) => Promise<BookAppointmentResult>;
 };
 
 export function RecommendationModal({
@@ -101,7 +102,7 @@ export function RecommendationModal({
     }
   }
 
-  function markManuallySent() {
+  async function markManuallySent() {
     if (selectedIds.length === 0) {
       setError("Select at least one recommended service.");
       return;
@@ -119,7 +120,7 @@ export function RecommendationModal({
     }
 
     setSaving(true);
-    onSendRecommendation({
+    const result = await onSendRecommendation({
       customerId: customer.id,
       vehicleId: vehicle.id,
       maintenanceRecordIds: selectedIds,
@@ -128,11 +129,17 @@ export function RecommendationModal({
       responseStatus,
     });
     setSaving(false);
+
+    if (!result.ok) {
+      setError(result.message ?? "Outreach could not be saved. Check the database connection and try again.");
+      return;
+    }
+
     setSent(true);
     setError("");
   }
 
-  function bookAppointment() {
+  async function bookAppointment() {
     if (!date || !time) {
       setError("Choose an appointment date and time.");
       return;
@@ -143,7 +150,7 @@ export function RecommendationModal({
     }
 
     setSaving(true);
-    const appointment = onBookAppointment({
+    const result = await onBookAppointment({
       customerId: customer.id,
       vehicleId: vehicle.id,
       maintenanceRecordIds: selectedIds,
@@ -154,8 +161,8 @@ export function RecommendationModal({
     });
     setSaving(false);
 
-    if (!appointment) {
-      setError("Appointment could not be created. Try again.");
+    if (!result.ok) {
+      setError(result.message ?? "Appointment could not be created. Try again.");
       return;
     }
 

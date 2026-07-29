@@ -50,6 +50,7 @@ export default function CustomerDetailPage() {
   const [addingVehicle, setAddingVehicle] = useState(false);
   const [editingVehicleId, setEditingVehicleId] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
 
   if (!customer) {
     return (
@@ -80,7 +81,9 @@ export default function CustomerDetailPage() {
       setError("First and last name are required.");
       return;
     }
+    setSaving(true);
     const result = await store.updateCustomer(customerId, input);
+    setSaving(false);
     if (!result.ok) {
       setError(result.message ?? "Customer could not be saved. Check the database connection and try again.");
       return;
@@ -90,17 +93,23 @@ export default function CustomerDetailPage() {
     setError("");
   }
 
-  function saveVehicle(vehicle: Vehicle, input: Partial<Vehicle>) {
+  async function saveVehicle(vehicle: Vehicle, input: Partial<Vehicle>) {
     if (!String(input.make ?? "").trim() || !String(input.model ?? "").trim()) {
       setError("Vehicle make and model are required.");
       return;
     }
-    store.updateVehicle(vehicle.id, input);
+    setSaving(true);
+    const result = await store.updateVehicle(vehicle.id, input);
+    setSaving(false);
+    if (!result.ok) {
+      setError(result.message ?? "Vehicle could not be saved. Check the database connection and try again.");
+      return;
+    }
     setEditingVehicleId(null);
     setError("");
   }
 
-  function addVehicle(event: FormEvent<HTMLFormElement>) {
+  async function addVehicle(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     const input = {
@@ -118,7 +127,13 @@ export default function CustomerDetailPage() {
       setError("Vehicle make, model, and VIN are required.");
       return;
     }
-    store.addVehicle(input);
+    setSaving(true);
+    const result = await store.addVehicle(input);
+    setSaving(false);
+    if (!result.ok) {
+      setError(result.message ?? "Vehicle could not be saved. Check the database connection and try again.");
+      return;
+    }
     setAddingVehicle(false);
     setError("");
   }
@@ -235,7 +250,12 @@ export default function CustomerDetailPage() {
                   </button>
                 </div>
                 {editingVehicleId === vehicle.id && (
-                  <VehicleEditForm vehicle={vehicle} onCancel={() => setEditingVehicleId(null)} onSave={(input) => saveVehicle(vehicle, input)} />
+                  <VehicleEditForm
+                    vehicle={vehicle}
+                    saving={saving}
+                    onCancel={() => setEditingVehicleId(null)}
+                    onSave={(input) => saveVehicle(vehicle, input)}
+                  />
                 )}
               </CardContent>
             </Card>
@@ -255,6 +275,7 @@ export default function CustomerDetailPage() {
           customer={customer}
           onClose={() => setEditingCustomer(false)}
           onSave={saveCustomer}
+          saving={saving}
         />
       )}
 
@@ -276,8 +297,8 @@ export default function CustomerDetailPage() {
               ))}
             </div>
             <div className="flex justify-end gap-2 border-t border-zinc-100 p-5">
-              <button type="button" onClick={() => setAddingVehicle(false)} className="rounded-lg border border-zinc-200 px-4 py-2 text-sm font-semibold">Cancel</button>
-              <button className="rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white">Save vehicle</button>
+              <button type="button" onClick={() => setAddingVehicle(false)} disabled={saving} className="rounded-lg border border-zinc-200 px-4 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60">Cancel</button>
+              <button disabled={saving} className="rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60">{saving ? "Saving..." : "Save vehicle"}</button>
             </div>
           </form>
         </div>
@@ -311,10 +332,12 @@ function CustomerEditModal({
   customer,
   onClose,
   onSave,
+  saving,
 }: {
   customer: Customer;
   onClose: () => void;
   onSave: (input: ReturnType<typeof editableCustomerFields>) => Promise<void>;
+  saving: boolean;
 }) {
   const [form, setForm] = useState(editableCustomerFields(customer));
 
@@ -340,8 +363,8 @@ function CustomerEditModal({
           </label>
         </div>
         <div className="flex justify-end gap-2 border-t border-zinc-100 p-5">
-          <button onClick={onClose} className="rounded-lg border border-zinc-200 px-4 py-2 text-sm font-semibold">Cancel</button>
-          <button onClick={() => void onSave(form)} className="rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white">Save changes</button>
+          <button onClick={onClose} disabled={saving} className="rounded-lg border border-zinc-200 px-4 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60">Cancel</button>
+          <button onClick={() => void onSave(form)} disabled={saving} className="rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60">{saving ? "Saving..." : "Save changes"}</button>
         </div>
       </div>
     </div>
@@ -350,12 +373,14 @@ function CustomerEditModal({
 
 function VehicleEditForm({
   vehicle,
+  saving,
   onCancel,
   onSave,
 }: {
   vehicle: Vehicle;
+  saving: boolean;
   onCancel: () => void;
-  onSave: (input: Partial<Vehicle>) => void;
+  onSave: (input: Partial<Vehicle>) => Promise<void>;
 }) {
   const [form, setForm] = useState({
     year: vehicle.year,
@@ -375,8 +400,8 @@ function VehicleEditForm({
         <input value={form.currentMileage} type="number" onChange={(event) => setForm({ ...form, currentMileage: Number(event.target.value) })} className="h-10 rounded-lg border border-zinc-200 px-3 outline-none focus:border-violet-500" />
       </div>
       <div className="mt-3 flex gap-2">
-        <button onClick={() => onSave(form)} className="rounded-lg bg-violet-950 px-3 py-2 text-sm font-semibold text-white">Save vehicle</button>
-        <button onClick={onCancel} className="rounded-lg border border-zinc-200 px-3 py-2 text-sm font-semibold">Cancel</button>
+        <button onClick={() => void onSave(form)} disabled={saving} className="rounded-lg bg-violet-950 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60">{saving ? "Saving..." : "Save vehicle"}</button>
+        <button onClick={onCancel} disabled={saving} className="rounded-lg border border-zinc-200 px-3 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-60">Cancel</button>
       </div>
     </div>
   );

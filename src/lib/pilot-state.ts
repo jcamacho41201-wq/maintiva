@@ -1086,6 +1086,7 @@ export async function importPilotCsvRows(
     mapping: input.mapping,
     importType: input.importType,
     state,
+    timeZone: context.timezone,
   });
   const rowActions = Object.fromEntries(
     Object.entries(input.rowActions ?? {}).map(([rowNumber, action]) => [Number(rowNumber), action]),

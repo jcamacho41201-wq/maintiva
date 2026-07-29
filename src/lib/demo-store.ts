@@ -33,6 +33,8 @@ const changeEvent = "maintiva-demo-state";
 let cachedState: DemoState | undefined;
 const serverSnapshot = createInitialDemoState();
 export type MutationResult = { ok: boolean; message?: string };
+export type RecommendationResult = MutationResult & { outreachId?: string };
+export type BookAppointmentResult = MutationResult & { appointment?: Appointment };
 
 export type CalendarAppointmentInput = {
   customerId: string;
@@ -272,8 +274,11 @@ export function useDemoStore() {
         }));
         return Promise.resolve({ ok: true, message: undefined });
       },
-      addVehicle(input: Omit<Vehicle, "id" | "shopId" | "overallHealth" | "lastServiceDate" | "vehicleType">) {
-        void mutatePilotState({ action: "addVehicle", payload: input });
+      async addVehicle(input: Omit<Vehicle, "id" | "shopId" | "overallHealth" | "lastServiceDate" | "vehicleType">): Promise<MutationResult> {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "addVehicle", payload: input });
+        }
+
         update((draft) => ({
           ...draft,
           vehicles: [
@@ -288,29 +293,37 @@ export function useDemoStore() {
             },
           ],
         }));
+        return { ok: true };
       },
-      updateVehicle(vehicleId: string, input: Partial<Vehicle>) {
-        void mutatePilotState({ action: "updateVehicle", id: vehicleId, payload: input });
+      async updateVehicle(vehicleId: string, input: Partial<Vehicle>): Promise<MutationResult> {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "updateVehicle", id: vehicleId, payload: input });
+        }
+
         update((draft) => ({
           ...draft,
           vehicles: draft.vehicles.map((vehicle) =>
             vehicle.id === vehicleId ? { ...vehicle, ...input } : vehicle,
           ),
         }));
+        return { ok: true };
       },
-      sendRecommendation(input: {
+      async sendRecommendation(input: {
         customerId: string;
         vehicleId: string;
         maintenanceRecordIds: string[];
         message: string;
         channel?: OutreachRecord["channel"];
         responseStatus?: OutreachRecord["responseStatus"];
-      }) {
+      }): Promise<RecommendationResult> {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({
+            action: "markOutreachManuallySent",
+            payload: input,
+          });
+        }
+
         const outreachId = `outreach-${Date.now()}`;
-        void mutatePilotState({
-          action: "markOutreachManuallySent",
-          payload: input,
-        });
         update((draft) => {
           const selected = draft.maintenanceRecords.filter((record) =>
             input.maintenanceRecordIds.includes(record.id),
@@ -347,7 +360,7 @@ export function useDemoStore() {
             ),
           };
         });
-        return outreachId;
+        return { ok: true, outreachId };
       },
       addImportHistory(input: Omit<ImportHistoryRecord, "id" | "shopId" | "userId" | "importedAt">) {
         update((draft) => ({
@@ -516,7 +529,11 @@ export function useDemoStore() {
               });
             }
             if (text(normalized.appointmentDate) && text(normalized.appointmentTime)) {
-              const scheduledStart = new Date(`${text(normalized.appointmentDate)}T${text(normalized.appointmentTime)}:00`);
+              const scheduledStart = zonedDateTimeToIso(
+                text(normalized.appointmentDate),
+                text(normalized.appointmentTime),
+                draft.shop.timezone,
+              );
               appointments.push({
                 id: `appt-import-${now}-${index}`,
                 shopId: draft.shop.id,
@@ -524,8 +541,8 @@ export function useDemoStore() {
                 vehicleId,
                 maintenanceRecordIds: [maintenanceRecordId],
                 serviceNames: [serviceName],
-                scheduledStart: scheduledStart.toISOString(),
-                scheduledEnd: new Date(scheduledStart.getTime() + laborHours * 60 * 60 * 1000).toISOString(),
+                scheduledStart,
+                scheduledEnd: addMinutesToIso(scheduledStart, Math.round(laborHours * 60)),
                 status: "CONFIRMED",
                 totalPriceCents: priceCents,
                 totalLaborHours: laborHours,
@@ -567,7 +584,7 @@ export function useDemoStore() {
         });
         return Promise.resolve({ ok: true, message: undefined });
       },
-      bookAppointment(input: {
+      async bookAppointment(input: {
         customerId: string;
         vehicleId: string;
         maintenanceRecordIds: string[];
@@ -575,11 +592,14 @@ export function useDemoStore() {
         time: string;
         status: Appointment["status"];
         notes?: string;
-      }) {
+      }): Promise<BookAppointmentResult> {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "bookAppointment", payload: input });
+        }
+
         let appointment: Appointment | undefined;
-        void mutatePilotState({ action: "bookAppointment", payload: input });
         update((draft) => {
-          const scheduledStart = new Date(`${input.date}T${input.time}:00`).toISOString();
+          const scheduledStart = zonedDateTimeToIso(input.date, input.time, draft.shop.timezone);
           if (
             hasActiveVehicleAppointmentAt(draft.appointments, {
               vehicleId: input.vehicleId,
@@ -589,7 +609,7 @@ export function useDemoStore() {
             return draft;
           }
 
-          appointment = createAppointmentFromRecords({ state: draft, ...input });
+          appointment = createAppointmentFromRecords({ state: draft, ...input, scheduledStart });
           return {
             ...draft,
             appointments: [...draft.appointments, appointment],
@@ -605,7 +625,9 @@ export function useDemoStore() {
           };
         });
 
-        return appointment;
+        return appointment
+          ? { ok: true, appointment }
+          : { ok: false, message: "Appointment could not be saved. Check selected services and duplicate time." };
       },
       async createCalendarAppointment(input: CalendarAppointmentInput): Promise<MutationResult> {
         if (!shouldUseLocalDemoPersistence()) {

@@ -53,7 +53,7 @@ pnpm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
-Pilot operating instructions are in [docs/PILOT-GUIDE.md](docs/PILOT-GUIDE.md).
+Pilot operating instructions are in [docs/PILOT-GUIDE.md](docs/PILOT-GUIDE.md). The controlled-pilot release gate is in [docs/PILOT-RELEASE-CHECKLIST.md](docs/PILOT-RELEASE-CHECKLIST.md).
 
 ## Supabase Setup
 
@@ -73,7 +73,7 @@ npx supabase db push
 
 The Supabase migration in `supabase/migrations/` creates the Prisma-backed application tables, timestamp triggers, Supabase Auth user trigger, and membership-based Row Level Security policies. Do not mark production ready until the migration has been pushed to the remote Supabase project.
 
-Calendar schema changes are versioned in `supabase/migrations/20260728202000_capacity_calendar.sql`. Apply migrations before testing calendar writes:
+Calendar schema changes are versioned in `supabase/migrations/20260728202000_capacity_calendar.sql`. Pilot security policy tightening is versioned in `supabase/migrations/20260728211500_pilot_readiness_security.sql`. Apply migrations before testing production writes:
 
 ```bash
 npx supabase db push --dry-run
@@ -89,6 +89,7 @@ pnpm prisma migrate dev
 Required environment variables:
 
 - `DATABASE_URL`
+- `POSTGRES_URL_NON_POOLING` for Vercel production migration deployment when the Supabase integration provides it
 - `NEXT_PUBLIC_SUPABASE_URL`
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 - `APP_URL`

@@ -1,4 +1,5 @@
 import type { DemoState } from "@/lib/demo-data";
+import { zonedDateTimeToIso } from "@/lib/calendar";
 
 export type ImportType =
   | "CUSTOMERS"
@@ -299,15 +300,26 @@ function existingVehicleResult(state: DemoState, normalized: Record<string, stri
   return match ? { match, key: `existing:${match.id}` } : undefined;
 }
 
-function existingChildResult(state: DemoState, kind: EntityImportResult["entity"], vehicleId: string | undefined, normalized: Record<string, string | number>) {
+function existingChildResult(
+  state: DemoState,
+  kind: EntityImportResult["entity"],
+  vehicleId: string | undefined,
+  normalized: Record<string, string | number>,
+  timeZone: string,
+) {
   if (!vehicleId) return undefined;
   const serviceName = normalizeText(normalized.serviceName || normalized.services);
   if (kind === "Appointment") {
     const start = normalized.appointmentDate && normalized.appointmentTime
-      ? new Date(`${normalized.appointmentDate}T${normalized.appointmentTime}:00`).toISOString()
+      ? zonedDateTimeToIso(
+        String(normalized.appointmentDate),
+        String(normalized.appointmentTime),
+        timeZone,
+      )
       : "";
     const match = state.appointments.find((appointment) =>
-      appointment.vehicleId === vehicleId && appointment.scheduledStart === start,
+      appointment.vehicleId === vehicleId &&
+      new Date(appointment.scheduledStart).getTime() === new Date(start).getTime(),
     );
     return match ? { key: `appointment:${match.id}` } : undefined;
   }
@@ -333,11 +345,13 @@ export function previewImport({
   mapping,
   importType,
   state,
+  timeZone = state.shop.timezone,
 }: {
   rows: CsvRow[];
   mapping: Record<string, MaintivaField>;
   importType: ImportType;
   state: DemoState;
+  timeZone?: string;
 }) {
   const customerBatch = new Map<string, string>();
   const vehicleBatch = new Map<string, string>();
@@ -416,7 +430,7 @@ export function previewImport({
 
     const kind = childKind(importType, normalized);
     const key = childKey(kind, vKey, normalized);
-    const existingChild = existingChildResult(state, kind, vehicleMatch?.match.id, normalized);
+    const existingChild = existingChildResult(state, kind, vehicleMatch?.match.id, normalized, timeZone);
     const childDuplicate = Boolean(existingChild) || childBatch.has(key);
     if (!childDuplicate) childBatch.add(key);
     const child: EntityImportResult = childDuplicate

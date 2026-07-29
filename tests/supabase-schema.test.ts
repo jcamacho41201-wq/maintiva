@@ -11,6 +11,10 @@ const capacityCalendarMigrationSql = fs.readFileSync(
   path.join(process.cwd(), "supabase/migrations/20260728202000_capacity_calendar.sql"),
   "utf8",
 );
+const pilotReadinessSecurityMigrationSql = fs.readFileSync(
+  path.join(process.cwd(), "supabase/migrations/20260728211500_pilot_readiness_security.sql"),
+  "utf8",
+);
 
 describe("Supabase production schema migration", () => {
   it("creates the app tables used for shop creation, membership, customers, vehicles, imports, and customer queries", () => {
@@ -100,5 +104,25 @@ describe("Supabase production schema migration", () => {
 
     expect(capacityCalendarMigrationSql).not.toContain("WITH CHECK (true)");
     expect(capacityCalendarMigrationSql).not.toContain("USING (true)");
+  });
+
+  it("replaces broad shop and membership policies with owner-scoped pilot policies", () => {
+    [
+      "public.maintiva_is_shop_owner",
+      'DROP POLICY IF EXISTS "Members can create shops"',
+      'DROP POLICY IF EXISTS "Members can update their shops"',
+      'DROP POLICY IF EXISTS "Members can delete their shops"',
+      'DROP POLICY IF EXISTS "Users can create own active memberships"',
+      'DROP POLICY IF EXISTS "Members can update shop memberships"',
+      'DROP POLICY IF EXISTS "Members can delete shop memberships"',
+      'CREATE POLICY "Owners can update their shops"',
+      'CREATE POLICY "Owners can update shop memberships"',
+      '"role" IN (\'OWNER\', \'MANAGER\')',
+    ].forEach((identifier) => {
+      expect(pilotReadinessSecurityMigrationSql).toContain(identifier);
+    });
+
+    expect(pilotReadinessSecurityMigrationSql).not.toContain("WITH CHECK (true)");
+    expect(pilotReadinessSecurityMigrationSql).not.toContain("USING (true)");
   });
 });
