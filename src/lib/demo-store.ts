@@ -27,6 +27,7 @@ import {
   type MaintivaField,
 } from "@/lib/csv-import";
 import { calculateDrivingProfile } from "@/lib/adaptive-mileage";
+import { currentDateInTimeZone } from "@/lib/utils";
 
 const storageKey = "maintiva-demo-state-v2";
 const changeEvent = "maintiva-demo-state";
@@ -375,22 +376,25 @@ export function useDemoStore() {
         }));
         return Promise.resolve({ ok: true, message: undefined });
       },
-      addVehicle(input: Omit<Vehicle, "id" | "shopId" | "overallHealth" | "lastServiceDate" | "vehicleType">) {
+      addVehicle(input: Omit<Vehicle, "id" | "shopId" | "overallHealth" | "lastServiceDate" | "vehicleType"> & { initialMileageReadingDate?: string }) {
         void mutatePilotState({ action: "addVehicle", payload: input });
         update((draft) => {
           const now = Date.now();
           const vehicleId = `veh-${now}`;
+          const readingDate = input.initialMileageReadingDate ?? currentDateInTimeZone(draft.shop.timezone);
+          const vehicleInput = { ...input };
+          delete vehicleInput.initialMileageReadingDate;
           const next = {
             ...draft,
             vehicles: [
               ...draft.vehicles,
               {
-                ...input,
+                ...vehicleInput,
                 id: vehicleId,
                 shopId: draft.shop.id,
                 vehicleType: "Passenger vehicle",
                 overallHealth: 80,
-                lastServiceDate: new Date().toISOString().slice(0, 10),
+                lastServiceDate: readingDate,
               },
             ],
             mileageReadings: [
@@ -400,27 +404,30 @@ export function useDemoStore() {
                 shopId: draft.shop.id,
                 vehicleId,
                 readingMileage: input.currentMileage,
-                readingDate: new Date().toISOString().slice(0, 10),
+                readingDate,
                 source: "SHOP_MANUAL_ENTRY" as const,
                 verificationStatus: "VERIFIED" as const,
                 anomalyStatus: "NONE" as const,
                 includedInForecast: true,
                 recordedByUserId: draft.users[0]?.id,
+                createdAt: new Date().toISOString(),
               },
             ],
           };
           return upsertLocalDrivingProfile(next, vehicleId);
         });
       },
-      updateVehicle(vehicleId: string, input: Partial<Vehicle>) {
+      updateVehicle(vehicleId: string, input: Partial<Vehicle> & { mileageReadingDate?: string }) {
         void mutatePilotState({ action: "updateVehicle", id: vehicleId, payload: input });
         update((draft) => ({
           ...upsertLocalDrivingProfile(
             {
               ...draft,
-              vehicles: draft.vehicles.map((vehicle) =>
-                vehicle.id === vehicleId ? { ...vehicle, ...input } : vehicle,
-              ),
+              vehicles: draft.vehicles.map((vehicle) => {
+                const vehicleInput = { ...input };
+                delete vehicleInput.mileageReadingDate;
+                return vehicle.id === vehicleId ? { ...vehicle, ...vehicleInput } : vehicle;
+              }),
               mileageReadings: input.currentMileage === undefined
                 ? draft.mileageReadings
                 : [
@@ -430,12 +437,13 @@ export function useDemoStore() {
                       shopId: draft.shop.id,
                       vehicleId,
                       readingMileage: input.currentMileage,
-                      readingDate: new Date().toISOString().slice(0, 10),
+                      readingDate: input.mileageReadingDate ?? currentDateInTimeZone(draft.shop.timezone),
                       source: "SHOP_MANUAL_ENTRY",
                       verificationStatus: "VERIFIED",
                       anomalyStatus: "NONE",
                       includedInForecast: true,
                       recordedByUserId: draft.users[0]?.id,
+                      createdAt: new Date().toISOString(),
                     },
                   ],
             },
@@ -707,6 +715,7 @@ export function useDemoStore() {
       updateVehicleMileage(input: {
         vehicleId: string;
         currentMileage: number;
+        readingDate: string;
         allowLowerCorrection?: boolean;
         correctionReason?: string;
       }) {
@@ -738,13 +747,14 @@ export function useDemoStore() {
                 shopId: draft.shop.id,
                 vehicleId: input.vehicleId,
                 readingMileage: input.currentMileage,
-                readingDate: new Date().toISOString().slice(0, 10),
+                readingDate: input.readingDate,
                 source: input.allowLowerCorrection ? "CORRECTION" as const : "SHOP_MANUAL_ENTRY" as const,
                 verificationStatus: "VERIFIED" as const,
                 anomalyStatus: input.allowLowerCorrection ? "RESOLVED" as const : "NONE" as const,
                 includedInForecast: true,
                 correctionReason: input.correctionReason,
                 recordedByUserId: draft.users[0]?.id,
+                createdAt: new Date().toISOString(),
               },
             ],
           };

@@ -19,7 +19,13 @@ import {
 import { assertSameShop, type AuthenticatedShopContext } from "@/lib/auth";
 import { customerSchema, vehicleSchema } from "@/lib/validation";
 import { resolveMaintenanceInterval, timeIntervalToMonths } from "@/lib/service-intervals";
-import { DEFAULT_ANNUAL_MILEAGE, calculateDrivingProfile, resolveCurrentMileage } from "@/lib/adaptive-mileage";
+import {
+  DEFAULT_ANNUAL_MILEAGE,
+  calculateDrivingProfile,
+  resolveCurrentMileage,
+  validateMileageReading,
+} from "@/lib/adaptive-mileage";
+import { currentDateInTimeZone } from "@/lib/utils";
 import { safeDatabaseError, SafeActionError } from "@/lib/server-diagnostics";
 import {
   previewImport,
@@ -95,6 +101,7 @@ const serviceCompletionSchema = z.object({
 const mileageUpdateSchema = z.object({
   vehicleId: z.string().min(1),
   currentMileage: z.number().int().nonnegative(),
+  readingDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Reading Date is required."),
   allowLowerCorrection: z.boolean().optional(),
   correctionReason: z.string().optional(),
 });
@@ -136,6 +143,10 @@ function iso(date: Date | string | null | undefined) {
 
 function dateOnly(date: Date | string | null | undefined) {
   return iso(date).slice(0, 10);
+}
+
+function dateFromDateOnly(value: string) {
+  return new Date(`${value}T12:00:00Z`);
 }
 
 function stringValue(record: Record<string, string | number>, key: string) {
@@ -987,53 +998,96 @@ export async function addPilotVehicle(context: AuthenticatedShopContext, input: 
     engine: z.string().optional(),
     trim: z.string().optional(),
     estimatedAnnualMileage: z.number().int().nonnegative().optional(),
+    initialMileageReadingDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   }).parse(input);
   const customer = await prisma.customer.findUnique({ where: { id: parsed.customerId } });
   assertSameShop(context, customer?.shopId);
-  const vehicle = await prisma.vehicle.create({
-    data: {
-      shopId: context.shopId,
-      customerId: parsed.customerId,
-      year: parsed.year,
-      make: parsed.make,
-      model: parsed.model,
-      vin: parsed.vin || null,
-      engine: parsed.engine || null,
-      trim: parsed.trim || null,
-      currentMileage: parsed.currentMileage,
-      estimatedAnnualMileage: parsed.estimatedAnnualMileage ?? 12_000,
-      lastServiceDate: new Date(),
-    },
-  });
 
-  const services = await prisma.serviceDefinition.findMany({
-    where: { shopId: context.shopId, isActive: true },
-    take: 6,
-  });
+  await prisma.$transaction(async (tx) => {
+    const readingDate = parsed.initialMileageReadingDate ?? currentDateInTimeZone(context.shopTimezone);
+    const validationIssues = validateMileageReading({
+      reading: { readingMileage: parsed.currentMileage, readingDate },
+      existingReadings: [],
+      vehicleYear: parsed.year,
+      asOf: currentDateInTimeZone(context.shopTimezone),
+    });
+    const blockingIssue = validationIssues.find((issue) => issue.severity === "error");
+    if (blockingIssue) {
+      throw new SafeActionError({
+        code: blockingIssue.code,
+        message: blockingIssue.message,
+        status: 400,
+        table: "VehicleMileageReading",
+        operation: "INSERT",
+      });
+    }
 
-  await prisma.vehicleMaintenanceRecord.createMany({
-    data: services.map((service) => ({
-      shopId: context.shopId,
-      vehicleId: vehicle.id,
-      serviceDefinitionId: service.id,
-      serviceName: service.name,
-      lastCompletedDate: new Date(),
-      lastCompletedMileage: parsed.currentMileage,
-      recommendedMileageInterval: null,
-      recommendedTimeIntervalMonths: null,
-      mileageIntervalOverride: null,
-      timeIntervalValueOverride: null,
-      timeIntervalUnitOverride: null,
-      notificationThreshold: service.defaultNotificationThreshold,
-      outreachThresholdType: "MILES_BEFORE_DUE" as const,
-      outreachThresholdValue: 500,
-      priceCents: service.defaultPriceCents,
-      laborMinutes: service.estimatedLaborMinutes,
-      status: "HEALTHY" as const,
-      isActive: true,
-      createdByUserId: context.userId,
-      updatedByUserId: context.userId,
-    })),
+    const vehicle = await tx.vehicle.create({
+      data: {
+        shopId: context.shopId,
+        customerId: parsed.customerId,
+        year: parsed.year,
+        make: parsed.make,
+        model: parsed.model,
+        vin: parsed.vin || null,
+        engine: parsed.engine || null,
+        trim: parsed.trim || null,
+        currentMileage: parsed.currentMileage,
+        estimatedAnnualMileage: parsed.estimatedAnnualMileage ?? 12_000,
+        lastServiceDate: dateFromDateOnly(readingDate),
+      },
+    });
+
+    const services = await tx.serviceDefinition.findMany({
+      where: { shopId: context.shopId, isActive: true },
+      take: 6,
+    });
+
+    await tx.vehicleMaintenanceRecord.createMany({
+      data: services.map((service) => ({
+        shopId: context.shopId,
+        vehicleId: vehicle.id,
+        serviceDefinitionId: service.id,
+        serviceName: service.name,
+        lastCompletedDate: dateFromDateOnly(readingDate),
+        lastCompletedMileage: parsed.currentMileage,
+        recommendedMileageInterval: null,
+        recommendedTimeIntervalMonths: null,
+        mileageIntervalOverride: null,
+        timeIntervalValueOverride: null,
+        timeIntervalUnitOverride: null,
+        notificationThreshold: service.defaultNotificationThreshold,
+        outreachThresholdType: "MILES_BEFORE_DUE" as const,
+        outreachThresholdValue: 500,
+        priceCents: service.defaultPriceCents,
+        laborMinutes: service.estimatedLaborMinutes,
+        status: "HEALTHY" as const,
+        isActive: true,
+        createdByUserId: context.userId,
+        updatedByUserId: context.userId,
+      })),
+    });
+
+    if (parsed.currentMileage > 0) {
+      const warningMessages = validationIssues
+        .filter((issue) => issue.severity === "warning")
+        .map((issue) => issue.message);
+      await tx.vehicleMileageReading.create({
+        data: {
+          shopId: context.shopId,
+          vehicleId: vehicle.id,
+          readingMileage: parsed.currentMileage,
+          readingDate: dateFromDateOnly(readingDate),
+          source: "SHOP_MANUAL_ENTRY",
+          verificationStatus: "VERIFIED",
+          anomalyStatus: warningMessages.length > 0 ? "NEEDS_REVIEW" : "NONE",
+          includedInForecast: warningMessages.length === 0,
+          reviewNotes: warningMessages.join(" ") || null,
+          recordedByUserId: context.userId,
+        },
+      });
+      await recalculatePersistedDrivingProfile({ tx, context, vehicleId: vehicle.id });
+    }
   });
 }
 
@@ -1044,8 +1098,10 @@ export async function updatePilotVehicle(
 ) {
   const existing = await prisma.vehicle.findUnique({ where: { id: vehicleId } });
   assertSameShop(context, existing?.shopId);
-  const parsed = vehicleSchema.partial().omit({ customerId: true }).parse(input);
-  const { currentMileage, ...vehicleData } = parsed;
+  const parsed = vehicleSchema.partial().omit({ customerId: true }).extend({
+    mileageReadingDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  }).parse(input);
+  const { currentMileage, mileageReadingDate, ...vehicleData } = parsed;
   await prisma.vehicle.update({
     where: { id: vehicleId },
     data: vehicleData,
@@ -1054,6 +1110,7 @@ export async function updatePilotVehicle(
     await updatePilotVehicleMileage(context, {
       vehicleId,
       currentMileage,
+      readingDate: mileageReadingDate ?? currentDateInTimeZone(context.shopTimezone),
       allowLowerCorrection: currentMileage < (existing?.currentMileage ?? 0),
       correctionReason: currentMileage < (existing?.currentMileage ?? 0) ? "Corrected from vehicle edit." : undefined,
     });
@@ -1315,9 +1372,43 @@ export async function markPilotMaintenanceServiceComplete(
       operation: "SELECT",
     });
   }
+  const existingReadings = await prisma.vehicleMileageReading.findMany({
+    where: { shopId: context.shopId, vehicleId: record.vehicleId },
+    orderBy: [{ readingDate: "asc" }, { createdAt: "asc" }],
+  });
+  const validationIssues = validateMileageReading({
+    reading: {
+      readingMileage: parsed.completedMileage,
+      readingDate: parsed.completedAt,
+    },
+    existingReadings: existingReadings.map((reading) => ({
+      readingMileage: reading.readingMileage,
+      readingDate: dateOnly(reading.readingDate),
+      source: reading.source,
+      verificationStatus: reading.verificationStatus,
+      anomalyStatus: reading.anomalyStatus,
+      includedInForecast: reading.includedInForecast,
+    })),
+    vehicleYear: record.vehicle.year,
+    asOf: currentDateInTimeZone(context.shopTimezone),
+  });
+  const blockingIssue = validationIssues.find((issue) => issue.severity === "error");
+  if (blockingIssue) {
+    throw new SafeActionError({
+      code: blockingIssue.code,
+      message: blockingIssue.message,
+      status: 400,
+      table: "VehicleMileageReading",
+      operation: "INSERT",
+    });
+  }
 
   await prisma.$transaction(async (tx) => {
-    await tx.serviceHistoryRecord.create({
+    const completedDate = dateFromDateOnly(parsed.completedAt);
+    const warningMessages = validationIssues
+      .filter((issue) => issue.severity === "warning")
+      .map((issue) => issue.message);
+    const serviceHistory = await tx.serviceHistoryRecord.create({
       data: {
         shopId: context.shopId,
         customerId: record.vehicle.customerId,
@@ -1325,17 +1416,33 @@ export async function markPilotMaintenanceServiceComplete(
         serviceDefinitionId: record.serviceDefinitionId,
         maintenanceRecordId: record.id,
         serviceName: record.customServiceName || record.serviceName,
-        completedAt: new Date(parsed.completedAt),
+        completedAt: completedDate,
         mileage: parsed.completedMileage,
         laborMinutes: parsed.finalLaborMinutes,
         priceCents: parsed.finalPriceCents,
         notes: parsed.notes || null,
       },
     });
+    await tx.vehicleMileageReading.create({
+      data: {
+        shopId: context.shopId,
+        vehicleId: record.vehicleId,
+        readingMileage: parsed.completedMileage,
+        readingDate: completedDate,
+        source: "SHOP_REPAIR_ORDER",
+        verificationStatus: "VERIFIED",
+        anomalyStatus: warningMessages.length > 0 ? "NEEDS_REVIEW" : "NONE",
+        includedInForecast: warningMessages.length === 0,
+        reviewNotes: warningMessages.join(" ") || null,
+        sourceReferenceType: "ServiceHistoryRecord",
+        sourceReferenceId: serviceHistory.id,
+        recordedByUserId: context.userId,
+      },
+    });
     await tx.vehicleMaintenanceRecord.update({
       where: { id: record.id },
       data: {
-        lastCompletedDate: new Date(parsed.completedAt),
+        lastCompletedDate: completedDate,
         lastCompletedMileage: parsed.completedMileage,
         priceCents: parsed.finalPriceCents,
         laborMinutes: parsed.finalLaborMinutes,
@@ -1349,12 +1456,12 @@ export async function markPilotMaintenanceServiceComplete(
       where: { id: record.vehicleId },
       data: {
         currentMileage: Math.max(record.vehicle.currentMileage, parsed.completedMileage),
-        lastServiceDate: new Date(parsed.completedAt),
+        lastServiceDate: completedDate,
       },
     });
     await tx.maintenanceRevenueOpportunity.updateMany({
       where: { shopId: context.shopId, maintenanceRecordId: record.id },
-      data: { stage: "COMPLETED", lastActivityAt: new Date(parsed.completedAt) },
+      data: { stage: "COMPLETED", lastActivityAt: completedDate },
     });
     await tx.auditLog.create({
       data: {
@@ -1367,9 +1474,12 @@ export async function markPilotMaintenanceServiceComplete(
           completedMileage: parsed.completedMileage,
           finalPriceCents: parsed.finalPriceCents,
           finalLaborMinutes: parsed.finalLaborMinutes,
+          readingDate: parsed.completedAt,
+          warnings: warningMessages,
         },
       },
     });
+    await recalculatePersistedDrivingProfile({ tx, context, vehicleId: record.vehicleId });
   });
 }
 
@@ -1473,6 +1583,36 @@ async function recalculatePersistedDrivingProfile({
 export async function updatePilotVehicleMileage(context: AuthenticatedShopContext, input: unknown) {
   const parsed = mileageUpdateSchema.parse(input);
   const vehicle = await requireVehicleInActiveShop(context, parsed.vehicleId);
+  const existingReadings = await prisma.vehicleMileageReading.findMany({
+    where: { shopId: context.shopId, vehicleId: vehicle.id },
+    orderBy: [{ readingDate: "asc" }, { createdAt: "asc" }],
+  });
+  const validationIssues = validateMileageReading({
+    reading: {
+      readingMileage: parsed.currentMileage,
+      readingDate: parsed.readingDate,
+    },
+    existingReadings: existingReadings.map((reading) => ({
+      readingMileage: reading.readingMileage,
+      readingDate: dateOnly(reading.readingDate),
+      source: reading.source,
+      verificationStatus: reading.verificationStatus,
+      anomalyStatus: reading.anomalyStatus,
+      includedInForecast: reading.includedInForecast,
+    })),
+    vehicleYear: vehicle.year,
+    asOf: currentDateInTimeZone(context.shopTimezone),
+  });
+  const blockingIssue = validationIssues.find((issue) => issue.severity === "error");
+  if (blockingIssue) {
+    throw new SafeActionError({
+      code: blockingIssue.code,
+      message: blockingIssue.message,
+      status: 400,
+      table: "VehicleMileageReading",
+      operation: "INSERT",
+    });
+  }
   if (parsed.currentMileage < vehicle.currentMileage && !parsed.allowLowerCorrection) {
     throw new SafeActionError({
       code: "MILEAGE_CORRECTION_REQUIRED",
@@ -1491,18 +1631,22 @@ export async function updatePilotVehicleMileage(context: AuthenticatedShopContex
   }
 
   await prisma.$transaction(async (tx) => {
-    const readingDate = new Date();
+    const warningMessages = validationIssues
+      .filter((issue) => issue.severity === "warning")
+      .map((issue) => issue.message);
+    const needsReview = warningMessages.length > 0;
     await tx.vehicleMileageReading.create({
       data: {
         shopId: context.shopId,
         vehicleId: vehicle.id,
         readingMileage: parsed.currentMileage,
-        readingDate,
+        readingDate: dateFromDateOnly(parsed.readingDate),
         source: parsed.currentMileage < vehicle.currentMileage ? "CORRECTION" : "SHOP_MANUAL_ENTRY",
         verificationStatus: "VERIFIED",
-        anomalyStatus: parsed.currentMileage < vehicle.currentMileage ? "RESOLVED" : "NONE",
-        includedInForecast: true,
+        anomalyStatus: needsReview ? "NEEDS_REVIEW" : parsed.currentMileage < vehicle.currentMileage ? "RESOLVED" : "NONE",
+        includedInForecast: !needsReview,
         correctionReason: parsed.correctionReason || null,
+        reviewNotes: warningMessages.join(" ") || null,
         recordedByUserId: context.userId,
       },
     });
@@ -1524,7 +1668,9 @@ export async function updatePilotVehicleMileage(context: AuthenticatedShopContex
         metadata: {
           previousMileage: vehicle.currentMileage,
           currentMileage: parsed.currentMileage,
+          readingDate: parsed.readingDate,
           correctionReason: parsed.correctionReason,
+          warnings: warningMessages,
         },
       },
     });
@@ -1897,6 +2043,7 @@ export async function importPilotCsvRows(
   await prisma.$transaction(async (tx) => {
     const customerByKey = new Map<string, { id: string; firstName: string; lastName: string; email: string | null; phone: string | null }>();
     const vehicleByKey = new Map<string, { id: string; customerId: string; year: number; make: string; model: string; vin: string | null; currentMileage: number; licensePlate: string | null }>();
+    const importedMileageKeys = new Set<string>();
 
     for (const row of rowsToImport) {
       const normalized = row.normalized;
@@ -2079,20 +2226,52 @@ export async function importPilotCsvRows(
       }
 
       if (stringValue(normalized, "serviceDate")) {
-        await tx.serviceHistoryRecord.create({
+        const serviceDate = stringValue(normalized, "serviceDate");
+        const serviceMileage = numberValue(normalized, "serviceMileage") || numberValue(normalized, "currentMileage");
+        const serviceHistory = await tx.serviceHistoryRecord.create({
           data: {
             shopId: context.shopId,
             customerId: customer.id,
             vehicleId: vehicle.id,
             serviceDefinitionId: service.id,
             serviceName,
-            completedAt: new Date(stringValue(normalized, "serviceDate")),
-            mileage: numberValue(normalized, "serviceMileage") || numberValue(normalized, "currentMileage"),
+            completedAt: dateFromDateOnly(serviceDate),
+            mileage: serviceMileage,
             laborMinutes,
             priceCents,
             notes: "Imported from CSV.",
           },
         });
+        const mileageKey = `${vehicle.id}|${serviceDate}|${serviceMileage}`;
+        const existingReading = serviceMileage > 0
+          ? await tx.vehicleMileageReading.findFirst({
+            where: {
+              shopId: context.shopId,
+              vehicleId: vehicle.id,
+              readingDate: dateFromDateOnly(serviceDate),
+              readingMileage: serviceMileage,
+            },
+          })
+          : null;
+        if (serviceMileage > 0 && !existingReading && !importedMileageKeys.has(mileageKey)) {
+          importedMileageKeys.add(mileageKey);
+          await tx.vehicleMileageReading.create({
+            data: {
+              shopId: context.shopId,
+              vehicleId: vehicle.id,
+              readingMileage: serviceMileage,
+              readingDate: dateFromDateOnly(serviceDate),
+              source: "SERVICE_HISTORY_IMPORT",
+              verificationStatus: "IMPORTED",
+              anomalyStatus: "NONE",
+              includedInForecast: true,
+              sourceReferenceType: "ServiceHistoryRecord",
+              sourceReferenceId: serviceHistory.id,
+              recordedByUserId: context.userId,
+            },
+          });
+          await recalculatePersistedDrivingProfile({ tx, context, vehicleId: vehicle.id });
+        }
       }
 
       if (

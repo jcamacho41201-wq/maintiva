@@ -9,6 +9,7 @@ export type AuthenticatedShopContext = {
   email: string;
   shopId: string;
   shopName: string;
+  shopTimezone: string;
   role: "OWNER" | "MANAGER" | "SERVICE_ADVISOR" | "TECHNICIAN";
   isDemo: boolean;
 };
@@ -103,6 +104,7 @@ export async function getAuthenticatedShopContext(): Promise<AuthenticatedShopCo
           select: {
             id: true,
             name: true,
+            timezone: true,
             isDemo: true,
           },
         },
@@ -132,6 +134,7 @@ export async function getAuthenticatedShopContext(): Promise<AuthenticatedShopCo
     email: authUser.email,
     shopId: membership.shopId,
     shopName: membership.shop.name,
+    shopTimezone: membership.shop.timezone,
     role: membership.role,
     isDemo: membership.shop.isDemo,
   };

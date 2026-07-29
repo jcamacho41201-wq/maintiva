@@ -37,6 +37,7 @@ const context: AuthenticatedShopContext = {
   email: "owner@example.com",
   shopId: "shop-a",
   shopName: "Shop A",
+  shopTimezone: "America/New_York",
   role: "OWNER",
   isDemo: false,
 };

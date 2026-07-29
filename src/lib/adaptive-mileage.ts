@@ -40,8 +40,23 @@ export type MileageAnomalyReview = {
   reason?: string;
 };
 
+export type MileageReadingValidationIssue = {
+  code:
+    | "READING_DATE_REQUIRED"
+    | "READING_DATE_FUTURE"
+    | "READING_DATE_BEFORE_MODEL_YEAR"
+    | "ODOMETER_SEQUENCE_CONFLICT"
+    | "DUPLICATE_READING";
+  severity: "error" | "warning";
+  message: string;
+};
+
 function parseDate(value: Date | string) {
   return value instanceof Date ? value : new Date(`${String(value).slice(0, 10)}T12:00:00Z`);
+}
+
+function dateKey(value: Date | string) {
+  return value instanceof Date ? value.toISOString().slice(0, 10) : String(value).slice(0, 10);
 }
 
 function daysBetween(start: Date | string, end: Date | string) {
@@ -59,13 +74,15 @@ function cleanAnnualMileage(value?: number | null) {
   return Math.round(value);
 }
 
-export function isUsableMileageReading(reading: MileageReadingDraft) {
+export function isUsableMileageReading(reading: MileageReadingDraft, asOf: Date | string = new Date()) {
+  const parsedDate = parseDate(reading.readingDate);
   return (
     reading.includedInForecast !== false &&
     reading.verificationStatus !== "EXCLUDED" &&
     reading.anomalyStatus !== "NEEDS_REVIEW" &&
     reading.readingMileage >= 0 &&
-    !Number.isNaN(parseDate(reading.readingDate).getTime())
+    !Number.isNaN(parsedDate.getTime()) &&
+    parsedDate.getTime() <= parseDate(asOf).getTime()
   );
 }
 
@@ -76,10 +93,10 @@ export function sortMileageReadings<T extends MileageReadingDraft>(readings: T[]
   );
 }
 
-function readingsByStatus(readings: MileageReadingDraft[], statuses: MileageVerificationStatus[]) {
+function readingsByStatus(readings: MileageReadingDraft[], statuses: MileageVerificationStatus[], asOf: Date | string = new Date()) {
   return sortMileageReadings(
     readings.filter((reading) =>
-      isUsableMileageReading(reading) && statuses.includes(reading.verificationStatus),
+      isUsableMileageReading(reading, asOf) && statuses.includes(reading.verificationStatus),
     ),
   );
 }
@@ -101,13 +118,15 @@ function classifyConfidence({
   readings,
   annualMileage,
   source,
+  asOf,
 }: {
   readings: MileageReadingDraft[];
   annualMileage: number;
   source: DrivingProfileEstimateSource;
+  asOf: Date | string;
 }): { confidence: DrivingProfileConfidence; reason: string } {
-  const verified = readingsByStatus(readings, ["VERIFIED"]);
-  const usable = sortMileageReadings(readings.filter(isUsableMileageReading));
+  const verified = readingsByStatus(readings, ["VERIFIED"], asOf);
+  const usable = sortMileageReadings(readings.filter((reading) => isUsableMileageReading(reading, asOf)));
   const usableSpan = spanDays(usable);
   const verifiedSpan = spanDays(verified);
   const reasonablePace = annualMileage > 0 && annualMileage <= reasonableAnnualMileageCeiling;
@@ -173,8 +192,85 @@ export function detectMileageAnomalies(readings: MileageReadingDraft[]): Mileage
   });
 }
 
+export function validateMileageReading({
+  reading,
+  existingReadings,
+  vehicleYear,
+  asOf = new Date(),
+}: {
+  reading: Pick<MileageReadingDraft, "readingMileage" | "readingDate">;
+  existingReadings: MileageReadingDraft[];
+  vehicleYear?: number | null;
+  asOf?: Date | string;
+}): MileageReadingValidationIssue[] {
+  const issues: MileageReadingValidationIssue[] = [];
+  const readingDate = dateKey(reading.readingDate);
+  const parsedDate = parseDate(readingDate);
+  const asOfDate = parseDate(asOf);
+
+  if (!readingDate || Number.isNaN(parsedDate.getTime())) {
+    return [{
+      code: "READING_DATE_REQUIRED",
+      severity: "error",
+      message: "Reading Date is required.",
+    }];
+  }
+
+  if (parsedDate.getTime() > asOfDate.getTime()) {
+    issues.push({
+      code: "READING_DATE_FUTURE",
+      severity: "error",
+      message: "Reading Date cannot be in the future.",
+    });
+  }
+
+  if (vehicleYear && parsedDate.getTime() < parseDate(`${vehicleYear}-01-01`).getTime()) {
+    issues.push({
+      code: "READING_DATE_BEFORE_MODEL_YEAR",
+      severity: "warning",
+      message: "Reading Date is earlier than the vehicle model year.",
+    });
+  }
+
+  for (const existing of existingReadings) {
+    const existingDate = dateKey(existing.readingDate);
+    const existingTime = parseDate(existingDate).getTime();
+    if (Number.isNaN(existingTime)) continue;
+
+    if (existingDate === readingDate && existing.readingMileage === reading.readingMileage) {
+      issues.push({
+        code: "DUPLICATE_READING",
+        severity: "warning",
+        message: "An identical reading already exists for this vehicle and Reading Date.",
+      });
+    }
+
+    if (
+      existing.verificationStatus === "VERIFIED" &&
+      existingDate > readingDate &&
+      existing.readingMileage < reading.readingMileage
+    ) {
+      issues.push({
+        code: "ODOMETER_SEQUENCE_CONFLICT",
+        severity: "warning",
+        message: "This mileage is higher than a later verified reading.",
+      });
+    }
+
+    if (existing.verificationStatus === "VERIFIED" && existingDate < readingDate && existing.readingMileage > reading.readingMileage) {
+      issues.push({
+        code: "ODOMETER_SEQUENCE_CONFLICT",
+        severity: "warning",
+        message: "This mileage is lower than an earlier verified reading.",
+      });
+    }
+  }
+
+  return issues;
+}
+
 export function resolveCurrentMileage(vehicle: Pick<Vehicle, "currentMileage">, readings: MileageReadingDraft[]) {
-  const latest = sortMileageReadings(readings.filter(isUsableMileageReading)).at(-1);
+  const latest = sortMileageReadings(readings.filter((reading) => isUsableMileageReading(reading))).at(-1);
   return {
     currentMileage: latest?.readingMileage ?? vehicle.currentMileage,
     source: latest ? "Latest valid mileage reading" : "Legacy vehicle mileage",
@@ -195,9 +291,9 @@ export function calculateDrivingProfile({
 }: DrivingProfileCalculationInput): DrivingProfileCalculation {
   const shopDefault = cleanAnnualMileage(shopDefaultAnnualMileage) ?? DEFAULT_ANNUAL_MILEAGE;
   const manualOverride = cleanAnnualMileage(existingProfile?.manualAnnualMileageOverride);
-  const verified = readingsByStatus(readings, ["VERIFIED"]);
-  const imported = readingsByStatus(readings, ["IMPORTED"]);
-  const usable = sortMileageReadings(readings.filter(isUsableMileageReading));
+  const verified = readingsByStatus(readings, ["VERIFIED"], asOf);
+  const imported = readingsByStatus(readings, ["IMPORTED"], asOf);
+  const usable = sortMileageReadings(readings.filter((reading) => isUsableMileageReading(reading, asOf)));
   let calculatedAnnualMileage = shopDefault;
   let estimateSource: DrivingProfileEstimateSource = "SHOP_DEFAULT";
 
@@ -223,7 +319,7 @@ export function calculateDrivingProfile({
         confidence: "LOW" as DrivingProfileConfidence,
         reason: "Manual override is active; review before treating the estimate as learned behavior.",
       }
-    : classifyConfidence({ readings, annualMileage: calculatedAnnualMileage, source: estimateSource });
+    : classifyConfidence({ readings, annualMileage: calculatedAnnualMileage, source: estimateSource, asOf });
 
   return {
     shopId,

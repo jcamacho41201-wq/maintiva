@@ -5,6 +5,7 @@ import {
   detectMileageAnomalies,
   estimateServiceDueDate,
   resolveCurrentMileage,
+  validateMileageReading,
   type MileageReadingDraft,
 } from "@/lib/adaptive-mileage";
 
@@ -122,6 +123,36 @@ describe("adaptive mileage profile calculation", () => {
       status: "NEEDS_REVIEW",
       reason: "Mileage is lower than the prior dated reading.",
     });
+  });
+
+  it("blocks future reading dates and warns about dated odometer conflicts", () => {
+    const issues = validateMileageReading({
+      reading: { readingMileage: 60_000, readingDate: "2026-07-30" },
+      existingReadings: [
+        { ...baseReading, readingMileage: 55_000, readingDate: "2026-07-20" },
+        { ...baseReading, readingMileage: 60_000, readingDate: "2026-07-30" },
+      ],
+      vehicleYear: 2020,
+      asOf: "2026-07-29",
+    });
+
+    expect(issues.map((issue) => issue.code)).toEqual(expect.arrayContaining([
+      "READING_DATE_FUTURE",
+      "DUPLICATE_READING",
+    ]));
+  });
+
+  it("does not personalize annual mileage from future-dated readings", () => {
+    const result = profile(
+      [
+        { ...baseReading, readingMileage: 10_000, readingDate: "2026-01-01" },
+        { ...baseReading, readingMileage: 40_000, readingDate: "2026-12-01" },
+      ],
+      { asOf: "2026-07-29" },
+    );
+
+    expect(result.estimateSource).toBe("VERIFIED_PLUS_DEFAULT");
+    expect(result.calculatedAnnualMileage).toBe(DEFAULT_ANNUAL_MILEAGE);
   });
 
   it("previews mileage due date without changing opportunities", () => {

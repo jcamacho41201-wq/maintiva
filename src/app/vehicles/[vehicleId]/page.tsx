@@ -24,11 +24,11 @@ import {
   getRecommendedRecords,
   vehicleLabel,
 } from "@/lib/demo-calculations";
-import { type MaintenanceService, type OutreachThresholdType, type TimeIntervalUnit, type Vehicle, type VehicleDrivingProfile, type VehicleMaintenanceRecord, type VehicleMileageReading } from "@/lib/demo-data";
+import { type MaintenanceService, type OutreachThresholdType, type TimeIntervalUnit, type User, type Vehicle, type VehicleDrivingProfile, type VehicleMaintenanceRecord, type VehicleMileageReading } from "@/lib/demo-data";
 import { type MaintenanceItemInput, useDemoStore } from "@/lib/demo-store";
-import { calculateDrivingProfile, estimateServiceDueDate } from "@/lib/adaptive-mileage";
+import { calculateDrivingProfile, estimateServiceDueDate, validateMileageReading } from "@/lib/adaptive-mileage";
 import { formatInterval, resolveMaintenanceInterval } from "@/lib/service-intervals";
-import { formatCurrency, formatDate, formatHours } from "@/lib/utils";
+import { currentDateInTimeZone, formatCurrency, formatDate, formatDateTime, formatHours } from "@/lib/utils";
 
 type PlanFormState = {
   serviceDefinitionId: string;
@@ -174,20 +174,45 @@ function DetailTile({ label, value }: { label: string; value: React.ReactNode })
 
 function MileageModal({
   vehicle,
+  readings,
+  shopTimezone,
+  initialMileage,
+  initialReadingDate,
   onClose,
 }: {
   vehicle: Vehicle;
+  readings: VehicleMileageReading[];
+  shopTimezone: string;
+  initialMileage?: number;
+  initialReadingDate?: string;
   onClose: () => void;
 }) {
   const store = useDemoStore();
-  const [mileage, setMileage] = useState(vehicle.currentMileage.toString());
+  const today = currentDateInTimeZone(shopTimezone);
+  const [mileage, setMileage] = useState((initialMileage ?? vehicle.currentMileage).toString());
+  const [readingDate, setReadingDate] = useState(initialReadingDate ?? today);
   const [allowLower, setAllowLower] = useState(false);
   const [reason, setReason] = useState("");
   const [error, setError] = useState("");
+  const issues = validateMileageReading({
+    reading: {
+      readingMileage: parseRequiredInt(mileage),
+      readingDate,
+    },
+    existingReadings: readings,
+    vehicleYear: vehicle.year,
+    asOf: today,
+  });
+  const warnings = issues.filter((issue) => issue.severity === "warning");
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const currentMileage = parseRequiredInt(mileage);
+    const blockingIssue = issues.find((issue) => issue.severity === "error");
+    if (blockingIssue) {
+      setError(blockingIssue.message);
+      return;
+    }
     if (currentMileage < vehicle.currentMileage && (!allowLower || !reason.trim())) {
       setError("Lower mileage requires a correction reason.");
       return;
@@ -195,6 +220,7 @@ function MileageModal({
     const result = await store.updateVehicleMileage({
       vehicleId: vehicle.id,
       currentMileage,
+      readingDate,
       allowLowerCorrection: allowLower,
       correctionReason: reason.trim() || undefined,
     });
@@ -225,6 +251,25 @@ function MileageModal({
               className="w-full rounded-lg border border-zinc-200 px-3 py-2"
             />
           </label>
+          <label className="space-y-1 text-sm">
+            <span className="font-medium">Reading Date</span>
+            <input
+              type="date"
+              required
+              max={today}
+              value={readingDate}
+              onChange={(event) => setReadingDate(event.target.value)}
+              className="w-full rounded-lg border border-zinc-200 px-3 py-2"
+            />
+            <span className="block text-xs text-zinc-500">The date this odometer reading was observed.</span>
+          </label>
+          {warnings.length > 0 && (
+            <div className="rounded-lg border border-yellow-200 bg-yellow-50 p-3 text-sm text-yellow-900">
+              {warnings.map((warning) => (
+                <p key={`${warning.code}-${warning.message}`}>{warning.message}</p>
+              ))}
+            </div>
+          )}
           {parseRequiredInt(mileage) < vehicle.currentMileage && (
             <div className="space-y-3 rounded-lg border border-yellow-200 bg-yellow-50 p-3 text-sm">
               <label className="flex items-center gap-2 font-medium text-yellow-900">
@@ -264,21 +309,30 @@ function DrivingProfilePanel({
   vehicle,
   profile,
   readings,
+  users,
+  shopTimezone,
 }: {
   vehicle: Vehicle;
   profile: VehicleDrivingProfile;
   readings: VehicleMileageReading[];
+  users: User[];
+  shopTimezone: string;
 }) {
   const store = useDemoStore();
-  const sortedReadings = [...readings].sort((a, b) => b.readingDate.localeCompare(a.readingDate));
+  const sortedReadings = [...readings].sort((a, b) =>
+    b.readingDate.localeCompare(a.readingDate) ||
+    String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? "")),
+  );
   const [reportedMileage, setReportedMileage] = useState((profile.customerReportedAnnualMileage ?? vehicle.estimatedAnnualMileage).toString());
   const [overrideMileage, setOverrideMileage] = useState((profile.manualAnnualMileageOverride ?? "").toString());
   const [overrideReason, setOverrideReason] = useState(profile.manualOverrideReason ?? "");
   const [overrideNotes, setOverrideNotes] = useState(profile.manualOverrideNotes ?? "");
+  const [correctingReading, setCorrectingReading] = useState<VehicleMileageReading | null>(null);
   const [error, setError] = useState("");
   const dailyMileage = Math.round(profile.calculatedAnnualMileage / 365);
   const monthlyMileage = Math.round(profile.calculatedAnnualMileage / 12);
   const latestReading = sortedReadings.find((reading) => reading.includedInForecast && reading.anomalyStatus !== "NEEDS_REVIEW");
+  const usersById = useMemo(() => new Map(users.map((user) => [user.id, user])), [users]);
 
   async function saveReported() {
     const annualMileage = parseRequiredInt(reportedMileage);
@@ -426,18 +480,49 @@ function DrivingProfilePanel({
                     {compactLabel(reading.anomalyStatus)}
                   </Badge>
                 </div>
-                <p className="mt-1 text-zinc-500">
-                  {formatDate(reading.readingDate)} · {compactLabel(reading.source)} · {compactLabel(reading.verificationStatus)}
-                </p>
+                <dl className="mt-2 grid gap-2 text-zinc-600 sm:grid-cols-2">
+                  <div>
+                    <dt className="text-xs uppercase text-zinc-400">Reading Date</dt>
+                    <dd className="font-medium text-zinc-900">{formatDate(reading.readingDate)}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs uppercase text-zinc-400">Source</dt>
+                    <dd>{compactLabel(reading.source)}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs uppercase text-zinc-400">Verification</dt>
+                    <dd>{compactLabel(reading.verificationStatus)}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs uppercase text-zinc-400">Date entered</dt>
+                    <dd>{reading.createdAt ? formatDateTime(reading.createdAt) : "Not recorded"}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs uppercase text-zinc-400">Entered by</dt>
+                    <dd>{reading.recordedByUserId ? usersById.get(reading.recordedByUserId)?.name ?? "Shop user" : "Not recorded"}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs uppercase text-zinc-400">Included in forecast</dt>
+                    <dd>{reading.includedInForecast ? "Yes" : "No"}</dd>
+                  </div>
+                </dl>
                 {reading.correctionReason && <p className="mt-1 text-zinc-600">{reading.correctionReason}</p>}
                 {reading.reviewNotes && <p className="mt-1 text-zinc-600">{reading.reviewNotes}</p>}
               </div>
-              <button
-                onClick={() => void toggleReading(reading)}
-                className="rounded-lg border border-zinc-200 px-3 py-2 font-semibold"
-              >
-                {reading.includedInForecast ? "Exclude" : "Include"}
-              </button>
+              <div className="flex flex-wrap gap-2 md:justify-end">
+                <button
+                  onClick={() => setCorrectingReading(reading)}
+                  className="rounded-lg border border-zinc-200 px-3 py-2 font-semibold"
+                >
+                  Correct
+                </button>
+                <button
+                  onClick={() => void toggleReading(reading)}
+                  className="rounded-lg border border-zinc-200 px-3 py-2 font-semibold"
+                >
+                  {reading.includedInForecast ? "Exclude" : "Include"}
+                </button>
+              </div>
             </div>
           ))}
           {sortedReadings.length === 0 && (
@@ -447,6 +532,16 @@ function DrivingProfilePanel({
           )}
         </CardContent>
       </Card>
+      {correctingReading && (
+        <MileageModal
+          vehicle={vehicle}
+          readings={readings}
+          shopTimezone={shopTimezone}
+          initialMileage={correctingReading.readingMileage}
+          initialReadingDate={correctingReading.readingDate}
+          onClose={() => setCorrectingReading(null)}
+        />
+      )}
     </div>
   );
 }
@@ -806,16 +901,19 @@ function CompleteServiceModal({
   record,
   vehicle,
   service,
+  shopTimezone,
   onClose,
 }: {
   record: VehicleMaintenanceRecord;
   vehicle: Vehicle;
   service?: MaintenanceService;
+  shopTimezone: string;
   onClose: () => void;
 }) {
   const store = useDemoStore();
   const effective = resolveMaintenanceInterval({ record, service, vehicle });
-  const [completedAt, setCompletedAt] = useState(new Date().toISOString().slice(0, 10));
+  const today = currentDateInTimeZone(shopTimezone);
+  const [completedAt, setCompletedAt] = useState(today);
   const [completedMileage, setCompletedMileage] = useState(vehicle.currentMileage.toString());
   const [price, setPrice] = useState((effective.priceCents / 100).toString());
   const [laborHours, setLaborHours] = useState((effective.laborMinutes / 60).toString());
@@ -851,7 +949,7 @@ function CompleteServiceModal({
         <div className="grid gap-4 p-5 sm:grid-cols-2">
           <label className="space-y-1 text-sm">
             <span className="font-medium">Completed date</span>
-            <input type="date" value={completedAt} onChange={(event) => setCompletedAt(event.target.value)} className="w-full rounded-lg border border-zinc-200 px-3 py-2" />
+            <input type="date" max={today} value={completedAt} onChange={(event) => setCompletedAt(event.target.value)} className="w-full rounded-lg border border-zinc-200 px-3 py-2" />
           </label>
           <label className="space-y-1 text-sm">
             <span className="font-medium">Completed mileage</span>
@@ -1022,7 +1120,13 @@ export default function VehicleMaintenancePage() {
         ))}
       </section>
 
-      <DrivingProfilePanel vehicle={vehicle} profile={drivingProfile} readings={mileageReadings} />
+      <DrivingProfilePanel
+        vehicle={vehicle}
+        profile={drivingProfile}
+        readings={mileageReadings}
+        users={state.users}
+        shopTimezone={state.shop.timezone}
+      />
 
       <Card>
         <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -1188,7 +1292,14 @@ export default function VehicleMaintenancePage() {
         Back to customer profile
       </Link>
 
-      {mileageOpen && <MileageModal vehicle={vehicle} onClose={() => setMileageOpen(false)} />}
+      {mileageOpen && (
+        <MileageModal
+          vehicle={vehicle}
+          readings={mileageReadings}
+          shopTimezone={state.shop.timezone}
+          onClose={() => setMileageOpen(false)}
+        />
+      )}
       {addOpen && <MaintenanceItemModal vehicle={vehicle} onClose={() => setAddOpen(false)} />}
       {editingRecord && (
         <MaintenanceItemModal
@@ -1202,6 +1313,7 @@ export default function VehicleMaintenancePage() {
           record={completeRecord}
           vehicle={vehicle}
           service={completeRecord.serviceId ? servicesById.get(completeRecord.serviceId) : undefined}
+          shopTimezone={state.shop.timezone}
           onClose={() => setCompleteRecord(null)}
         />
       )}
