@@ -7,8 +7,13 @@ import {
   type Customer,
   type DemoState,
   type ImportHistoryRecord,
+  type MaintenanceService,
+  type VehicleDrivingProfile,
+  type VehicleMileageReading,
   type OutreachRecord,
+  type TimeIntervalUnit,
   type Vehicle,
+  type VehicleMaintenanceRecord,
 } from "@/lib/demo-data";
 import { hasActiveVehicleAppointmentAt } from "@/lib/appointment";
 import { createAppointmentFromRecords } from "@/lib/demo-calculations";
@@ -21,12 +26,58 @@ import {
   type ImportType,
   type MaintivaField,
 } from "@/lib/csv-import";
+import { calculateDrivingProfile } from "@/lib/adaptive-mileage";
 
 const storageKey = "maintiva-demo-state-v2";
 const changeEvent = "maintiva-demo-state";
 let cachedState: DemoState | undefined;
 const serverSnapshot = createInitialDemoState();
+const authenticatedLoadingSnapshot: DemoState = {
+  ...serverSnapshot,
+  shop: {
+    ...serverSnapshot.shop,
+    id: "",
+    name: "Loading shop",
+    slug: "",
+    isDemo: false,
+    onboardingCompletedAt: null,
+  },
+  users: [],
+  customers: [],
+  vehicles: [],
+  services: [],
+  maintenanceRecords: [],
+  mileageReadings: [],
+  drivingProfiles: [],
+  serviceRecords: [],
+  declinedWorkRecords: [],
+  importHistory: [],
+  outreachRecords: [],
+  appointments: [],
+  seededAt: "",
+};
 export type MutationResult = { ok: boolean; message?: string };
+
+export type ServiceDefinitionInput = Omit<MaintenanceService, "id" | "shopId">;
+export type MaintenanceItemInput = {
+  vehicleId: string;
+  serviceDefinitionId?: string | null;
+  customServiceName?: string;
+  customCategory?: string;
+  addToLibrary?: boolean;
+  useShopDefaults?: boolean;
+  allowDuplicate?: boolean;
+  mileageIntervalOverride?: number | null;
+  timeIntervalValueOverride?: number | null;
+  timeIntervalUnitOverride?: TimeIntervalUnit | null;
+  priceOverrideCents?: number | null;
+  laborMinutesOverride?: number | null;
+  lastCompletedDate?: string;
+  lastCompletedMileage?: number | null;
+  outreachThresholdType?: VehicleMaintenanceRecord["outreachThresholdType"];
+  outreachThresholdValue?: number;
+  notes?: string;
+};
 
 function getServerSnapshot() {
   return serverSnapshot;
@@ -34,9 +85,34 @@ function getServerSnapshot() {
 
 function normalizeState(state: DemoState): DemoState {
   const baseline = createInitialDemoState();
+  const services = (state.services ?? baseline.services).map((service) => ({
+    ...service,
+    defaultMileageInterval: service.defaultMileageInterval ?? null,
+    defaultTimeIntervalValue: service.defaultTimeIntervalValue ?? service.defaultTimeIntervalMonths ?? null,
+    defaultTimeIntervalUnit: service.defaultTimeIntervalUnit ?? "MONTHS",
+    defaultTimeIntervalMonths: service.defaultTimeIntervalMonths ?? monthsFromTime(
+      service.defaultTimeIntervalValue,
+      service.defaultTimeIntervalUnit,
+    ),
+  }));
   return {
     ...baseline,
     ...state,
+    services,
+    mileageReadings: state.mileageReadings ?? baseline.mileageReadings,
+    drivingProfiles: state.drivingProfiles ?? baseline.drivingProfiles,
+    maintenanceRecords: (state.maintenanceRecords ?? baseline.maintenanceRecords).map((record) => ({
+      ...record,
+      serviceId: record.serviceId ?? null,
+      mileageIntervalOverride: record.mileageIntervalOverride ?? null,
+      timeIntervalValueOverride: record.timeIntervalValueOverride ?? null,
+      timeIntervalUnitOverride: record.timeIntervalUnitOverride ?? null,
+      priceOverrideCents: record.priceOverrideCents ?? null,
+      laborMinutesOverride: record.laborMinutesOverride ?? null,
+      outreachThresholdType: record.outreachThresholdType ?? "MILES_BEFORE_DUE",
+      outreachThresholdValue: record.outreachThresholdValue ?? 500,
+      isActive: record.isActive ?? true,
+    })),
     declinedWorkRecords: state.declinedWorkRecords ?? baseline.declinedWorkRecords,
     importHistory: state.importHistory ?? baseline.importHistory,
     outreachRecords: (state.outreachRecords ?? baseline.outreachRecords).map((record) => ({
@@ -66,7 +142,7 @@ function readState() {
   }
 
   if (!shouldUseLocalDemoPersistence()) {
-    return cachedState ?? getServerSnapshot();
+    return cachedState ?? authenticatedLoadingSnapshot;
   }
 
   if (cachedState) {
@@ -176,6 +252,74 @@ function numeric(value: string | number | undefined) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+function serviceSlug(name: string) {
+  return name.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || `service-${Date.now()}`;
+}
+
+function monthsFromTime(value?: number | null, unit?: TimeIntervalUnit | null) {
+  if (!value || !unit) return null;
+  if (unit === "DAYS") return Math.max(1, Math.round(value / 30.4375));
+  if (unit === "YEARS") return value * 12;
+  return value;
+}
+
+function upsertLocalDrivingProfile(
+  draft: DemoState,
+  vehicleId: string,
+  patch: Partial<VehicleDrivingProfile> = {},
+) {
+  const vehicle = draft.vehicles.find((item) => item.id === vehicleId);
+  if (!vehicle) return draft;
+  const existing = draft.drivingProfiles.find((profile) => profile.vehicleId === vehicleId);
+  const calculated = calculateDrivingProfile({
+    shopId: draft.shop.id,
+    vehicleId,
+    readings: draft.mileageReadings
+      .filter((reading) => reading.vehicleId === vehicleId)
+      .map((reading) => ({
+        readingMileage: reading.readingMileage,
+        readingDate: reading.readingDate,
+        source: reading.source,
+        verificationStatus: reading.verificationStatus,
+        anomalyStatus: reading.anomalyStatus,
+        includedInForecast: reading.includedInForecast,
+      })),
+    shopDefaultAnnualMileage: draft.shop.defaultAnnualMileage,
+    customerReportedAnnualMileage: patch.customerReportedAnnualMileage ?? existing?.customerReportedAnnualMileage ?? vehicle.estimatedAnnualMileage,
+    customerReportedAt: patch.customerReportedAt ?? existing?.customerReportedAt ?? null,
+    customerReportedByUserId: patch.customerReportedByUserId ?? existing?.customerReportedByUserId ?? null,
+    existingProfile: {
+      ...existing,
+      ...patch,
+    },
+  });
+  const profile: VehicleDrivingProfile = {
+    id: existing?.id ?? `profile-${vehicleId}`,
+    shopId: draft.shop.id,
+    vehicleId,
+    customerReportedAnnualMileage: calculated.customerReportedAnnualMileage,
+    customerReportedAt: calculated.customerReportedAt,
+    customerReportedByUserId: calculated.customerReportedByUserId,
+    calculatedAnnualMileage: calculated.calculatedAnnualMileage,
+    estimateSource: calculated.estimateSource,
+    confidence: calculated.confidence,
+    confidenceReason: calculated.confidenceReason,
+    manualAnnualMileageOverride: calculated.manualAnnualMileageOverride,
+    manualOverrideReason: calculated.manualOverrideReason,
+    manualOverrideNotes: calculated.manualOverrideNotes,
+    manualOverrideSetAt: calculated.manualOverrideSetAt,
+    manualOverrideSetByUserId: calculated.manualOverrideSetByUserId,
+    lastCalculatedAt: calculated.lastCalculatedAt,
+  };
+
+  return {
+    ...draft,
+    drivingProfiles: existing
+      ? draft.drivingProfiles.map((item) => item.vehicleId === vehicleId ? profile : item)
+      : [...draft.drivingProfiles, profile],
+  };
+}
+
 export function useDemoStore() {
   const state = useSyncExternalStore(subscribe, readState, getServerSnapshot);
 
@@ -192,7 +336,7 @@ export function useDemoStore() {
 
     return {
       state,
-      ready: true,
+      ready: shouldUseLocalDemoPersistence() || Boolean(state.shop.id),
       resetDemoData() {
         if (!shouldUseLocalDemoPersistence()) return;
         saveState(createInitialDemoState());
@@ -233,29 +377,457 @@ export function useDemoStore() {
       },
       addVehicle(input: Omit<Vehicle, "id" | "shopId" | "overallHealth" | "lastServiceDate" | "vehicleType">) {
         void mutatePilotState({ action: "addVehicle", payload: input });
-        update((draft) => ({
-          ...draft,
-          vehicles: [
-            ...draft.vehicles,
-            {
-              ...input,
-              id: `veh-${Date.now()}`,
-              shopId: draft.shop.id,
-              vehicleType: "Passenger vehicle",
-              overallHealth: 80,
-              lastServiceDate: new Date().toISOString().slice(0, 10),
-            },
-          ],
-        }));
+        update((draft) => {
+          const now = Date.now();
+          const vehicleId = `veh-${now}`;
+          const next = {
+            ...draft,
+            vehicles: [
+              ...draft.vehicles,
+              {
+                ...input,
+                id: vehicleId,
+                shopId: draft.shop.id,
+                vehicleType: "Passenger vehicle",
+                overallHealth: 80,
+                lastServiceDate: new Date().toISOString().slice(0, 10),
+              },
+            ],
+            mileageReadings: [
+              ...draft.mileageReadings,
+              {
+                id: `mile-${now}`,
+                shopId: draft.shop.id,
+                vehicleId,
+                readingMileage: input.currentMileage,
+                readingDate: new Date().toISOString().slice(0, 10),
+                source: "SHOP_MANUAL_ENTRY" as const,
+                verificationStatus: "VERIFIED" as const,
+                anomalyStatus: "NONE" as const,
+                includedInForecast: true,
+                recordedByUserId: draft.users[0]?.id,
+              },
+            ],
+          };
+          return upsertLocalDrivingProfile(next, vehicleId);
+        });
       },
       updateVehicle(vehicleId: string, input: Partial<Vehicle>) {
         void mutatePilotState({ action: "updateVehicle", id: vehicleId, payload: input });
         update((draft) => ({
-          ...draft,
-          vehicles: draft.vehicles.map((vehicle) =>
-            vehicle.id === vehicleId ? { ...vehicle, ...input } : vehicle,
+          ...upsertLocalDrivingProfile(
+            {
+              ...draft,
+              vehicles: draft.vehicles.map((vehicle) =>
+                vehicle.id === vehicleId ? { ...vehicle, ...input } : vehicle,
+              ),
+              mileageReadings: input.currentMileage === undefined
+                ? draft.mileageReadings
+                : [
+                    ...draft.mileageReadings,
+                    {
+                      id: `mile-${Date.now()}`,
+                      shopId: draft.shop.id,
+                      vehicleId,
+                      readingMileage: input.currentMileage,
+                      readingDate: new Date().toISOString().slice(0, 10),
+                      source: "SHOP_MANUAL_ENTRY",
+                      verificationStatus: "VERIFIED",
+                      anomalyStatus: "NONE",
+                      includedInForecast: true,
+                      recordedByUserId: draft.users[0]?.id,
+                    },
+                  ],
+            },
+            vehicleId,
           ),
         }));
+      },
+      addServiceDefinition(input: ServiceDefinitionInput) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "addServiceDefinition", payload: input });
+        }
+
+        update((draft) => ({
+          ...draft,
+          services: [
+            ...draft.services,
+            {
+              ...input,
+              id: `svc-${serviceSlug(input.name)}-${Date.now()}`,
+              shopId: draft.shop.id,
+              defaultTimeIntervalMonths: monthsFromTime(input.defaultTimeIntervalValue, input.defaultTimeIntervalUnit),
+            },
+          ],
+        }));
+        return Promise.resolve({ ok: true, message: undefined });
+      },
+      updateServiceDefinition(serviceId: string, input: Partial<ServiceDefinitionInput>) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "updateServiceDefinition", id: serviceId, payload: input });
+        }
+
+        update((draft) => ({
+          ...draft,
+          services: draft.services.map((service) =>
+            service.id === serviceId
+              ? {
+                  ...service,
+                  ...input,
+                  defaultTimeIntervalMonths: input.defaultTimeIntervalValue !== undefined || input.defaultTimeIntervalUnit !== undefined
+                    ? monthsFromTime(
+                      input.defaultTimeIntervalValue ?? service.defaultTimeIntervalValue,
+                      input.defaultTimeIntervalUnit ?? service.defaultTimeIntervalUnit,
+                    )
+                    : service.defaultTimeIntervalMonths,
+                }
+              : service,
+          ),
+        }));
+        return Promise.resolve({ ok: true, message: undefined });
+      },
+      addMaintenanceItem(input: MaintenanceItemInput) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "addMaintenanceItem", payload: input });
+        }
+
+        let blocked = "";
+        update((draft) => {
+          const service = input.serviceDefinitionId
+            ? draft.services.find((item) => item.id === input.serviceDefinitionId)
+            : undefined;
+          if (
+            service &&
+            !input.allowDuplicate &&
+            draft.maintenanceRecords.some((record) =>
+              record.vehicleId === input.vehicleId &&
+              record.serviceId === service.id &&
+              record.isActive !== false,
+            )
+          ) {
+            blocked = "This active service is already assigned to the vehicle.";
+            return draft;
+          }
+
+          let serviceId = service?.id ?? null;
+          let services = draft.services;
+          if (!service && input.addToLibrary && input.customServiceName) {
+            serviceId = `svc-${serviceSlug(input.customServiceName)}-${Date.now()}`;
+            services = [
+              ...services,
+              {
+                id: serviceId,
+                shopId: draft.shop.id,
+                name: input.customServiceName,
+                category: input.customCategory || "Custom",
+                defaultMileageInterval: input.mileageIntervalOverride ?? null,
+                defaultTimeIntervalMonths: monthsFromTime(input.timeIntervalValueOverride, input.timeIntervalUnitOverride),
+                defaultTimeIntervalValue: input.timeIntervalValueOverride ?? null,
+                defaultTimeIntervalUnit: input.timeIntervalUnitOverride ?? "MONTHS",
+                defaultNotificationThreshold: 10,
+                estimatedLaborMinutes: input.laborMinutesOverride ?? 0,
+                defaultPriceCents: input.priceOverrideCents ?? 0,
+                description: input.notes ?? "",
+                isActive: true,
+              },
+            ];
+          }
+
+          const useDefaults = Boolean(serviceId && input.useShopDefaults !== false);
+          const selectedService = serviceId ? services.find((item) => item.id === serviceId) : undefined;
+          const mileageOverride = useDefaults ? null : input.mileageIntervalOverride ?? null;
+          const timeValueOverride = useDefaults ? null : input.timeIntervalValueOverride ?? null;
+          const timeUnitOverride = useDefaults ? null : input.timeIntervalUnitOverride ?? null;
+          const priceOverride = useDefaults ? null : input.priceOverrideCents ?? null;
+          const laborOverride = useDefaults ? null : input.laborMinutesOverride ?? null;
+          const serviceName = selectedService?.name ?? input.customServiceName ?? "Custom service";
+
+          return {
+            ...draft,
+            services,
+            maintenanceRecords: [
+              ...draft.maintenanceRecords,
+              {
+                id: `item-${input.vehicleId}-${serviceSlug(serviceName)}-${Date.now()}`,
+                shopId: draft.shop.id,
+                vehicleId: input.vehicleId,
+                serviceId,
+                serviceName,
+                customServiceName: serviceId ? undefined : input.customServiceName,
+                customCategory: serviceId ? undefined : input.customCategory || "Custom",
+                lastCompletedDate: input.lastCompletedDate || new Date().toISOString().slice(0, 10),
+                lastCompletedMileage: input.lastCompletedMileage ?? 0,
+                recommendedMileageInterval: mileageOverride,
+                recommendedTimeIntervalMonths: monthsFromTime(timeValueOverride, timeUnitOverride),
+                mileageIntervalOverride: mileageOverride,
+                timeIntervalValueOverride: timeValueOverride,
+                timeIntervalUnitOverride: timeUnitOverride,
+                priceCents: priceOverride ?? selectedService?.defaultPriceCents ?? input.priceOverrideCents ?? 0,
+                laborHours: (laborOverride ?? selectedService?.estimatedLaborMinutes ?? input.laborMinutesOverride ?? 0) / 60,
+                priceOverrideCents: priceOverride,
+                laborMinutesOverride: laborOverride,
+                notificationThreshold: 10,
+                outreachThresholdType: input.outreachThresholdType ?? "MILES_BEFORE_DUE",
+                outreachThresholdValue: input.outreachThresholdValue ?? 500,
+                outreachStatus: "NEEDS_OUTREACH",
+                isActive: true,
+                notes: input.notes,
+                createdByUserId: draft.users[0]?.id,
+                updatedByUserId: draft.users[0]?.id,
+              },
+            ],
+          };
+        });
+        return Promise.resolve(blocked ? { ok: false, message: blocked } : { ok: true, message: undefined });
+      },
+      updateMaintenanceItem(recordId: string, input: Partial<MaintenanceItemInput>) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "updateMaintenanceItem", id: recordId, payload: input });
+        }
+
+        update((draft) => ({
+          ...draft,
+          maintenanceRecords: draft.maintenanceRecords.map((record) => {
+            if (record.id !== recordId) return record;
+            const reset = input.useShopDefaults === true;
+            return {
+              ...record,
+              lastCompletedDate: input.lastCompletedDate ?? record.lastCompletedDate,
+              lastCompletedMileage: input.lastCompletedMileage ?? record.lastCompletedMileage,
+              mileageIntervalOverride: reset ? null : input.mileageIntervalOverride ?? record.mileageIntervalOverride,
+              timeIntervalValueOverride: reset ? null : input.timeIntervalValueOverride ?? record.timeIntervalValueOverride,
+              timeIntervalUnitOverride: reset ? null : input.timeIntervalUnitOverride ?? record.timeIntervalUnitOverride,
+              recommendedMileageInterval: reset ? null : input.mileageIntervalOverride ?? record.recommendedMileageInterval,
+              recommendedTimeIntervalMonths: reset
+                ? null
+                : input.timeIntervalValueOverride !== undefined || input.timeIntervalUnitOverride !== undefined
+                  ? monthsFromTime(
+                    input.timeIntervalValueOverride ?? record.timeIntervalValueOverride,
+                    input.timeIntervalUnitOverride ?? record.timeIntervalUnitOverride,
+                  )
+                  : record.recommendedTimeIntervalMonths,
+              priceOverrideCents: reset ? null : input.priceOverrideCents ?? record.priceOverrideCents,
+              laborMinutesOverride: reset ? null : input.laborMinutesOverride ?? record.laborMinutesOverride,
+              outreachThresholdType: input.outreachThresholdType ?? record.outreachThresholdType,
+              outreachThresholdValue: input.outreachThresholdValue ?? record.outreachThresholdValue,
+              notes: input.notes ?? record.notes,
+              updatedByUserId: draft.users[0]?.id,
+            };
+          }),
+        }));
+        return Promise.resolve({ ok: true, message: undefined });
+      },
+      deactivateMaintenanceItem(recordId: string) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "deactivateMaintenanceItem", id: recordId });
+        }
+
+        update((draft) => ({
+          ...draft,
+          maintenanceRecords: draft.maintenanceRecords.map((record) =>
+            record.id === recordId
+              ? { ...record, isActive: false, outreachStatus: "STOPPED", updatedByUserId: draft.users[0]?.id }
+              : record,
+          ),
+        }));
+        return Promise.resolve({ ok: true, message: undefined });
+      },
+      markMaintenanceServiceComplete(input: {
+        maintenanceRecordId: string;
+        completedAt: string;
+        completedMileage: number;
+        finalPriceCents: number;
+        finalLaborMinutes: number;
+        notes?: string;
+      }) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "markMaintenanceServiceComplete", payload: input });
+        }
+
+        update((draft) => {
+          const record = draft.maintenanceRecords.find((item) => item.id === input.maintenanceRecordId);
+          const vehicle = record ? draft.vehicles.find((item) => item.id === record.vehicleId) : undefined;
+          if (!record || !vehicle) return draft;
+          const next = {
+            ...draft,
+            vehicles: draft.vehicles.map((item) =>
+              item.id === vehicle.id
+                ? { ...item, currentMileage: Math.max(item.currentMileage, input.completedMileage), lastServiceDate: input.completedAt }
+                : item,
+            ),
+            mileageReadings: [
+              ...draft.mileageReadings,
+              {
+                id: `mile-complete-${record.id}-${Date.now()}`,
+                shopId: draft.shop.id,
+                vehicleId: vehicle.id,
+                readingMileage: input.completedMileage,
+                readingDate: input.completedAt,
+                source: "SHOP_REPAIR_ORDER" as const,
+                verificationStatus: "VERIFIED" as const,
+                anomalyStatus: "NONE" as const,
+                includedInForecast: true,
+                sourceReferenceType: "ServiceHistoryRecord",
+                recordedByUserId: draft.users[0]?.id,
+              },
+            ],
+            serviceRecords: [
+              {
+                id: `hist-${record.id}-${Date.now()}`,
+                shopId: draft.shop.id,
+                customerId: vehicle.customerId,
+                vehicleId: vehicle.id,
+                serviceName: record.serviceName,
+                completedAt: input.completedAt,
+                mileage: input.completedMileage,
+                priceCents: input.finalPriceCents,
+                notes: input.notes ?? "",
+              },
+              ...draft.serviceRecords,
+            ],
+            maintenanceRecords: draft.maintenanceRecords.map((item) =>
+              item.id === record.id
+                ? {
+                    ...item,
+                    lastCompletedDate: input.completedAt,
+                    lastCompletedMileage: input.completedMileage,
+                    priceCents: input.finalPriceCents,
+                    laborHours: input.finalLaborMinutes / 60,
+                    outreachStatus: "NEEDS_OUTREACH" as const,
+                    appointmentId: undefined,
+                    updatedByUserId: draft.users[0]?.id,
+                  }
+                : item,
+            ),
+          };
+          return upsertLocalDrivingProfile(next, vehicle.id);
+        });
+        return Promise.resolve({ ok: true, message: undefined });
+      },
+      updateVehicleMileage(input: {
+        vehicleId: string;
+        currentMileage: number;
+        allowLowerCorrection?: boolean;
+        correctionReason?: string;
+      }) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "updateVehicleMileage", payload: input });
+        }
+
+        let blocked = "";
+        update((draft) => {
+          const now = Date.now();
+          let changed = false;
+          const vehicles = draft.vehicles.map((vehicle) => {
+            if (vehicle.id !== input.vehicleId) return vehicle;
+            if (input.currentMileage < vehicle.currentMileage && !input.allowLowerCorrection) {
+              blocked = "Confirm a mileage correction before lowering the current reading.";
+              return vehicle;
+            }
+            changed = true;
+            return { ...vehicle, currentMileage: input.currentMileage };
+          });
+          if (!changed || blocked) return { ...draft, vehicles };
+          const next = {
+            ...draft,
+            vehicles,
+            mileageReadings: [
+              ...draft.mileageReadings,
+              {
+                id: `mile-${now}`,
+                shopId: draft.shop.id,
+                vehicleId: input.vehicleId,
+                readingMileage: input.currentMileage,
+                readingDate: new Date().toISOString().slice(0, 10),
+                source: input.allowLowerCorrection ? "CORRECTION" as const : "SHOP_MANUAL_ENTRY" as const,
+                verificationStatus: "VERIFIED" as const,
+                anomalyStatus: input.allowLowerCorrection ? "RESOLVED" as const : "NONE" as const,
+                includedInForecast: true,
+                correctionReason: input.correctionReason,
+                recordedByUserId: draft.users[0]?.id,
+              },
+            ],
+          };
+          return upsertLocalDrivingProfile(next, input.vehicleId);
+        });
+        return Promise.resolve(blocked ? { ok: false, message: blocked } : { ok: true, message: undefined });
+      },
+      setCustomerReportedMileage(input: { vehicleId: string; annualMileage: number }) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "setCustomerReportedMileage", payload: input });
+        }
+
+        update((draft) => upsertLocalDrivingProfile({
+          ...draft,
+          vehicles: draft.vehicles.map((vehicle) =>
+            vehicle.id === input.vehicleId
+              ? { ...vehicle, estimatedAnnualMileage: input.annualMileage }
+              : vehicle,
+          ),
+        }, input.vehicleId, {
+          customerReportedAnnualMileage: input.annualMileage,
+          customerReportedAt: new Date().toISOString(),
+          customerReportedByUserId: draft.users[0]?.id,
+        }));
+        return Promise.resolve({ ok: true, message: undefined });
+      },
+      setManualMileageOverride(input: { vehicleId: string; annualMileage: number; reason: string; notes?: string }) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "setManualMileageOverride", payload: input });
+        }
+
+        update((draft) => upsertLocalDrivingProfile(draft, input.vehicleId, {
+          manualAnnualMileageOverride: input.annualMileage,
+          manualOverrideReason: input.reason,
+          manualOverrideNotes: input.notes ?? null,
+          manualOverrideSetAt: new Date().toISOString(),
+          manualOverrideSetByUserId: draft.users[0]?.id,
+        }));
+        return Promise.resolve({ ok: true, message: undefined });
+      },
+      resetManualMileageOverride(input: { vehicleId: string }) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "resetManualMileageOverride", payload: input });
+        }
+
+        update((draft) => upsertLocalDrivingProfile(draft, input.vehicleId, {
+          manualAnnualMileageOverride: null,
+          manualOverrideReason: null,
+          manualOverrideNotes: null,
+          manualOverrideSetAt: null,
+          manualOverrideSetByUserId: null,
+        }));
+        return Promise.resolve({ ok: true, message: undefined });
+      },
+      reviewMileageReading(input: Pick<VehicleMileageReading, "id" | "includedInForecast" | "anomalyStatus"> & { reviewNotes?: string }) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "reviewMileageReading", payload: {
+            readingId: input.id,
+            includedInForecast: input.includedInForecast,
+            anomalyStatus: input.anomalyStatus,
+            reviewNotes: input.reviewNotes,
+          } });
+        }
+
+        update((draft) => {
+          const reading = draft.mileageReadings.find((item) => item.id === input.id);
+          if (!reading) return draft;
+          const next = {
+            ...draft,
+            mileageReadings: draft.mileageReadings.map((item) =>
+              item.id === input.id
+                ? {
+                    ...item,
+                    includedInForecast: input.includedInForecast,
+                    anomalyStatus: input.anomalyStatus,
+                    reviewNotes: input.reviewNotes,
+                  }
+                : item,
+            ),
+          };
+          return upsertLocalDrivingProfile(next, reading.vehicleId);
+        });
+        return Promise.resolve({ ok: true, message: undefined });
       },
       sendRecommendation(input: {
         customerId: string;
@@ -356,6 +928,7 @@ export function useDemoStore() {
           const customers = [...draft.customers];
           const vehicles = [...draft.vehicles];
           const serviceRecords = [...draft.serviceRecords];
+          const mileageReadings = [...draft.mileageReadings];
           const maintenanceRecords = [...draft.maintenanceRecords];
           const declinedWorkRecords = [...draft.declinedWorkRecords];
           const appointments = [...draft.appointments];
@@ -427,6 +1000,20 @@ export function useDemoStore() {
             if (!customers.some((item) => item.id === customerId)) customers.push(customer);
             vehicleId = vehicle.id;
             if (!vehicles.some((item) => item.id === vehicleId)) vehicles.push(vehicle);
+            if (numeric(normalized.currentMileage) > 0) {
+              mileageReadings.push({
+                id: `mile-import-current-${now}-${index}`,
+                shopId: draft.shop.id,
+                vehicleId,
+                readingMileage: numeric(normalized.currentMileage),
+                readingDate: text(normalized.serviceDate) || new Date().toISOString().slice(0, 10),
+                source: "SERVICE_HISTORY_IMPORT",
+                verificationStatus: "IMPORTED",
+                anomalyStatus: "NONE",
+                includedInForecast: true,
+                sourceReferenceType: "ImportRowRecord",
+              });
+            }
             if (row.entities.customer.key) customerByKey.set(row.entities.customer.key, customerId);
             if (row.entities.vehicle.key) vehicleByKey.set(row.entities.vehicle.key, vehicleId);
 
@@ -441,12 +1028,36 @@ export function useDemoStore() {
               lastCompletedMileage: numeric(normalized.serviceMileage) || vehicle.currentMileage,
               recommendedMileageInterval: 12_000,
               recommendedTimeIntervalMonths: 12,
+              mileageIntervalOverride: null,
+              timeIntervalValueOverride: null,
+              timeIntervalUnitOverride: null,
               priceCents,
               laborHours,
+              priceOverrideCents: priceCents,
+              laborMinutesOverride: Math.round(laborHours * 60),
               notificationThreshold: 10,
+              outreachThresholdType: "MILES_BEFORE_DUE",
+              outreachThresholdValue: 500,
               outreachStatus: "NEEDS_OUTREACH",
+              isActive: true,
+              createdByUserId: draft.users[0]?.id,
+              updatedByUserId: draft.users[0]?.id,
             });
             if (text(normalized.serviceDate)) {
+              if (numeric(normalized.serviceMileage) > 0 && numeric(normalized.serviceMileage) !== numeric(normalized.currentMileage)) {
+                mileageReadings.push({
+                  id: `mile-import-service-${now}-${index}`,
+                  shopId: draft.shop.id,
+                  vehicleId,
+                  readingMileage: numeric(normalized.serviceMileage),
+                  readingDate: text(normalized.serviceDate),
+                  source: "SERVICE_HISTORY_IMPORT",
+                  verificationStatus: "IMPORTED",
+                  anomalyStatus: "NONE",
+                  includedInForecast: true,
+                  sourceReferenceType: "ServiceHistoryRecord",
+                });
+              }
               serviceRecords.push({
                 id: `service-import-${now}-${index}`,
                 shopId: draft.shop.id,
@@ -499,6 +1110,10 @@ export function useDemoStore() {
             ...draft,
             customers,
             vehicles,
+            mileageReadings,
+            drivingProfiles: vehicles.reduce((profiles, vehicle) =>
+              upsertLocalDrivingProfile({ ...draft, vehicles, mileageReadings, drivingProfiles: profiles }, vehicle.id).drivingProfiles,
+            draft.drivingProfiles),
             serviceRecords,
             maintenanceRecords,
             declinedWorkRecords,

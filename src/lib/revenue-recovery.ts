@@ -9,6 +9,7 @@ import {
   getRecommendedRecords,
   vehicleLabel,
 } from "@/lib/demo-calculations";
+import { formatInterval, resolveMaintenanceInterval } from "@/lib/service-intervals";
 
 const dayMs = 86_400_000;
 
@@ -164,6 +165,8 @@ export function buildRevenueOpportunities(state: DemoState): RevenueOpportunity[
     if (!vehicle) return null;
     const appointment = appointmentForRecord(state, record);
     const outreach = state.outreachRecords.find((item) => item.id === record.outreachRecordId);
+    const service = state.services.find((item) => item.id === record.serviceId);
+    const effective = resolveMaintenanceInterval({ record, service, vehicle });
     const source: OpportunitySource =
       calculation.status === "OVERDUE" ? "OVERDUE_MAINTENANCE" : "DUE_MAINTENANCE";
     const daysOverdue = Math.max(0, -calculation.daysUntilDue);
@@ -172,7 +175,7 @@ export function buildRevenueOpportunities(state: DemoState): RevenueOpportunity[
       source,
       daysOverdue,
       milesOverdue,
-      estimatedRevenueCents: record.priceCents,
+      estimatedRevenueCents: effective.priceCents,
       outreachStatus: record.outreachStatus,
     });
 
@@ -186,19 +189,21 @@ export function buildRevenueOpportunities(state: DemoState): RevenueOpportunity[
       source,
       sourceLabel: sourceLabel(source),
       serviceNames: [record.serviceName],
-      explanation:
-        calculation.status === "OVERDUE"
-          ? `${record.serviceName} ${calculation.dueText.toLowerCase()} based on ${record.recommendedMileageInterval.toLocaleString()}-mile or ${record.recommendedTimeIntervalMonths}-month interval.`
-          : `${record.serviceName} due now based on ${record.recommendedMileageInterval.toLocaleString()}-mile interval.`,
+      explanation: `${effective.serviceName} ${effective.dueText.toLowerCase()} based on ${formatInterval(
+        effective.mileageInterval,
+        effective.timeIntervalValue,
+        effective.timeIntervalUnit,
+      )}.`,
       ...priority,
       lastServiceDate: record.lastCompletedDate,
       lastServiceMileage: record.lastCompletedMileage,
       currentMileage: vehicle.currentMileage,
-      dueMileage: record.lastCompletedMileage + record.recommendedMileageInterval,
+      dueDate: effective.nextDueDate ?? undefined,
+      dueMileage: effective.nextDueMileage ?? undefined,
       daysOverdue,
       milesOverdue,
-      estimatedRevenueCents: record.priceCents,
-      estimatedLaborHours: record.laborHours,
+      estimatedRevenueCents: effective.priceCents,
+      estimatedLaborHours: effective.laborMinutes / 60,
       outreachStatus: record.outreachStatus,
       appointmentStatus: appointment?.status ?? "UNSCHEDULED",
       stage: stageFor({

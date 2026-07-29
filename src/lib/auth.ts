@@ -99,7 +99,13 @@ export async function getAuthenticatedShopContext(): Promise<AuthenticatedShopCo
         },
       },
       include: {
-        shop: true,
+        shop: {
+          select: {
+            id: true,
+            name: true,
+            isDemo: true,
+          },
+        },
         user: true,
       },
       orderBy: {
@@ -129,6 +135,10 @@ export async function getAuthenticatedShopContext(): Promise<AuthenticatedShopCo
     role: membership.role,
     isDemo: membership.shop.isDemo,
   };
+}
+
+export async function requireActiveShopMembership() {
+  return getAuthenticatedShopContext();
 }
 
 export async function requirePageShopContext() {

@@ -1,12 +1,247 @@
 "use client";
 
+import { FormEvent, useMemo, useState } from "react";
+import { ArchiveRestore, Plus, Power, Search, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { useDemoStore } from "@/lib/demo-store";
+import { useDemoStore, type ServiceDefinitionInput } from "@/lib/demo-store";
+import { type MaintenanceService, type TimeIntervalUnit } from "@/lib/demo-data";
+import { formatInterval } from "@/lib/service-intervals";
 import { formatCurrency, formatHours } from "@/lib/utils";
 
+type ServiceFormState = {
+  name: string;
+  category: string;
+  defaultMileageInterval: string;
+  defaultTimeIntervalValue: string;
+  defaultTimeIntervalUnit: TimeIntervalUnit;
+  defaultPrice: string;
+  laborHours: string;
+  description: string;
+  isActive: boolean;
+};
+
+const blankForm: ServiceFormState = {
+  name: "",
+  category: "Preventative Maintenance",
+  defaultMileageInterval: "",
+  defaultTimeIntervalValue: "",
+  defaultTimeIntervalUnit: "MONTHS",
+  defaultPrice: "",
+  laborHours: "",
+  description: "",
+  isActive: true,
+};
+
+function serviceToForm(service: MaintenanceService): ServiceFormState {
+  return {
+    name: service.name,
+    category: service.category,
+    defaultMileageInterval: service.defaultMileageInterval?.toString() ?? "",
+    defaultTimeIntervalValue: service.defaultTimeIntervalValue?.toString() ?? "",
+    defaultTimeIntervalUnit: service.defaultTimeIntervalUnit,
+    defaultPrice: (service.defaultPriceCents / 100).toString(),
+    laborHours: (service.estimatedLaborMinutes / 60).toString(),
+    description: service.description,
+    isActive: service.isActive,
+  };
+}
+
+function parseOptionalInt(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : null;
+}
+
+function formToInput(form: ServiceFormState): ServiceDefinitionInput {
+  return {
+    name: form.name.trim(),
+    category: form.category.trim() || "General",
+    defaultMileageInterval: parseOptionalInt(form.defaultMileageInterval),
+    defaultTimeIntervalValue: parseOptionalInt(form.defaultTimeIntervalValue),
+    defaultTimeIntervalUnit: form.defaultTimeIntervalUnit,
+    defaultNotificationThreshold: 10,
+    estimatedLaborMinutes: Math.round((Number(form.laborHours) || 0) * 60),
+    defaultPriceCents: Math.round((Number(form.defaultPrice) || 0) * 100),
+    description: form.description.trim(),
+    isActive: form.isActive,
+  };
+}
+
+function ServiceEditor({
+  service,
+  onClose,
+}: {
+  service?: MaintenanceService;
+  onClose: () => void;
+}) {
+  const store = useDemoStore();
+  const [form, setForm] = useState<ServiceFormState>(service ? serviceToForm(service) : blankForm);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const title = service ? "Edit service default" : "Add service default";
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError("");
+    const input = formToInput(form);
+    if (!input.name) {
+      setError("Service name is required.");
+      return;
+    }
+    setSaving(true);
+    const result = service
+      ? await store.updateServiceDefinition(service.id, input)
+      : await store.addServiceDefinition(input);
+    setSaving(false);
+    if (!result.ok) {
+      setError(result.message ?? "Unable to save service.");
+      return;
+    }
+    onClose();
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
+      <form onSubmit={submit} className="max-h-[90vh] w-full max-w-2xl overflow-auto rounded-lg bg-white shadow-xl">
+        <div className="flex items-center justify-between border-b border-zinc-100 p-5">
+          <div>
+            <h2 className="text-lg font-semibold">{title}</h2>
+            <p className="mt-1 text-sm text-zinc-500">Shop defaults are inherited by vehicles without overrides.</p>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-lg border border-zinc-200 p-2">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="grid gap-4 p-5 sm:grid-cols-2">
+          <label className="space-y-1 text-sm">
+            <span className="font-medium">Service name</span>
+            <input
+              value={form.name}
+              onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
+              className="w-full rounded-lg border border-zinc-200 px-3 py-2"
+            />
+          </label>
+          <label className="space-y-1 text-sm">
+            <span className="font-medium">Category</span>
+            <input
+              value={form.category}
+              onChange={(event) => setForm((current) => ({ ...current, category: event.target.value }))}
+              className="w-full rounded-lg border border-zinc-200 px-3 py-2"
+            />
+          </label>
+          <label className="space-y-1 text-sm">
+            <span className="font-medium">Mileage interval</span>
+            <input
+              type="number"
+              min="1"
+              value={form.defaultMileageInterval}
+              onChange={(event) => setForm((current) => ({ ...current, defaultMileageInterval: event.target.value }))}
+              placeholder="Blank"
+              className="w-full rounded-lg border border-zinc-200 px-3 py-2"
+            />
+          </label>
+          <div className="grid grid-cols-[1fr_120px] gap-2 text-sm">
+            <label className="space-y-1">
+              <span className="font-medium">Time interval</span>
+              <input
+                type="number"
+                min="1"
+                value={form.defaultTimeIntervalValue}
+                onChange={(event) => setForm((current) => ({ ...current, defaultTimeIntervalValue: event.target.value }))}
+                placeholder="Blank"
+                className="w-full rounded-lg border border-zinc-200 px-3 py-2"
+              />
+            </label>
+            <label className="space-y-1">
+              <span className="font-medium">Unit</span>
+              <select
+                value={form.defaultTimeIntervalUnit}
+                onChange={(event) => setForm((current) => ({
+                  ...current,
+                  defaultTimeIntervalUnit: event.target.value as TimeIntervalUnit,
+                }))}
+                className="w-full rounded-lg border border-zinc-200 px-3 py-2"
+              >
+                <option value="DAYS">Days</option>
+                <option value="MONTHS">Months</option>
+                <option value="YEARS">Years</option>
+              </select>
+            </label>
+          </div>
+          <label className="space-y-1 text-sm">
+            <span className="font-medium">Default price</span>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={form.defaultPrice}
+              onChange={(event) => setForm((current) => ({ ...current, defaultPrice: event.target.value }))}
+              className="w-full rounded-lg border border-zinc-200 px-3 py-2"
+            />
+          </label>
+          <label className="space-y-1 text-sm">
+            <span className="font-medium">Labor hours</span>
+            <input
+              type="number"
+              min="0"
+              step="0.25"
+              value={form.laborHours}
+              onChange={(event) => setForm((current) => ({ ...current, laborHours: event.target.value }))}
+              className="w-full rounded-lg border border-zinc-200 px-3 py-2"
+            />
+          </label>
+          <label className="space-y-1 text-sm sm:col-span-2">
+            <span className="font-medium">Description</span>
+            <textarea
+              value={form.description}
+              onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))}
+              className="min-h-24 w-full rounded-lg border border-zinc-200 px-3 py-2"
+            />
+          </label>
+          <label className="flex items-center gap-2 text-sm sm:col-span-2">
+            <input
+              type="checkbox"
+              checked={form.isActive}
+              onChange={(event) => setForm((current) => ({ ...current, isActive: event.target.checked }))}
+              className="h-4 w-4 accent-violet-950"
+            />
+            <span>Active in service library</span>
+          </label>
+        </div>
+        {error && <p className="px-5 pb-3 text-sm font-medium text-red-600">{error}</p>}
+        <div className="flex justify-end gap-2 border-t border-zinc-100 p-5">
+          <button type="button" onClick={onClose} className="rounded-lg border border-zinc-200 px-4 py-2 text-sm font-semibold">
+            Cancel
+          </button>
+          <button disabled={saving} className="rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">
+            {saving ? "Saving" : "Save service"}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 export default function ServicesPage() {
-  const { state } = useDemoStore();
+  const { state, updateServiceDefinition } = useDemoStore();
+  const [query, setQuery] = useState("");
+  const [category, setCategory] = useState("All categories");
+  const [activeFilter, setActiveFilter] = useState<"active" | "all">("active");
+  const [editing, setEditing] = useState<MaintenanceService | null>(null);
+  const [adding, setAdding] = useState(false);
+  const categories = useMemo(() => {
+    return ["All categories", ...Array.from(new Set(state.services.map((service) => service.category))).sort()];
+  }, [state.services]);
+  const services = state.services.filter((service) => {
+    const matchesQuery = `${service.name} ${service.category} ${service.description}`
+      .toLowerCase()
+      .includes(query.toLowerCase());
+    const matchesCategory = category === "All categories" || service.category === category;
+    const matchesActive = activeFilter === "all" || service.isActive;
+    return matchesQuery && matchesCategory && matchesActive;
+  });
 
   return (
     <div className="space-y-6">
@@ -14,17 +249,58 @@ export default function ServicesPage() {
         <div>
           <h1 className="text-3xl font-semibold tracking-tight">Services Library</h1>
           <p className="mt-2 text-sm text-zinc-600">
-            Reusable shop defaults for intervals, notification thresholds, labor, and pricing.
+            Reusable shop defaults for maintenance intervals, labor, and pricing.
           </p>
+        </div>
+        <button
+          onClick={() => setAdding(true)}
+          className="inline-flex items-center gap-2 rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white"
+        >
+          <Plus className="h-4 w-4" />
+          Add service
+        </button>
+      </div>
+
+      <div className="flex flex-col gap-3 rounded-lg border border-zinc-200 bg-white p-3 sm:flex-row">
+        <label className="relative flex-1">
+          <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-zinc-400" />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search services"
+            className="w-full rounded-lg border border-zinc-200 py-2 pl-9 pr-3 text-sm"
+          />
+        </label>
+        <select
+          value={category}
+          onChange={(event) => setCategory(event.target.value)}
+          className="rounded-lg border border-zinc-200 px-3 py-2 text-sm"
+        >
+          {categories.map((item) => (
+            <option key={item}>{item}</option>
+          ))}
+        </select>
+        <div className="inline-flex rounded-lg border border-zinc-200 p-1">
+          {(["active", "all"] as const).map((mode) => (
+            <button
+              key={mode}
+              onClick={() => setActiveFilter(mode)}
+              className={`rounded-md px-3 py-1.5 text-sm font-semibold ${
+                activeFilter === mode ? "bg-violet-950 text-white" : "text-zinc-600"
+              }`}
+            >
+              {mode === "active" ? "Active" : "All"}
+            </button>
+          ))}
         </div>
       </div>
 
       <Card>
         <CardHeader>
-          <h2 className="text-lg font-semibold">Default Preventative Services</h2>
+          <h2 className="text-lg font-semibold">Default Services</h2>
         </CardHeader>
         <CardContent className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {state.services.map((service) => (
+          {services.map((service) => (
             <div key={service.id} className="rounded-lg border border-zinc-200 p-4">
               <div className="flex items-start justify-between gap-3">
                 <div>
@@ -32,37 +308,63 @@ export default function ServicesPage() {
                   <p className="mt-1 text-sm text-zinc-500">{service.category}</p>
                 </div>
                 <Badge variant={service.isActive ? "green" : "neutral"}>
-                  {service.isActive ? "Active" : "Disabled"}
+                  {service.isActive ? "Active" : "Inactive"}
                 </Badge>
               </div>
               <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
                 <div className="rounded-lg bg-zinc-50 p-3">
-                  <p className="text-zinc-500">Mileage interval</p>
-                  <p className="font-semibold">{service.defaultMileageInterval.toLocaleString()} mi</p>
+                  <p className="text-zinc-500">Interval</p>
+                  <p className="font-semibold">
+                    {formatInterval(
+                      service.defaultMileageInterval,
+                      service.defaultTimeIntervalValue,
+                      service.defaultTimeIntervalUnit,
+                    )}
+                  </p>
                 </div>
                 <div className="rounded-lg bg-zinc-50 p-3">
-                  <p className="text-zinc-500">Time interval</p>
-                  <p className="font-semibold">{service.defaultTimeIntervalMonths} mo</p>
-                </div>
-                <div className="rounded-lg bg-zinc-50 p-3">
-                  <p className="text-zinc-500">Notify at</p>
-                  <p className="font-semibold">{service.defaultNotificationThreshold}%</p>
+                  <p className="text-zinc-500">Type</p>
+                  <p className="font-semibold">
+                    {service.defaultMileageInterval || service.defaultTimeIntervalValue ? "Recurring" : "Non-recurring"}
+                  </p>
                 </div>
                 <div className="rounded-lg bg-zinc-50 p-3">
                   <p className="text-zinc-500">Labor</p>
                   <p className="font-semibold">{formatHours(service.estimatedLaborMinutes)}</p>
                 </div>
+                <div className="rounded-lg bg-zinc-50 p-3">
+                  <p className="text-zinc-500">Price</p>
+                  <p className="font-semibold">{formatCurrency(service.defaultPriceCents)}</p>
+                </div>
               </div>
-              <div className="mt-4 flex items-center justify-between">
-                <span className="font-semibold text-violet-950">
-                  {formatCurrency(service.defaultPriceCents)}
-                </span>
-                <Badge variant="neutral">Shop defaults</Badge>
+              {service.description && <p className="mt-4 text-sm text-zinc-600">{service.description}</p>}
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
+                <button
+                  onClick={() => setEditing(service)}
+                  className="rounded-lg border border-zinc-200 px-3 py-2 text-sm font-semibold"
+                >
+                  Edit
+                </button>
+                <button
+                  onClick={() => void updateServiceDefinition(service.id, { isActive: !service.isActive })}
+                  className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 px-3 py-2 text-sm font-semibold"
+                >
+                  {service.isActive ? <Power className="h-4 w-4" /> : <ArchiveRestore className="h-4 w-4" />}
+                  {service.isActive ? "Deactivate" : "Restore"}
+                </button>
               </div>
             </div>
           ))}
+          {services.length === 0 && (
+            <div className="rounded-lg border border-dashed border-zinc-300 p-6 text-sm text-zinc-500">
+              No services match the current filters.
+            </div>
+          )}
         </CardContent>
       </Card>
+
+      {adding && <ServiceEditor onClose={() => setAdding(false)} />}
+      {editing && <ServiceEditor service={editing} onClose={() => setEditing(null)} />}
     </div>
   );
 }

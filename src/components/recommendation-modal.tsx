@@ -220,7 +220,11 @@ export function RecommendationModal({
                   <span>
                     <span className="font-semibold">{record.serviceName}</span>
                     <span className="block text-zinc-500">
-                      {record.laborHours} hr · {record.recommendedMileageInterval.toLocaleString()} mi interval
+                      {record.laborHours} hr · {record.recommendedMileageInterval
+                        ? `${record.recommendedMileageInterval.toLocaleString()} mi interval`
+                        : record.recommendedTimeIntervalMonths
+                          ? `${record.recommendedTimeIntervalMonths} mo interval`
+                          : "custom interval"}
                     </span>
                   </span>
                 </span>

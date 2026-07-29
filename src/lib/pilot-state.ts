@@ -9,12 +9,18 @@ import {
   type DemoState,
   type ImportHistoryRecord,
   type MaintenanceService,
+  type VehicleDrivingProfile,
+  type VehicleMileageReading,
   type OutreachRecord,
+  type TimeIntervalUnit,
   type Vehicle,
   type VehicleMaintenanceRecord,
 } from "@/lib/demo-data";
 import { assertSameShop, type AuthenticatedShopContext } from "@/lib/auth";
 import { customerSchema, vehicleSchema } from "@/lib/validation";
+import { resolveMaintenanceInterval, timeIntervalToMonths } from "@/lib/service-intervals";
+import { DEFAULT_ANNUAL_MILEAGE, calculateDrivingProfile, resolveCurrentMileage } from "@/lib/adaptive-mileage";
+import { safeDatabaseError, SafeActionError } from "@/lib/server-diagnostics";
 import {
   previewImport,
   summarizeImport,
@@ -32,6 +38,84 @@ const onboardingSchema = z.object({
   address: z.string().optional(),
   timezone: z.string().min(3).default("America/New_York"),
   dailyBayHours: z.number().int().min(1).max(200).default(64),
+});
+const timeIntervalUnitSchema = z.enum(["DAYS", "MONTHS", "YEARS"]);
+const thresholdTypeSchema = z.enum(["MILES_BEFORE_DUE", "DAYS_BEFORE_DUE", "PERCENT_REMAINING"]);
+
+const nullableNonnegativeInt = z.number().int().nonnegative().nullable().optional();
+const nullablePositiveInt = z.number().int().positive().nullable().optional();
+
+const serviceDefinitionSchema = z.object({
+  name: z.string().min(1),
+  category: z.string().min(1),
+  defaultMileageInterval: nullablePositiveInt,
+  defaultTimeIntervalValue: nullablePositiveInt,
+  defaultTimeIntervalUnit: timeIntervalUnitSchema.default("MONTHS"),
+  defaultNotificationThreshold: z.number().int().min(0).max(100).default(10),
+  estimatedLaborMinutes: z.number().int().nonnegative(),
+  defaultPriceCents: z.number().int().nonnegative(),
+  description: z.string().optional(),
+  isActive: z.boolean().default(true),
+});
+
+const maintenanceItemSchema = z.object({
+  vehicleId: z.string().min(1),
+  serviceDefinitionId: z.string().optional().nullable(),
+  customServiceName: z.string().optional(),
+  customCategory: z.string().optional(),
+  addToLibrary: z.boolean().optional(),
+  useShopDefaults: z.boolean().default(true),
+  allowDuplicate: z.boolean().optional(),
+  mileageIntervalOverride: nullablePositiveInt,
+  timeIntervalValueOverride: nullablePositiveInt,
+  timeIntervalUnitOverride: timeIntervalUnitSchema.nullable().optional(),
+  priceOverrideCents: nullableNonnegativeInt,
+  laborMinutesOverride: nullableNonnegativeInt,
+  lastCompletedDate: z.string().optional(),
+  lastCompletedMileage: nullableNonnegativeInt,
+  outreachThresholdType: thresholdTypeSchema.default("MILES_BEFORE_DUE"),
+  outreachThresholdValue: z.number().int().nonnegative().default(500),
+  notes: z.string().optional(),
+});
+
+const maintenanceItemUpdateSchema = maintenanceItemSchema
+  .omit({ vehicleId: true, serviceDefinitionId: true, customServiceName: true, customCategory: true, addToLibrary: true, allowDuplicate: true })
+  .extend({ useShopDefaults: z.boolean().optional() })
+  .partial();
+
+const serviceCompletionSchema = z.object({
+  maintenanceRecordId: z.string().min(1),
+  completedAt: z.string().min(8),
+  completedMileage: z.number().int().nonnegative(),
+  finalPriceCents: z.number().int().nonnegative(),
+  finalLaborMinutes: z.number().int().nonnegative(),
+  notes: z.string().optional(),
+});
+
+const mileageUpdateSchema = z.object({
+  vehicleId: z.string().min(1),
+  currentMileage: z.number().int().nonnegative(),
+  allowLowerCorrection: z.boolean().optional(),
+  correctionReason: z.string().optional(),
+});
+
+const customerReportedMileageSchema = z.object({
+  vehicleId: z.string().min(1),
+  annualMileage: z.number().int().positive(),
+});
+
+const manualMileageOverrideSchema = z.object({
+  vehicleId: z.string().min(1),
+  annualMileage: z.number().int().positive(),
+  reason: z.string().min(3),
+  notes: z.string().optional(),
+});
+
+const mileageReadingReviewSchema = z.object({
+  readingId: z.string().min(1),
+  includedInForecast: z.boolean(),
+  anomalyStatus: z.enum(["NONE", "NEEDS_REVIEW", "RESOLVED"]),
+  reviewNotes: z.string().optional(),
 });
 
 export type OnboardingInput = z.input<typeof onboardingSchema>;
@@ -69,6 +153,356 @@ function appointmentDateTime(date: string, time: string) {
   return Number.isNaN(parsed.getTime()) ? undefined : parsed;
 }
 
+function monthsFromTime(value: number | null | undefined, unit: TimeIntervalUnit | null | undefined) {
+  const months = timeIntervalToMonths(value, unit);
+  return months === null ? null : Math.max(1, Math.round(months));
+}
+
+type StateServiceDefinition = {
+  id: string;
+  shopId: string;
+  name: string;
+  category: string;
+  defaultMileageInterval: number | null;
+  defaultTimeIntervalMonths: number | null;
+  defaultTimeIntervalValue?: number | null;
+  defaultTimeIntervalUnit?: TimeIntervalUnit | null;
+  defaultNotificationThreshold: number;
+  estimatedLaborMinutes: number;
+  defaultPriceCents: number;
+  description: string | null;
+  isActive: boolean;
+};
+
+type StateMaintenanceRecord = {
+  id: string;
+  shopId: string;
+  vehicleId: string;
+  serviceDefinitionId: string | null;
+  serviceName: string;
+  customServiceName?: string | null;
+  customCategory?: string | null;
+  lastCompletedDate: Date | null;
+  lastCompletedMileage: number | null;
+  recommendedMileageInterval: number | null;
+  recommendedTimeIntervalMonths: number | null;
+  mileageIntervalOverride?: number | null;
+  timeIntervalValueOverride?: number | null;
+  timeIntervalUnitOverride?: TimeIntervalUnit | null;
+  notificationThreshold: number;
+  outreachThresholdType?: VehicleMaintenanceRecord["outreachThresholdType"] | null;
+  outreachThresholdValue?: number | null;
+  priceCents: number;
+  laborMinutes: number;
+  priceOverrideCents?: number | null;
+  laborMinutesOverride?: number | null;
+  outreachStatus: VehicleMaintenanceRecord["outreachStatus"];
+  outreachRecordId: string | null;
+  appointmentId: string | null;
+  isActive?: boolean | null;
+  notes?: string | null;
+  createdByUserId?: string | null;
+  updatedByUserId?: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+type StateMileageReading = {
+  id: string;
+  shopId: string;
+  vehicleId: string;
+  readingMileage: number;
+  readingDate: Date;
+  source: VehicleMileageReading["source"];
+  verificationStatus: VehicleMileageReading["verificationStatus"];
+  anomalyStatus: VehicleMileageReading["anomalyStatus"];
+  includedInForecast: boolean;
+  correctionReason: string | null;
+  reviewNotes: string | null;
+  sourceReferenceType: string | null;
+  sourceReferenceId: string | null;
+  recordedByUserId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+type StateDrivingProfile = {
+  id: string;
+  shopId: string;
+  vehicleId: string;
+  customerReportedAnnualMileage: number | null;
+  customerReportedAt: Date | null;
+  customerReportedByUserId: string | null;
+  calculatedAnnualMileage: number;
+  estimateSource: VehicleDrivingProfile["estimateSource"];
+  confidence: VehicleDrivingProfile["confidence"];
+  confidenceReason: string;
+  manualAnnualMileageOverride: number | null;
+  manualOverrideReason: string | null;
+  manualOverrideNotes: string | null;
+  manualOverrideSetAt: Date | null;
+  manualOverrideSetByUserId: string | null;
+  lastCalculatedAt: Date;
+};
+
+type MileageTransactionClient = Pick<
+  typeof prisma,
+  "vehicleDrivingProfile" | "vehicleMileageReading" | "$queryRaw"
+>;
+
+export function isMissingServiceIntervalSchema(error: unknown) {
+  const database = safeDatabaseError(error);
+  if (database.code !== "P2022") return false;
+
+  const missingIntervalColumns = [
+    "defaultTimeIntervalValue",
+    "defaultTimeIntervalUnit",
+    "customServiceName",
+    "customCategory",
+    "mileageIntervalOverride",
+    "timeIntervalValueOverride",
+    "timeIntervalUnitOverride",
+    "outreachThresholdType",
+    "outreachThresholdValue",
+    "priceOverrideCents",
+    "laborMinutesOverride",
+    "isActive",
+    "createdByUserId",
+    "updatedByUserId",
+  ];
+
+  return missingIntervalColumns.some((column) => database.message?.includes(column));
+}
+
+export function isMissingAdaptiveMileageSchema(error: unknown) {
+  const database = safeDatabaseError(error);
+  if (!["P2010", "P2021", "P2022", "42P01", "42703", "42704"].includes(database.code ?? "")) return false;
+  return [
+    "VehicleMileageReading",
+    "VehicleDrivingProfile",
+    "defaultAnnualMileage",
+    "MileageReadingSource",
+    "DrivingProfileEstimateSource",
+  ].some((needle) => database.message?.includes(needle) || database.details?.includes(needle));
+}
+
+function isDemoEntityId(id: string) {
+  return /^(cust|veh|svc|item|appt|hist|service|outreach|declined|import)-/.test(id);
+}
+
+function shortId(id: string | null | undefined) {
+  if (!id) return undefined;
+  return id.length <= 14 ? id : `${id.slice(0, 8)}...${id.slice(-4)}`;
+}
+
+function assertProductionEntityId(id: string, entityName: string) {
+  if (isDemoEntityId(id)) {
+    throw new SafeActionError({
+      code: "DEMO_ID_NOT_PERSISTED",
+      message: `${entityName} is not a persisted production record. Refresh the page and try again.`,
+      status: 400,
+    });
+  }
+}
+
+async function requireVehicleInActiveShop(context: AuthenticatedShopContext, vehicleId: string) {
+  assertProductionEntityId(vehicleId, "The selected vehicle");
+  const vehicle = await prisma.vehicle.findFirst({
+    where: {
+      id: vehicleId,
+      shopId: context.shopId,
+      archivedAt: null,
+    },
+  });
+
+  if (vehicle) return vehicle;
+
+  const target = await prisma.vehicle.findUnique({
+    where: { id: vehicleId },
+    select: { shopId: true },
+  });
+
+  throw new SafeActionError({
+    code: "VEHICLE_NOT_IN_ACTIVE_SHOP",
+    message: "The selected vehicle does not belong to your active shop.",
+    status: target ? 403 : 404,
+    table: "Vehicle",
+    operation: "SELECT",
+    details: target?.shopId
+      ? `Vehicle exists in a different shop: ${shortId(target.shopId)}.`
+      : "Vehicle was not found.",
+  });
+}
+
+async function requireServiceDefinitionInActiveShop(
+  context: AuthenticatedShopContext,
+  serviceDefinitionId: string,
+) {
+  assertProductionEntityId(serviceDefinitionId, "The selected service");
+  const service = await prisma.serviceDefinition.findFirst({
+    where: {
+      id: serviceDefinitionId,
+      shopId: context.shopId,
+    },
+  });
+
+  if (service) return service;
+
+  const target = await prisma.serviceDefinition.findUnique({
+    where: { id: serviceDefinitionId },
+    select: { shopId: true },
+  });
+
+  throw new SafeActionError({
+    code: "SERVICE_NOT_IN_ACTIVE_SHOP",
+    message: "The selected service does not belong to your active shop.",
+    status: target ? 403 : 404,
+    table: "ServiceDefinition",
+    operation: "SELECT",
+    details: target?.shopId
+      ? `Service exists in a different shop: ${shortId(target.shopId)}.`
+      : "Service was not found.",
+  });
+}
+
+async function requireMaintenanceRecordInActiveShop(
+  context: AuthenticatedShopContext,
+  maintenanceRecordId: string,
+) {
+  assertProductionEntityId(maintenanceRecordId, "The selected maintenance item");
+  const record = await prisma.vehicleMaintenanceRecord.findFirst({
+    where: {
+      id: maintenanceRecordId,
+      shopId: context.shopId,
+      archivedAt: null,
+    },
+  });
+
+  if (record) return record;
+
+  const target = await prisma.vehicleMaintenanceRecord.findUnique({
+    where: { id: maintenanceRecordId },
+    select: { shopId: true },
+  });
+
+  throw new SafeActionError({
+    code: "MAINTENANCE_ITEM_NOT_IN_ACTIVE_SHOP",
+    message: "The selected maintenance item does not belong to your active shop.",
+    status: target ? 403 : 404,
+    table: "VehicleMaintenanceRecord",
+    operation: "SELECT",
+    details: target?.shopId
+      ? `Maintenance item exists in a different shop: ${shortId(target.shopId)}.`
+      : "Maintenance item was not found.",
+  });
+}
+
+async function loadStateServiceDefinitions(shopId: string): Promise<StateServiceDefinition[]> {
+  try {
+    return await prisma.serviceDefinition.findMany({
+      where: { shopId },
+      orderBy: { name: "asc" },
+    });
+  } catch (error) {
+    if (!isMissingServiceIntervalSchema(error)) throw error;
+
+    console.warn("Maintiva service interval migration missing during state load; using legacy service definition columns.", {
+      database: safeDatabaseError(error),
+    });
+    return prisma.serviceDefinition.findMany({
+      where: { shopId },
+      orderBy: { name: "asc" },
+      select: {
+        id: true,
+        shopId: true,
+        name: true,
+        category: true,
+        defaultMileageInterval: true,
+        defaultTimeIntervalMonths: true,
+        defaultNotificationThreshold: true,
+        estimatedLaborMinutes: true,
+        defaultPriceCents: true,
+        description: true,
+        isActive: true,
+      },
+    });
+  }
+}
+
+async function loadStateMaintenanceRecords(shopId: string): Promise<StateMaintenanceRecord[]> {
+  try {
+    return await prisma.vehicleMaintenanceRecord.findMany({
+      where: { shopId, archivedAt: null },
+      orderBy: { updatedAt: "desc" },
+    });
+  } catch (error) {
+    if (!isMissingServiceIntervalSchema(error)) throw error;
+
+    console.warn("Maintiva service interval migration missing during state load; using legacy maintenance record columns.", {
+      database: safeDatabaseError(error),
+    });
+    return prisma.vehicleMaintenanceRecord.findMany({
+      where: { shopId, archivedAt: null },
+      orderBy: { updatedAt: "desc" },
+      select: {
+        id: true,
+        shopId: true,
+        vehicleId: true,
+        serviceDefinitionId: true,
+        serviceName: true,
+        lastCompletedDate: true,
+        lastCompletedMileage: true,
+        recommendedMileageInterval: true,
+        recommendedTimeIntervalMonths: true,
+        notificationThreshold: true,
+        priceCents: true,
+        laborMinutes: true,
+        outreachStatus: true,
+        outreachRecordId: true,
+        appointmentId: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+  }
+}
+
+async function loadShopDefaultAnnualMileage(shopId: string) {
+  try {
+    const rows = await prisma.$queryRaw<{ defaultAnnualMileage: number | null }[]>`
+      SELECT "defaultAnnualMileage" FROM public."Shop" WHERE "id" = ${shopId} LIMIT 1
+    `;
+    return rows[0]?.defaultAnnualMileage ?? DEFAULT_ANNUAL_MILEAGE;
+  } catch (error) {
+    if (!isMissingAdaptiveMileageSchema(error)) throw error;
+    return DEFAULT_ANNUAL_MILEAGE;
+  }
+}
+
+async function loadStateMileageReadings(shopId: string): Promise<StateMileageReading[]> {
+  try {
+    return await prisma.vehicleMileageReading.findMany({
+      where: { shopId },
+      orderBy: [{ readingDate: "desc" }, { createdAt: "desc" }],
+    });
+  } catch (error) {
+    if (!isMissingAdaptiveMileageSchema(error)) throw error;
+    return [];
+  }
+}
+
+async function loadStateDrivingProfiles(shopId: string): Promise<StateDrivingProfile[]> {
+  try {
+    return await prisma.vehicleDrivingProfile.findMany({
+      where: { shopId },
+      orderBy: { updatedAt: "desc" },
+    });
+  } catch (error) {
+    if (!isMissingAdaptiveMileageSchema(error)) throw error;
+    return [];
+  }
+}
+
 export async function seedDefaultServicesForShop(shopId: string) {
   await prisma.serviceDefinition.createMany({
     data: defaultServices.map((service) => ({
@@ -77,6 +511,8 @@ export async function seedDefaultServicesForShop(shopId: string) {
       category: service.category,
       defaultMileageInterval: service.defaultMileageInterval,
       defaultTimeIntervalMonths: service.defaultTimeIntervalMonths,
+      defaultTimeIntervalValue: service.defaultTimeIntervalValue,
+      defaultTimeIntervalUnit: service.defaultTimeIntervalUnit,
       defaultNotificationThreshold: service.defaultNotificationThreshold,
       estimatedLaborMinutes: service.estimatedLaborMinutes,
       defaultPriceCents: service.defaultPriceCents,
@@ -159,12 +595,21 @@ export async function createPilotShopForUser({
 export async function buildPilotState(context: AuthenticatedShopContext): Promise<DemoState> {
   const shop = await prisma.shop.findUniqueOrThrow({
     where: { id: context.shopId },
-    include: {
+    select: {
+      id: true,
+      name: true,
+      slug: true,
+      phone: true,
+      email: true,
+      address: true,
+      timezone: true,
+      dailyBayHours: true,
+      isDemo: true,
+      onboardingCompletedAt: true,
+      updatedAt: true,
       memberships: { include: { user: true }, where: { isActive: true } },
       customers: { where: { archivedAt: null }, orderBy: [{ lastName: "asc" }, { firstName: "asc" }] },
       vehicles: { where: { archivedAt: null }, orderBy: [{ make: "asc" }, { model: "asc" }] },
-      serviceDefinitions: { orderBy: { name: "asc" } },
-      maintenanceRecords: { where: { archivedAt: null }, orderBy: { updatedAt: "desc" } },
       serviceHistoryRecords: { orderBy: { completedAt: "desc" } },
       declinedWorkRecords: { orderBy: { declinedAt: "desc" } },
       outreachRecords: { orderBy: { createdAt: "desc" } },
@@ -176,20 +621,134 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
     },
   });
   assertSameShop(context, shop.id);
+  const [serviceDefinitions, maintenanceRecords, shopDefaultAnnualMileage, mileageReadingRows, drivingProfileRows] = await Promise.all([
+    loadStateServiceDefinitions(context.shopId),
+    loadStateMaintenanceRecords(context.shopId),
+    loadShopDefaultAnnualMileage(context.shopId),
+    loadStateMileageReadings(context.shopId),
+    loadStateDrivingProfiles(context.shopId),
+  ]);
 
-  const services: MaintenanceService[] = shop.serviceDefinitions.map((service) => ({
+  const services: MaintenanceService[] = serviceDefinitions.map((service) => ({
     id: service.id,
     shopId: service.shopId,
     name: service.name,
     category: service.category,
     defaultMileageInterval: service.defaultMileageInterval,
     defaultTimeIntervalMonths: service.defaultTimeIntervalMonths,
+    defaultTimeIntervalValue: service.defaultTimeIntervalValue ?? service.defaultTimeIntervalMonths,
+    defaultTimeIntervalUnit: service.defaultTimeIntervalUnit ?? "MONTHS",
     defaultNotificationThreshold: service.defaultNotificationThreshold,
     estimatedLaborMinutes: service.estimatedLaborMinutes,
     defaultPriceCents: service.defaultPriceCents,
     description: service.description ?? "",
     isActive: service.isActive,
   }));
+  const serviceById = new Map(services.map((service) => [service.id, service]));
+  const readingsByVehicle = new Map<string, StateMileageReading[]>();
+  for (const reading of mileageReadingRows) {
+    const existing = readingsByVehicle.get(reading.vehicleId) ?? [];
+    existing.push(reading);
+    readingsByVehicle.set(reading.vehicleId, existing);
+  }
+  const persistedProfileByVehicle = new Map(drivingProfileRows.map((profile) => [profile.vehicleId, profile]));
+  const stateMileageReadings: VehicleMileageReading[] = mileageReadingRows.map((reading) => ({
+    id: reading.id,
+    shopId: reading.shopId,
+    vehicleId: reading.vehicleId,
+    readingMileage: reading.readingMileage,
+    readingDate: dateOnly(reading.readingDate),
+    source: reading.source,
+    verificationStatus: reading.verificationStatus,
+    anomalyStatus: reading.anomalyStatus,
+    includedInForecast: reading.includedInForecast,
+    correctionReason: reading.correctionReason ?? undefined,
+    reviewNotes: reading.reviewNotes ?? undefined,
+    sourceReferenceType: reading.sourceReferenceType ?? undefined,
+    sourceReferenceId: reading.sourceReferenceId ?? undefined,
+    recordedByUserId: reading.recordedByUserId ?? undefined,
+    createdAt: iso(reading.createdAt),
+    updatedAt: iso(reading.updatedAt),
+  }));
+  const stateVehicles: Vehicle[] = shop.vehicles.map((vehicle): Vehicle => {
+    const readings = readingsByVehicle.get(vehicle.id) ?? [];
+    const current = resolveCurrentMileage({ currentMileage: vehicle.currentMileage }, readings.map((reading) => ({
+      readingMileage: reading.readingMileage,
+      readingDate: dateOnly(reading.readingDate),
+      source: reading.source,
+      verificationStatus: reading.verificationStatus,
+      anomalyStatus: reading.anomalyStatus,
+      includedInForecast: reading.includedInForecast,
+    })));
+    return {
+      id: vehicle.id,
+      shopId: vehicle.shopId,
+      customerId: vehicle.customerId,
+      year: vehicle.year,
+      make: vehicle.make,
+      model: vehicle.model,
+      vin: vehicle.vin ?? "",
+      licensePlate: vehicle.licensePlate ?? "",
+      engine: vehicle.engine ?? "",
+      trim: vehicle.trim ?? "",
+      vehicleType: vehicle.vehicleType ?? "Passenger vehicle",
+      currentMileage: current.currentMileage,
+      estimatedAnnualMileage: vehicle.estimatedAnnualMileage ?? shopDefaultAnnualMileage,
+      overallHealth: vehicle.overallHealth,
+      lastServiceDate: dateOnly(vehicle.lastServiceDate || vehicle.updatedAt),
+    };
+  });
+  const vehicleById = new Map(stateVehicles.map((vehicle) => [vehicle.id, vehicle]));
+  const stateDrivingProfiles: VehicleDrivingProfile[] = stateVehicles.map((vehicle) => {
+    const persisted = persistedProfileByVehicle.get(vehicle.id);
+    const readingDrafts = (readingsByVehicle.get(vehicle.id) ?? []).map((reading) => ({
+      readingMileage: reading.readingMileage,
+      readingDate: dateOnly(reading.readingDate),
+      source: reading.source,
+      verificationStatus: reading.verificationStatus,
+      anomalyStatus: reading.anomalyStatus,
+      includedInForecast: reading.includedInForecast,
+    }));
+    const calculated = calculateDrivingProfile({
+      shopId: context.shopId,
+      vehicleId: vehicle.id,
+      readings: readingDrafts,
+      shopDefaultAnnualMileage,
+      customerReportedAnnualMileage: persisted?.customerReportedAnnualMileage ?? vehicle.estimatedAnnualMileage,
+      customerReportedAt: persisted ? dateOnly(persisted.customerReportedAt) || null : null,
+      customerReportedByUserId: persisted?.customerReportedByUserId ?? null,
+      existingProfile: persisted
+        ? {
+            customerReportedAnnualMileage: persisted.customerReportedAnnualMileage,
+            customerReportedAt: dateOnly(persisted.customerReportedAt) || null,
+            customerReportedByUserId: persisted.customerReportedByUserId,
+            manualAnnualMileageOverride: persisted.manualAnnualMileageOverride,
+            manualOverrideReason: persisted.manualOverrideReason,
+            manualOverrideNotes: persisted.manualOverrideNotes,
+            manualOverrideSetAt: iso(persisted.manualOverrideSetAt) || null,
+            manualOverrideSetByUserId: persisted.manualOverrideSetByUserId,
+          }
+        : null,
+    });
+    return {
+      id: persisted?.id ?? `profile-${vehicle.id}`,
+      shopId: context.shopId,
+      vehicleId: vehicle.id,
+      customerReportedAnnualMileage: calculated.customerReportedAnnualMileage,
+      customerReportedAt: calculated.customerReportedAt,
+      customerReportedByUserId: calculated.customerReportedByUserId,
+      calculatedAnnualMileage: calculated.calculatedAnnualMileage,
+      estimateSource: calculated.estimateSource,
+      confidence: calculated.confidence,
+      confidenceReason: calculated.confidenceReason,
+      manualAnnualMileageOverride: calculated.manualAnnualMileageOverride,
+      manualOverrideReason: calculated.manualOverrideReason,
+      manualOverrideNotes: calculated.manualOverrideNotes,
+      manualOverrideSetAt: calculated.manualOverrideSetAt,
+      manualOverrideSetByUserId: calculated.manualOverrideSetByUserId,
+      lastCalculatedAt: calculated.lastCalculatedAt,
+    };
+  });
 
   return {
     shop: {
@@ -201,6 +760,7 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
       address: shop.address ?? "",
       timezone: shop.timezone,
       dailyBayHours: shop.dailyBayHours,
+      defaultAnnualMileage: shopDefaultAnnualMileage,
       isDemo: shop.isDemo,
       onboardingCompletedAt: iso(shop.onboardingCompletedAt) || null,
     },
@@ -229,41 +789,74 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
       lifetimeRevenueCents: customer.lifetimeRevenueCents,
       lastVisit: dateOnly(customer.lastVisit || customer.updatedAt),
     })),
-    vehicles: shop.vehicles.map((vehicle): Vehicle => ({
-      id: vehicle.id,
-      shopId: vehicle.shopId,
-      customerId: vehicle.customerId,
-      year: vehicle.year,
-      make: vehicle.make,
-      model: vehicle.model,
-      vin: vehicle.vin ?? "",
-      licensePlate: vehicle.licensePlate ?? "",
-      engine: vehicle.engine ?? "",
-      trim: vehicle.trim ?? "",
-      vehicleType: vehicle.vehicleType ?? "Passenger vehicle",
-      currentMileage: vehicle.currentMileage,
-      estimatedAnnualMileage: vehicle.estimatedAnnualMileage ?? 12_000,
-      overallHealth: vehicle.overallHealth,
-      lastServiceDate: dateOnly(vehicle.lastServiceDate || vehicle.updatedAt),
-    })),
+    vehicles: stateVehicles,
     services,
-    maintenanceRecords: shop.maintenanceRecords.map((record): VehicleMaintenanceRecord => ({
-      id: record.id,
-      shopId: record.shopId,
-      vehicleId: record.vehicleId,
-      serviceId: record.serviceDefinitionId,
-      serviceName: record.serviceName,
-      lastCompletedDate: dateOnly(record.lastCompletedDate || record.createdAt),
-      lastCompletedMileage: record.lastCompletedMileage ?? 0,
-      recommendedMileageInterval: record.recommendedMileageInterval,
-      recommendedTimeIntervalMonths: record.recommendedTimeIntervalMonths,
-      priceCents: record.priceCents,
-      laborHours: record.laborMinutes / 60,
-      notificationThreshold: record.notificationThreshold,
-      outreachStatus: record.outreachStatus,
-      outreachRecordId: record.outreachRecordId ?? undefined,
-      appointmentId: record.appointmentId ?? undefined,
-    })),
+    maintenanceRecords: maintenanceRecords.map((record): VehicleMaintenanceRecord => {
+      const service = record.serviceDefinitionId ? serviceById.get(record.serviceDefinitionId) : undefined;
+      const vehicle = vehicleById.get(record.vehicleId);
+      const baseRecord: VehicleMaintenanceRecord = {
+        id: record.id,
+        shopId: record.shopId,
+        vehicleId: record.vehicleId,
+        serviceId: record.serviceDefinitionId,
+        serviceName: record.serviceName,
+        customServiceName: record.customServiceName ?? undefined,
+        customCategory: record.customCategory ?? undefined,
+        lastCompletedDate: dateOnly(record.lastCompletedDate || record.createdAt),
+        lastCompletedMileage: record.lastCompletedMileage ?? 0,
+        recommendedMileageInterval: record.recommendedMileageInterval,
+        recommendedTimeIntervalMonths: record.recommendedTimeIntervalMonths,
+        mileageIntervalOverride: record.mileageIntervalOverride ?? null,
+        timeIntervalValueOverride: record.timeIntervalValueOverride ?? null,
+        timeIntervalUnitOverride: record.timeIntervalUnitOverride ?? null,
+        priceCents: record.priceCents,
+        laborHours: record.laborMinutes / 60,
+        priceOverrideCents: record.priceOverrideCents ?? null,
+        laborMinutesOverride: record.laborMinutesOverride ?? null,
+        notificationThreshold: record.notificationThreshold,
+        outreachThresholdType: record.outreachThresholdType ?? "MILES_BEFORE_DUE",
+        outreachThresholdValue: record.outreachThresholdValue ?? 500,
+        outreachStatus: record.outreachStatus,
+        outreachRecordId: record.outreachRecordId ?? undefined,
+        appointmentId: record.appointmentId ?? undefined,
+        isActive: record.isActive ?? true,
+        notes: record.notes ?? undefined,
+        createdByUserId: record.createdByUserId ?? undefined,
+        updatedByUserId: record.updatedByUserId ?? undefined,
+      };
+      if (!vehicle) return baseRecord;
+      const effective = resolveMaintenanceInterval({
+        record: baseRecord,
+        service,
+        vehicle: {
+          id: vehicle.id,
+          shopId: vehicle.shopId,
+          customerId: vehicle.customerId,
+          year: vehicle.year,
+          make: vehicle.make,
+          model: vehicle.model,
+          vin: vehicle.vin ?? "",
+          licensePlate: vehicle.licensePlate ?? "",
+          engine: vehicle.engine ?? "",
+          trim: vehicle.trim ?? "",
+          vehicleType: vehicle.vehicleType ?? "Passenger vehicle",
+          currentMileage: vehicle.currentMileage,
+          estimatedAnnualMileage: vehicle.estimatedAnnualMileage ?? 12_000,
+          overallHealth: vehicle.overallHealth,
+          lastServiceDate: vehicle.lastServiceDate,
+        },
+      });
+      return {
+        ...baseRecord,
+        serviceName: effective.serviceName,
+        recommendedMileageInterval: effective.mileageInterval,
+        recommendedTimeIntervalMonths: monthsFromTime(effective.timeIntervalValue, effective.timeIntervalUnit),
+        priceCents: effective.priceCents,
+        laborHours: effective.laborMinutes / 60,
+      };
+    }),
+    mileageReadings: stateMileageReadings,
+    drivingProfiles: stateDrivingProfiles,
     serviceRecords: shop.serviceHistoryRecords.map((record) => ({
       id: record.id,
       shopId: record.shopId,
@@ -294,10 +887,10 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
       shopId: record.shopId,
       customerId: record.customerId,
       vehicleId: record.vehicleId,
-      maintenanceRecordIds: shop.maintenanceRecords
+      maintenanceRecordIds: maintenanceRecords
         .filter((item) => item.outreachRecordId === record.id)
         .map((item) => item.id),
-      serviceNames: shop.maintenanceRecords
+      serviceNames: maintenanceRecords
         .filter((item) => item.outreachRecordId === record.id)
         .map((item) => item.serviceName),
       message: record.message,
@@ -426,12 +1019,20 @@ export async function addPilotVehicle(context: AuthenticatedShopContext, input: 
       serviceName: service.name,
       lastCompletedDate: new Date(),
       lastCompletedMileage: parsed.currentMileage,
-      recommendedMileageInterval: service.defaultMileageInterval,
-      recommendedTimeIntervalMonths: service.defaultTimeIntervalMonths,
+      recommendedMileageInterval: null,
+      recommendedTimeIntervalMonths: null,
+      mileageIntervalOverride: null,
+      timeIntervalValueOverride: null,
+      timeIntervalUnitOverride: null,
       notificationThreshold: service.defaultNotificationThreshold,
+      outreachThresholdType: "MILES_BEFORE_DUE" as const,
+      outreachThresholdValue: 500,
       priceCents: service.defaultPriceCents,
       laborMinutes: service.estimatedLaborMinutes,
       status: "HEALTHY" as const,
+      isActive: true,
+      createdByUserId: context.userId,
+      updatedByUserId: context.userId,
     })),
   });
 }
@@ -444,9 +1045,601 @@ export async function updatePilotVehicle(
   const existing = await prisma.vehicle.findUnique({ where: { id: vehicleId } });
   assertSameShop(context, existing?.shopId);
   const parsed = vehicleSchema.partial().omit({ customerId: true }).parse(input);
+  const { currentMileage, ...vehicleData } = parsed;
   await prisma.vehicle.update({
     where: { id: vehicleId },
-    data: parsed,
+    data: vehicleData,
+  });
+  if (currentMileage !== undefined && currentMileage !== existing?.currentMileage) {
+    await updatePilotVehicleMileage(context, {
+      vehicleId,
+      currentMileage,
+      allowLowerCorrection: currentMileage < (existing?.currentMileage ?? 0),
+      correctionReason: currentMileage < (existing?.currentMileage ?? 0) ? "Corrected from vehicle edit." : undefined,
+    });
+  }
+}
+
+export async function addPilotServiceDefinition(context: AuthenticatedShopContext, input: unknown) {
+  const parsed = serviceDefinitionSchema.parse(input);
+  if (!parsed.defaultMileageInterval && !parsed.defaultTimeIntervalValue && parsed.category.toLowerCase().includes("maintenance")) {
+    throw new SafeActionError({
+      code: "SERVICE_INTERVAL_REQUIRED",
+      message: "A recurring maintenance service needs a mileage or time interval.",
+      table: "ServiceDefinition",
+      operation: "INSERT",
+    });
+  }
+
+  const duplicate = await prisma.serviceDefinition.findUnique({
+    where: {
+      shopId_name: {
+        shopId: context.shopId,
+        name: parsed.name,
+      },
+    },
+  });
+  if (duplicate) {
+    throw new SafeActionError({
+      code: "DUPLICATE_SERVICE_DEFINITION",
+      message: "A service with this name already exists for your shop.",
+      status: 409,
+      table: "ServiceDefinition",
+      operation: "INSERT",
+    });
+  }
+
+  const service = await prisma.serviceDefinition.create({
+    data: {
+      shopId: context.shopId,
+      name: parsed.name,
+      category: parsed.category,
+      defaultMileageInterval: parsed.defaultMileageInterval ?? null,
+      defaultTimeIntervalMonths: monthsFromTime(parsed.defaultTimeIntervalValue, parsed.defaultTimeIntervalUnit),
+      defaultTimeIntervalValue: parsed.defaultTimeIntervalValue ?? null,
+      defaultTimeIntervalUnit: parsed.defaultTimeIntervalUnit,
+      defaultNotificationThreshold: parsed.defaultNotificationThreshold,
+      estimatedLaborMinutes: parsed.estimatedLaborMinutes,
+      defaultPriceCents: parsed.defaultPriceCents,
+      description: parsed.description || null,
+      isActive: parsed.isActive,
+    },
+  });
+  assertSameShop(context, service.shopId);
+}
+
+export async function updatePilotServiceDefinition(
+  context: AuthenticatedShopContext,
+  serviceDefinitionId: string,
+  input: unknown,
+) {
+  const existing = await requireServiceDefinitionInActiveShop(context, serviceDefinitionId);
+  const parsed = serviceDefinitionSchema.partial().parse(input);
+  await prisma.serviceDefinition.update({
+    where: { id: serviceDefinitionId },
+    data: {
+      ...parsed,
+      defaultTimeIntervalMonths: parsed.defaultTimeIntervalValue !== undefined || parsed.defaultTimeIntervalUnit !== undefined
+        ? monthsFromTime(
+          parsed.defaultTimeIntervalValue ?? existing?.defaultTimeIntervalValue,
+          parsed.defaultTimeIntervalUnit ?? existing?.defaultTimeIntervalUnit,
+        )
+        : undefined,
+      description: parsed.description === undefined ? undefined : parsed.description || null,
+    },
+  });
+}
+
+export async function addPilotMaintenanceItem(context: AuthenticatedShopContext, input: unknown) {
+  const parsed = maintenanceItemSchema.parse(input);
+  const vehicle = await requireVehicleInActiveShop(context, parsed.vehicleId);
+
+  let service = parsed.serviceDefinitionId
+    ? await requireServiceDefinitionInActiveShop(context, parsed.serviceDefinitionId)
+    : null;
+
+  if (!service && !parsed.customServiceName?.trim()) {
+    throw new SafeActionError({
+      code: "SERVICE_REQUIRED",
+      message: "Choose a service or enter a custom service name.",
+      table: "VehicleMaintenanceRecord",
+      operation: "INSERT",
+    });
+  }
+
+  if (service && !parsed.allowDuplicate) {
+    const duplicate = await prisma.vehicleMaintenanceRecord.findFirst({
+      where: {
+        shopId: context.shopId,
+        vehicleId: vehicle.id,
+        serviceDefinitionId: service.id,
+        isActive: true,
+        archivedAt: null,
+      },
+    });
+    if (duplicate) {
+      throw new SafeActionError({
+        code: "DUPLICATE_VEHICLE_SERVICE",
+        message: "This service already exists for the vehicle.",
+        status: 409,
+        table: "VehicleMaintenanceRecord",
+        operation: "INSERT",
+      });
+    }
+  }
+
+  if (!service && parsed.addToLibrary && parsed.customServiceName) {
+    service = await prisma.serviceDefinition.create({
+      data: {
+        shopId: context.shopId,
+        name: parsed.customServiceName,
+        category: parsed.customCategory || "Custom",
+        defaultMileageInterval: parsed.mileageIntervalOverride ?? null,
+        defaultTimeIntervalMonths: monthsFromTime(parsed.timeIntervalValueOverride, parsed.timeIntervalUnitOverride),
+        defaultTimeIntervalValue: parsed.timeIntervalValueOverride ?? null,
+        defaultTimeIntervalUnit: parsed.timeIntervalUnitOverride ?? "MONTHS",
+        defaultNotificationThreshold: 10,
+        estimatedLaborMinutes: parsed.laborMinutesOverride ?? 0,
+        defaultPriceCents: parsed.priceOverrideCents ?? 0,
+        description: parsed.notes || null,
+        isActive: true,
+      },
+    });
+  }
+
+  const useDefaults = Boolean(service && parsed.useShopDefaults);
+  const mileageOverride = useDefaults ? null : parsed.mileageIntervalOverride ?? null;
+  const timeValueOverride = useDefaults ? null : parsed.timeIntervalValueOverride ?? null;
+  const timeUnitOverride = useDefaults ? null : parsed.timeIntervalUnitOverride ?? null;
+  const priceOverride = useDefaults ? null : parsed.priceOverrideCents ?? null;
+  const laborOverride = useDefaults ? null : parsed.laborMinutesOverride ?? null;
+  const maintenance = await prisma.vehicleMaintenanceRecord.create({
+    data: {
+      shopId: context.shopId,
+      vehicleId: vehicle.id,
+      serviceDefinitionId: service?.id ?? null,
+      serviceName: service?.name ?? parsed.customServiceName?.trim() ?? "Custom service",
+      customServiceName: service ? null : parsed.customServiceName?.trim() ?? null,
+      customCategory: service ? null : parsed.customCategory || "Custom",
+      lastCompletedDate: parsed.lastCompletedDate ? new Date(parsed.lastCompletedDate) : null,
+      lastCompletedMileage: parsed.lastCompletedMileage ?? null,
+      recommendedMileageInterval: mileageOverride,
+      recommendedTimeIntervalMonths: monthsFromTime(timeValueOverride, timeUnitOverride),
+      mileageIntervalOverride: mileageOverride,
+      timeIntervalValueOverride: timeValueOverride,
+      timeIntervalUnitOverride: timeUnitOverride,
+      notificationThreshold: 10,
+      outreachThresholdType: parsed.outreachThresholdType,
+      outreachThresholdValue: parsed.outreachThresholdValue,
+      priceCents: priceOverride ?? service?.defaultPriceCents ?? parsed.priceOverrideCents ?? 0,
+      laborMinutes: laborOverride ?? service?.estimatedLaborMinutes ?? parsed.laborMinutesOverride ?? 0,
+      priceOverrideCents: priceOverride,
+      laborMinutesOverride: laborOverride,
+      status: "HEALTHY",
+      outreachStatus: "NEEDS_OUTREACH",
+      isActive: true,
+      notes: parsed.notes || null,
+      createdByUserId: context.userId,
+      updatedByUserId: context.userId,
+    },
+  });
+  assertSameShop(context, maintenance.shopId);
+}
+
+export async function updatePilotMaintenanceItem(
+  context: AuthenticatedShopContext,
+  maintenanceRecordId: string,
+  input: unknown,
+) {
+  const existing = await requireMaintenanceRecordInActiveShop(context, maintenanceRecordId);
+  const parsed = maintenanceItemUpdateSchema.parse(input);
+  const clearOverrides = parsed.useShopDefaults === true;
+
+  await prisma.vehicleMaintenanceRecord.update({
+    where: { id: maintenanceRecordId },
+    data: {
+      recommendedMileageInterval: clearOverrides ? null : parsed.mileageIntervalOverride,
+      recommendedTimeIntervalMonths: clearOverrides
+        ? null
+        : parsed.timeIntervalValueOverride !== undefined || parsed.timeIntervalUnitOverride !== undefined
+          ? monthsFromTime(
+            parsed.timeIntervalValueOverride ?? existing.timeIntervalValueOverride,
+            parsed.timeIntervalUnitOverride ?? existing.timeIntervalUnitOverride,
+          )
+          : undefined,
+      mileageIntervalOverride: clearOverrides ? null : parsed.mileageIntervalOverride,
+      timeIntervalValueOverride: clearOverrides ? null : parsed.timeIntervalValueOverride,
+      timeIntervalUnitOverride: clearOverrides ? null : parsed.timeIntervalUnitOverride,
+      priceOverrideCents: clearOverrides ? null : parsed.priceOverrideCents,
+      laborMinutesOverride: clearOverrides ? null : parsed.laborMinutesOverride,
+      lastCompletedDate: parsed.lastCompletedDate ? new Date(parsed.lastCompletedDate) : undefined,
+      lastCompletedMileage: parsed.lastCompletedMileage,
+      outreachThresholdType: parsed.outreachThresholdType,
+      outreachThresholdValue: parsed.outreachThresholdValue,
+      notes: parsed.notes,
+      updatedByUserId: context.userId,
+      outreachStatus: "NEEDS_OUTREACH",
+    },
+  });
+}
+
+export async function deactivatePilotMaintenanceItem(
+  context: AuthenticatedShopContext,
+  maintenanceRecordId: string,
+) {
+  await requireMaintenanceRecordInActiveShop(context, maintenanceRecordId);
+  await prisma.$transaction(async (tx) => {
+    await tx.vehicleMaintenanceRecord.update({
+      where: { id: maintenanceRecordId },
+      data: {
+        isActive: false,
+        archivedAt: new Date(),
+        outreachStatus: "STOPPED",
+        updatedByUserId: context.userId,
+      },
+    });
+    await tx.maintenanceRevenueOpportunity.updateMany({
+      where: {
+        shopId: context.shopId,
+        maintenanceRecordId,
+        stage: { in: ["IDENTIFIED", "CONTACTED", "RESPONDED"] },
+      },
+      data: {
+        stage: "LOST",
+        explanation: "Maintenance item was deactivated and no longer generates outreach.",
+      },
+    });
+  });
+}
+
+export async function markPilotMaintenanceServiceComplete(
+  context: AuthenticatedShopContext,
+  input: unknown,
+) {
+  const parsed = serviceCompletionSchema.parse(input);
+  assertProductionEntityId(parsed.maintenanceRecordId, "The selected maintenance item");
+  const record = await prisma.vehicleMaintenanceRecord.findFirst({
+    where: {
+      id: parsed.maintenanceRecordId,
+      shopId: context.shopId,
+      archivedAt: null,
+    },
+    include: { vehicle: true },
+  });
+  if (!record) {
+    throw new SafeActionError({
+      code: "MAINTENANCE_ITEM_NOT_IN_ACTIVE_SHOP",
+      message: "The selected maintenance item does not belong to your active shop.",
+      status: 404,
+      table: "VehicleMaintenanceRecord",
+      operation: "SELECT",
+    });
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.serviceHistoryRecord.create({
+      data: {
+        shopId: context.shopId,
+        customerId: record.vehicle.customerId,
+        vehicleId: record.vehicleId,
+        serviceDefinitionId: record.serviceDefinitionId,
+        maintenanceRecordId: record.id,
+        serviceName: record.customServiceName || record.serviceName,
+        completedAt: new Date(parsed.completedAt),
+        mileage: parsed.completedMileage,
+        laborMinutes: parsed.finalLaborMinutes,
+        priceCents: parsed.finalPriceCents,
+        notes: parsed.notes || null,
+      },
+    });
+    await tx.vehicleMaintenanceRecord.update({
+      where: { id: record.id },
+      data: {
+        lastCompletedDate: new Date(parsed.completedAt),
+        lastCompletedMileage: parsed.completedMileage,
+        priceCents: parsed.finalPriceCents,
+        laborMinutes: parsed.finalLaborMinutes,
+        status: "HEALTHY",
+        outreachStatus: "NEEDS_OUTREACH",
+        appointmentId: null,
+        updatedByUserId: context.userId,
+      },
+    });
+    await tx.vehicle.update({
+      where: { id: record.vehicleId },
+      data: {
+        currentMileage: Math.max(record.vehicle.currentMileage, parsed.completedMileage),
+        lastServiceDate: new Date(parsed.completedAt),
+      },
+    });
+    await tx.maintenanceRevenueOpportunity.updateMany({
+      where: { shopId: context.shopId, maintenanceRecordId: record.id },
+      data: { stage: "COMPLETED", lastActivityAt: new Date(parsed.completedAt) },
+    });
+    await tx.auditLog.create({
+      data: {
+        shopId: context.shopId,
+        actorUserId: context.userId,
+        action: "maintenance.service_completed",
+        entityType: "VehicleMaintenanceRecord",
+        entityId: record.id,
+        metadata: {
+          completedMileage: parsed.completedMileage,
+          finalPriceCents: parsed.finalPriceCents,
+          finalLaborMinutes: parsed.finalLaborMinutes,
+        },
+      },
+    });
+  });
+}
+
+async function recalculatePersistedDrivingProfile({
+  tx,
+  context,
+  vehicleId,
+  customerReportedAnnualMileage,
+  clearManualOverride = false,
+  manualAnnualMileageOverride,
+  manualOverrideReason,
+  manualOverrideNotes,
+}: {
+  tx: MileageTransactionClient;
+  context: AuthenticatedShopContext;
+  vehicleId: string;
+  customerReportedAnnualMileage?: number | null;
+  clearManualOverride?: boolean;
+  manualAnnualMileageOverride?: number | null;
+  manualOverrideReason?: string | null;
+  manualOverrideNotes?: string | null;
+}) {
+  const existing = await tx.vehicleDrivingProfile.findUnique({ where: { vehicleId } });
+  const shopDefaultRows = await tx.$queryRaw<{ defaultAnnualMileage: number | null }[]>`
+    SELECT "defaultAnnualMileage" FROM public."Shop" WHERE "id" = ${context.shopId} LIMIT 1
+  `;
+  const readings = await tx.vehicleMileageReading.findMany({
+    where: { shopId: context.shopId, vehicleId },
+    orderBy: [{ readingDate: "asc" }, { createdAt: "asc" }],
+  });
+  const customerReported = customerReportedAnnualMileage ?? existing?.customerReportedAnnualMileage ?? null;
+  const now = new Date();
+  const manualOverride = clearManualOverride
+    ? null
+    : manualAnnualMileageOverride ?? existing?.manualAnnualMileageOverride ?? null;
+  const calculated = calculateDrivingProfile({
+    shopId: context.shopId,
+    vehicleId,
+    readings: readings.map((reading) => ({
+      readingMileage: reading.readingMileage,
+      readingDate: dateOnly(reading.readingDate),
+      source: reading.source,
+      verificationStatus: reading.verificationStatus,
+      anomalyStatus: reading.anomalyStatus,
+      includedInForecast: reading.includedInForecast,
+    })),
+    shopDefaultAnnualMileage: shopDefaultRows[0]?.defaultAnnualMileage ?? DEFAULT_ANNUAL_MILEAGE,
+    customerReportedAnnualMileage: customerReported,
+    customerReportedAt: customerReportedAnnualMileage !== undefined ? now.toISOString() : iso(existing?.customerReportedAt) || null,
+    customerReportedByUserId: customerReportedAnnualMileage !== undefined ? context.userId : existing?.customerReportedByUserId ?? null,
+    existingProfile: {
+      customerReportedAnnualMileage: customerReported,
+      customerReportedAt: customerReportedAnnualMileage !== undefined ? now.toISOString() : iso(existing?.customerReportedAt) || null,
+      customerReportedByUserId: customerReportedAnnualMileage !== undefined ? context.userId : existing?.customerReportedByUserId ?? null,
+      manualAnnualMileageOverride: manualOverride,
+      manualOverrideReason: clearManualOverride ? null : manualOverrideReason ?? existing?.manualOverrideReason ?? null,
+      manualOverrideNotes: clearManualOverride ? null : manualOverrideNotes ?? existing?.manualOverrideNotes ?? null,
+      manualOverrideSetAt: manualAnnualMileageOverride !== undefined ? now.toISOString() : clearManualOverride ? null : iso(existing?.manualOverrideSetAt) || null,
+      manualOverrideSetByUserId: manualAnnualMileageOverride !== undefined ? context.userId : clearManualOverride ? null : existing?.manualOverrideSetByUserId ?? null,
+    },
+    asOf: now,
+  });
+
+  await tx.vehicleDrivingProfile.upsert({
+    where: { vehicleId },
+    create: {
+      shopId: context.shopId,
+      vehicleId,
+      customerReportedAnnualMileage: calculated.customerReportedAnnualMileage,
+      customerReportedAt: calculated.customerReportedAt ? new Date(calculated.customerReportedAt) : null,
+      customerReportedByUserId: calculated.customerReportedByUserId,
+      calculatedAnnualMileage: calculated.calculatedAnnualMileage,
+      estimateSource: calculated.estimateSource,
+      confidence: calculated.confidence,
+      confidenceReason: calculated.confidenceReason,
+      manualAnnualMileageOverride: calculated.manualAnnualMileageOverride,
+      manualOverrideReason: calculated.manualOverrideReason,
+      manualOverrideNotes: calculated.manualOverrideNotes,
+      manualOverrideSetAt: calculated.manualOverrideSetAt ? new Date(calculated.manualOverrideSetAt) : null,
+      manualOverrideSetByUserId: calculated.manualOverrideSetByUserId,
+      lastCalculatedAt: now,
+    },
+    update: {
+      customerReportedAnnualMileage: calculated.customerReportedAnnualMileage,
+      customerReportedAt: calculated.customerReportedAt ? new Date(calculated.customerReportedAt) : null,
+      customerReportedByUserId: calculated.customerReportedByUserId,
+      calculatedAnnualMileage: calculated.calculatedAnnualMileage,
+      estimateSource: calculated.estimateSource,
+      confidence: calculated.confidence,
+      confidenceReason: calculated.confidenceReason,
+      manualAnnualMileageOverride: calculated.manualAnnualMileageOverride,
+      manualOverrideReason: calculated.manualOverrideReason,
+      manualOverrideNotes: calculated.manualOverrideNotes,
+      manualOverrideSetAt: calculated.manualOverrideSetAt ? new Date(calculated.manualOverrideSetAt) : null,
+      manualOverrideSetByUserId: calculated.manualOverrideSetByUserId,
+      lastCalculatedAt: now,
+    },
+  });
+}
+
+export async function updatePilotVehicleMileage(context: AuthenticatedShopContext, input: unknown) {
+  const parsed = mileageUpdateSchema.parse(input);
+  const vehicle = await requireVehicleInActiveShop(context, parsed.vehicleId);
+  if (parsed.currentMileage < vehicle.currentMileage && !parsed.allowLowerCorrection) {
+    throw new SafeActionError({
+      code: "MILEAGE_CORRECTION_REQUIRED",
+      message: "Mileage is below the current reading. Confirm a correction and provide a reason.",
+      table: "Vehicle",
+      operation: "UPDATE",
+    });
+  }
+  if (parsed.currentMileage < vehicle.currentMileage && !parsed.correctionReason?.trim()) {
+    throw new SafeActionError({
+      code: "MILEAGE_CORRECTION_REASON_REQUIRED",
+      message: "A correction reason is required for lower mileage.",
+      table: "Vehicle",
+      operation: "UPDATE",
+    });
+  }
+
+  await prisma.$transaction(async (tx) => {
+    const readingDate = new Date();
+    await tx.vehicleMileageReading.create({
+      data: {
+        shopId: context.shopId,
+        vehicleId: vehicle.id,
+        readingMileage: parsed.currentMileage,
+        readingDate,
+        source: parsed.currentMileage < vehicle.currentMileage ? "CORRECTION" : "SHOP_MANUAL_ENTRY",
+        verificationStatus: "VERIFIED",
+        anomalyStatus: parsed.currentMileage < vehicle.currentMileage ? "RESOLVED" : "NONE",
+        includedInForecast: true,
+        correctionReason: parsed.correctionReason || null,
+        recordedByUserId: context.userId,
+      },
+    });
+    await tx.vehicle.update({
+      where: { id: vehicle.id },
+      data: { currentMileage: parsed.currentMileage },
+    });
+    await tx.vehicleMaintenanceRecord.updateMany({
+      where: { shopId: context.shopId, vehicleId: vehicle.id, isActive: true },
+      data: { updatedByUserId: context.userId },
+    });
+    await tx.auditLog.create({
+      data: {
+        shopId: context.shopId,
+        actorUserId: context.userId,
+        action: "vehicle.mileage_updated",
+        entityType: "Vehicle",
+        entityId: vehicle.id,
+        metadata: {
+          previousMileage: vehicle.currentMileage,
+          currentMileage: parsed.currentMileage,
+          correctionReason: parsed.correctionReason,
+        },
+      },
+    });
+    await recalculatePersistedDrivingProfile({ tx, context, vehicleId: vehicle.id });
+  });
+}
+
+export async function setPilotCustomerReportedMileage(context: AuthenticatedShopContext, input: unknown) {
+  const parsed = customerReportedMileageSchema.parse(input);
+  const vehicle = await requireVehicleInActiveShop(context, parsed.vehicleId);
+
+  await prisma.$transaction(async (tx) => {
+    await recalculatePersistedDrivingProfile({
+      tx,
+      context,
+      vehicleId: vehicle.id,
+      customerReportedAnnualMileage: parsed.annualMileage,
+    });
+    await tx.vehicle.update({
+      where: { id: vehicle.id },
+      data: { estimatedAnnualMileage: parsed.annualMileage },
+    });
+    await tx.auditLog.create({
+      data: {
+        shopId: context.shopId,
+        actorUserId: context.userId,
+        action: "vehicle.customer_reported_annual_mileage_set",
+        entityType: "Vehicle",
+        entityId: vehicle.id,
+        metadata: { annualMileage: parsed.annualMileage },
+      },
+    });
+  });
+}
+
+export async function setPilotManualMileageOverride(context: AuthenticatedShopContext, input: unknown) {
+  const parsed = manualMileageOverrideSchema.parse(input);
+  const vehicle = await requireVehicleInActiveShop(context, parsed.vehicleId);
+
+  await prisma.$transaction(async (tx) => {
+    await recalculatePersistedDrivingProfile({
+      tx,
+      context,
+      vehicleId: vehicle.id,
+      manualAnnualMileageOverride: parsed.annualMileage,
+      manualOverrideReason: parsed.reason,
+      manualOverrideNotes: parsed.notes ?? null,
+    });
+    await tx.auditLog.create({
+      data: {
+        shopId: context.shopId,
+        actorUserId: context.userId,
+        action: "vehicle.driving_profile_manual_override_set",
+        entityType: "Vehicle",
+        entityId: vehicle.id,
+        metadata: {
+          annualMileage: parsed.annualMileage,
+          reason: parsed.reason,
+        },
+      },
+    });
+  });
+}
+
+export async function resetPilotManualMileageOverride(context: AuthenticatedShopContext, input: unknown) {
+  const parsed = z.object({ vehicleId: z.string().min(1) }).parse(input);
+  const vehicle = await requireVehicleInActiveShop(context, parsed.vehicleId);
+
+  await prisma.$transaction(async (tx) => {
+    await recalculatePersistedDrivingProfile({
+      tx,
+      context,
+      vehicleId: vehicle.id,
+      clearManualOverride: true,
+    });
+    await tx.auditLog.create({
+      data: {
+        shopId: context.shopId,
+        actorUserId: context.userId,
+        action: "vehicle.driving_profile_manual_override_reset",
+        entityType: "Vehicle",
+        entityId: vehicle.id,
+      },
+    });
+  });
+}
+
+export async function reviewPilotMileageReading(context: AuthenticatedShopContext, input: unknown) {
+  const parsed = mileageReadingReviewSchema.parse(input);
+  const reading = await prisma.vehicleMileageReading.findUnique({ where: { id: parsed.readingId } });
+  assertSameShop(context, reading?.shopId);
+
+  await prisma.$transaction(async (tx) => {
+    await tx.vehicleMileageReading.update({
+      where: { id: parsed.readingId },
+      data: {
+        includedInForecast: parsed.includedInForecast,
+        anomalyStatus: parsed.anomalyStatus,
+        reviewNotes: parsed.reviewNotes || null,
+      },
+    });
+    await recalculatePersistedDrivingProfile({ tx, context, vehicleId: reading!.vehicleId });
+    await tx.auditLog.create({
+      data: {
+        shopId: context.shopId,
+        actorUserId: context.userId,
+        action: "vehicle.mileage_reading_reviewed",
+        entityType: "VehicleMileageReading",
+        entityId: parsed.readingId,
+        metadata: {
+          includedInForecast: parsed.includedInForecast,
+          anomalyStatus: parsed.anomalyStatus,
+        },
+      },
+    });
   });
 }
 
@@ -817,6 +2010,8 @@ export async function importPilotCsvRows(
             category: "Imported",
             defaultMileageInterval: defaultService?.defaultMileageInterval ?? 12_000,
             defaultTimeIntervalMonths: defaultService?.defaultTimeIntervalMonths ?? 12,
+            defaultTimeIntervalValue: defaultService?.defaultTimeIntervalValue ?? defaultService?.defaultTimeIntervalMonths ?? 12,
+            defaultTimeIntervalUnit: defaultService?.defaultTimeIntervalUnit ?? "MONTHS",
             defaultNotificationThreshold: defaultService?.defaultNotificationThreshold ?? 10,
             estimatedLaborMinutes: laborMinutes,
             defaultPriceCents: priceCents,
@@ -826,15 +2021,34 @@ export async function importPilotCsvRows(
         });
       }
 
-      await tx.vehicleMaintenanceRecord.upsert({
+      const existingMaintenance = await tx.vehicleMaintenanceRecord.findFirst({
         where: {
-          shopId_vehicleId_serviceDefinitionId: {
-            shopId: context.shopId,
-            vehicleId: vehicle.id,
-            serviceDefinitionId: service.id,
-          },
+          shopId: context.shopId,
+          vehicleId: vehicle.id,
+          serviceDefinitionId: service.id,
+          isActive: true,
+          archivedAt: null,
         },
-        create: {
+      });
+
+      if (existingMaintenance) {
+        await tx.vehicleMaintenanceRecord.update({
+          where: { id: existingMaintenance.id },
+          data: {
+            lastCompletedDate: stringValue(normalized, "serviceDate")
+              ? new Date(stringValue(normalized, "serviceDate"))
+              : undefined,
+            lastCompletedMileage: numberValue(normalized, "serviceMileage") || undefined,
+            priceOverrideCents: priceCents,
+            laborMinutesOverride: laborMinutes,
+            priceCents,
+            laborMinutes,
+            updatedByUserId: context.userId,
+          },
+        });
+      } else {
+        await tx.vehicleMaintenanceRecord.create({
+          data: {
           shopId: context.shopId,
           vehicleId: vehicle.id,
           serviceDefinitionId: service.id,
@@ -843,23 +2057,26 @@ export async function importPilotCsvRows(
             ? new Date(stringValue(normalized, "serviceDate"))
             : null,
           lastCompletedMileage: numberValue(normalized, "serviceMileage") || numberValue(normalized, "currentMileage"),
-          recommendedMileageInterval: service.defaultMileageInterval,
-          recommendedTimeIntervalMonths: service.defaultTimeIntervalMonths,
+          recommendedMileageInterval: null,
+          recommendedTimeIntervalMonths: null,
+          mileageIntervalOverride: null,
+          timeIntervalValueOverride: null,
+          timeIntervalUnitOverride: null,
           notificationThreshold: service.defaultNotificationThreshold,
+          outreachThresholdType: "MILES_BEFORE_DUE",
+          outreachThresholdValue: 500,
           laborMinutes,
           priceCents,
+          priceOverrideCents: priceCents,
+          laborMinutesOverride: laborMinutes,
           status: "DUE_SOON",
           outreachStatus: "NEEDS_OUTREACH",
+          isActive: true,
+          createdByUserId: context.userId,
+          updatedByUserId: context.userId,
         },
-        update: {
-          lastCompletedDate: stringValue(normalized, "serviceDate")
-            ? new Date(stringValue(normalized, "serviceDate"))
-            : undefined,
-          lastCompletedMileage: numberValue(normalized, "serviceMileage") || undefined,
-          laborMinutes,
-          priceCents,
-        },
-      });
+        });
+      }
 
       if (stringValue(normalized, "serviceDate")) {
         await tx.serviceHistoryRecord.create({
