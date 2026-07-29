@@ -26,6 +26,7 @@ import {
   addPilotServiceDefinition,
   updatePilotMaintenanceItem,
   updatePilotServiceDefinition,
+  isMissingServiceIntervalSchema,
 } from "@/lib/pilot-state";
 import { clientMutationError, SafeActionError } from "@/lib/server-diagnostics";
 import type { AuthenticatedShopContext } from "@/lib/auth";
@@ -222,6 +223,13 @@ describe("service shop authorization", () => {
       message: "The database update for service intervals has not been installed.",
       status: 500,
     });
+  });
+
+  it("loads state with the legacy maintenance-record columns when the interval migration is missing", () => {
+    expect(isMissingServiceIntervalSchema({
+      code: "P2022",
+      message: "The column `VehicleMaintenanceRecord.customServiceName` does not exist in the current database.",
+    })).toBe(true);
   });
 
   it("keeps safe action errors out of successful UI paths", () => {

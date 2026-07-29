@@ -185,13 +185,28 @@ type StateMaintenanceRecord = {
   updatedAt: Date;
 };
 
-function isMissingServiceIntervalSchema(error: unknown) {
+export function isMissingServiceIntervalSchema(error: unknown) {
   const database = safeDatabaseError(error);
-  return database.code === "P2022" && (
-    database.message?.includes("defaultTimeIntervalValue") ||
-    database.message?.includes("outreachThresholdType") ||
-    database.message?.includes("isActive")
-  );
+  if (database.code !== "P2022") return false;
+
+  const missingIntervalColumns = [
+    "defaultTimeIntervalValue",
+    "defaultTimeIntervalUnit",
+    "customServiceName",
+    "customCategory",
+    "mileageIntervalOverride",
+    "timeIntervalValueOverride",
+    "timeIntervalUnitOverride",
+    "outreachThresholdType",
+    "outreachThresholdValue",
+    "priceOverrideCents",
+    "laborMinutesOverride",
+    "isActive",
+    "createdByUserId",
+    "updatedByUserId",
+  ];
+
+  return missingIntervalColumns.some((column) => database.message?.includes(column));
 }
 
 function isDemoEntityId(id: string) {
