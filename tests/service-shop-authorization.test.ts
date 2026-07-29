@@ -26,9 +26,10 @@ import {
   addPilotServiceDefinition,
   updatePilotMaintenanceItem,
   updatePilotServiceDefinition,
+  isMissingAdaptiveMileageSchema,
   isMissingServiceIntervalSchema,
 } from "@/lib/pilot-state";
-import { clientMutationError, SafeActionError } from "@/lib/server-diagnostics";
+import { clientMutationError, safeDatabaseError, SafeActionError } from "@/lib/server-diagnostics";
 import type { AuthenticatedShopContext } from "@/lib/auth";
 
 const context: AuthenticatedShopContext = {
@@ -230,6 +231,20 @@ describe("service shop authorization", () => {
       code: "P2022",
       message: "The column `VehicleMaintenanceRecord.customServiceName` does not exist in the current database.",
     })).toBe(true);
+  });
+
+  it("detects missing adaptive-mileage columns from Prisma raw-query metadata", () => {
+    const error = {
+      code: "P2010",
+      message: "Raw query failed.",
+      meta: {
+        code: "42703",
+        message: "column Shop.defaultAnnualMileage does not exist",
+      },
+    };
+
+    expect(safeDatabaseError(error)).toMatchObject({ code: "P2010" });
+    expect(isMissingAdaptiveMileageSchema(error)).toBe(true);
   });
 
   it("keeps safe action errors out of successful UI paths", () => {

@@ -61,11 +61,13 @@ function valueFrom(error: unknown, key: "code" | "message" | "detail" | "details
 
 export function safeDatabaseError(error: unknown): SafeError {
   const cause = error && typeof error === "object" ? (error as { cause?: unknown }).cause : undefined;
+  const meta = error && typeof error === "object" ? (error as { meta?: unknown }).meta : undefined;
+  const causeMeta = cause && typeof cause === "object" ? (cause as { meta?: unknown }).meta : undefined;
   return {
-    code: valueFrom(error, "code") ?? valueFrom(cause, "code"),
-    message: valueFrom(error, "message") ?? valueFrom(cause, "message"),
-    details: valueFrom(error, "details") ?? valueFrom(error, "detail") ?? valueFrom(cause, "details") ?? valueFrom(cause, "detail"),
-    hint: valueFrom(error, "hint") ?? valueFrom(cause, "hint"),
+    code: valueFrom(error, "code") ?? valueFrom(meta, "code") ?? valueFrom(cause, "code") ?? valueFrom(causeMeta, "code"),
+    message: valueFrom(error, "message") ?? valueFrom(meta, "message") ?? valueFrom(cause, "message") ?? valueFrom(causeMeta, "message"),
+    details: valueFrom(error, "details") ?? valueFrom(error, "detail") ?? valueFrom(meta, "details") ?? valueFrom(meta, "detail") ?? valueFrom(meta, "message") ?? valueFrom(cause, "details") ?? valueFrom(cause, "detail") ?? valueFrom(causeMeta, "details") ?? valueFrom(causeMeta, "detail") ?? valueFrom(causeMeta, "message"),
+    hint: valueFrom(error, "hint") ?? valueFrom(meta, "hint") ?? valueFrom(cause, "hint") ?? valueFrom(causeMeta, "hint"),
   };
 }
 
@@ -173,7 +175,7 @@ export function clientMutationError(error: unknown, operation: SafeMutationOpera
     "deactivateMaintenanceItem",
     "markMaintenanceServiceComplete",
   ]);
-  const schemaCodes = new Set(["P2021", "P2022", "42703", "42P01", "42704"]);
+  const schemaCodes = new Set(["P2010", "P2021", "P2022", "42703", "42P01", "42704"]);
   const duplicateCodes = new Set(["P2002", "23505"]);
   const invalidIdCodes = new Set(["22P02", "P2023"]);
 

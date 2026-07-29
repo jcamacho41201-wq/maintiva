@@ -99,7 +99,13 @@ export async function getAuthenticatedShopContext(): Promise<AuthenticatedShopCo
         },
       },
       include: {
-        shop: true,
+        shop: {
+          select: {
+            id: true,
+            name: true,
+            isDemo: true,
+          },
+        },
         user: true,
       },
       orderBy: {

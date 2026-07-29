@@ -276,7 +276,7 @@ export function isMissingServiceIntervalSchema(error: unknown) {
 
 export function isMissingAdaptiveMileageSchema(error: unknown) {
   const database = safeDatabaseError(error);
-  if (!["P2021", "P2022", "42P01", "42703", "42704"].includes(database.code ?? "")) return false;
+  if (!["P2010", "P2021", "P2022", "42P01", "42703", "42704"].includes(database.code ?? "")) return false;
   return [
     "VehicleMileageReading",
     "VehicleDrivingProfile",
