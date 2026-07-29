@@ -24,6 +24,11 @@ import {
   type ImportType,
   type MaintivaField,
 } from "@/lib/csv-import";
+import {
+  dateKeyInTimeZone,
+  minutesInZone,
+  zonedDateTimeToIso,
+} from "@/lib/calendar";
 
 const onboardingSchema = z.object({
   shopName: z.string().min(2),
@@ -35,6 +40,66 @@ const onboardingSchema = z.object({
 });
 
 export type OnboardingInput = z.input<typeof onboardingSchema>;
+
+const appointmentStatusSchema = z.enum([
+  "TENTATIVE",
+  "SCHEDULED",
+  "REQUESTED",
+  "CONFIRMED",
+  "IN_PROGRESS",
+  "COMPLETED",
+  "CANCELLED",
+  "NO_SHOW",
+]);
+
+const appointmentAttributionSchema = z.enum([
+  "MAINTIVA_OUTREACH",
+  "MANUAL_SHOP_ENTRY",
+  "IMPORTED_APPOINTMENT",
+  "OTHER",
+]);
+
+const appointmentSourceSchema = z.enum([
+  "AUTOMATION",
+  "CUSTOMER_BOOKING",
+  "MANUAL",
+  "IMPORTED",
+]);
+
+const calendarAppointmentSchema = z.object({
+  customerId: z.string().min(1),
+  vehicleId: z.string().min(1),
+  maintenanceRecordIds: z.array(z.string().min(1)).default([]),
+  declinedWorkRecordIds: z.array(z.string().min(1)).default([]),
+  serviceDefinitionIds: z.array(z.string().min(1)).default([]),
+  opportunityId: z.string().optional(),
+  outreachRecordId: z.string().optional(),
+  date: z.string().min(8),
+  time: z.string().min(4),
+  status: appointmentStatusSchema.default("SCHEDULED"),
+  source: appointmentSourceSchema.default("MANUAL"),
+  attributionSource: appointmentAttributionSchema.default("MANUAL_SHOP_ENTRY"),
+  totalLaborHours: z.number().positive(),
+  totalPriceCents: z.number().int().nonnegative(),
+  notes: z.string().optional(),
+});
+
+const appointmentUpdateSchema = z.object({
+  appointmentId: z.string().min(1),
+  date: z.string().min(8).optional(),
+  time: z.string().min(4).optional(),
+  durationMinutes: z.number().int().positive().optional(),
+  totalLaborHours: z.number().positive().optional(),
+  totalPriceCents: z.number().int().nonnegative().optional(),
+  status: appointmentStatusSchema.optional(),
+  notes: z.string().optional(),
+});
+
+const opportunitySnoozeSchema = z.object({
+  maintenanceRecordIds: z.array(z.string().min(1)).default([]),
+  declinedWorkRecordIds: z.array(z.string().min(1)).default([]),
+  followUpDate: z.string().min(8),
+});
 
 function slugify(value: string) {
   const slug = value
@@ -63,10 +128,19 @@ function numberValue(record: Record<string, string | number>, key: string) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
-function appointmentDateTime(date: string, time: string) {
+function appointmentDateTime(date: string, time: string, timeZone: string) {
   if (!date || !time) return undefined;
-  const parsed = new Date(`${date}T${time}:00`);
+  const parsed = new Date(zonedDateTimeToIso(date, time, timeZone));
   return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+}
+
+function timeKeyInTimeZone(date: Date | string, timeZone: string) {
+  const minutes = minutesInZone(date, timeZone);
+  return `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+}
+
+function appointmentEnd(start: Date, laborHours: number) {
+  return new Date(start.getTime() + Math.round(laborHours * 60) * 60_000);
 }
 
 export async function seedDefaultServicesForShop(shopId: string) {
@@ -552,7 +626,8 @@ export async function bookPilotAppointment(
       outreachStatus: record.outreachStatus,
     })),
   );
-  const scheduledStart = new Date(`${input.date}T${input.time}:00`);
+  const scheduledStart = appointmentDateTime(input.date, input.time, context.timezone);
+  if (!scheduledStart) throw new Error("Appointment date and time are invalid.");
   const scheduledEnd = new Date(scheduledStart.getTime() + totals.recommendedHours * 60 * 60 * 1000);
   const duplicateAppointment = await prisma.appointment.findFirst({
     where: {
@@ -600,6 +675,316 @@ export async function bookPilotAppointment(
       data: {
         outreachStatus: "SCHEDULED",
         appointmentId: appointment.id,
+      },
+    });
+  });
+}
+
+export async function createPilotCalendarAppointment(
+  context: AuthenticatedShopContext,
+  input: unknown,
+) {
+  const parsed = calendarAppointmentSchema.parse(input);
+  const customer = await prisma.customer.findUnique({ where: { id: parsed.customerId } });
+  const vehicle = await prisma.vehicle.findUnique({ where: { id: parsed.vehicleId } });
+  assertSameShop(context, customer?.shopId);
+  assertSameShop(context, vehicle?.shopId);
+  if (!vehicle || vehicle.customerId !== parsed.customerId) {
+    throw new Error("Vehicle does not belong to the selected customer.");
+  }
+
+  const [maintenanceRecords, declinedWorkRecords, serviceDefinitions, outreachRecord] = await Promise.all([
+    prisma.vehicleMaintenanceRecord.findMany({
+      where: { id: { in: parsed.maintenanceRecordIds }, shopId: context.shopId },
+    }),
+    prisma.declinedWorkRecord.findMany({
+      where: { id: { in: parsed.declinedWorkRecordIds }, shopId: context.shopId },
+    }),
+    prisma.serviceDefinition.findMany({
+      where: { id: { in: parsed.serviceDefinitionIds }, shopId: context.shopId, isActive: true },
+    }),
+    parsed.outreachRecordId
+      ? prisma.outreachRecord.findUnique({ where: { id: parsed.outreachRecordId } })
+      : Promise.resolve(null),
+  ]);
+
+  if (maintenanceRecords.length !== parsed.maintenanceRecordIds.length) {
+    throw new Error("One or more selected maintenance services are unavailable.");
+  }
+  if (declinedWorkRecords.length !== parsed.declinedWorkRecordIds.length) {
+    throw new Error("One or more declined-work services are unavailable.");
+  }
+  if (serviceDefinitions.length !== parsed.serviceDefinitionIds.length) {
+    throw new Error("One or more selected services are unavailable.");
+  }
+  if (outreachRecord) assertSameShop(context, outreachRecord.shopId);
+  if (maintenanceRecords.some((record) => record.vehicleId !== parsed.vehicleId)) {
+    throw new Error("Selected maintenance services do not belong to the selected vehicle.");
+  }
+  if (declinedWorkRecords.some((record) => record.vehicleId !== parsed.vehicleId)) {
+    throw new Error("Selected declined work does not belong to the selected vehicle.");
+  }
+
+  const serviceRows = [
+    ...serviceDefinitions.map((service) => ({
+      serviceDefinitionId: service.id,
+      maintenanceRecordId: null,
+      serviceName: service.name,
+      laborMinutes: service.estimatedLaborMinutes,
+      priceCents: service.defaultPriceCents,
+    })),
+    ...maintenanceRecords.map((record) => ({
+      serviceDefinitionId: record.serviceDefinitionId,
+      maintenanceRecordId: record.id,
+      serviceName: record.serviceName,
+      laborMinutes: record.laborMinutes,
+      priceCents: record.priceCents,
+    })),
+    ...declinedWorkRecords.map((record) => ({
+      serviceDefinitionId: null,
+      maintenanceRecordId: null,
+      serviceName: record.serviceName,
+      laborMinutes: record.laborMinutes,
+      priceCents: record.recommendedPriceCents,
+    })),
+  ].filter((row, index, rows) =>
+    rows.findIndex((candidate) => candidate.serviceName === row.serviceName) === index,
+  );
+
+  if (serviceRows.length === 0) {
+    throw new Error("Select at least one service.");
+  }
+
+  const scheduledStart = appointmentDateTime(parsed.date, parsed.time, context.timezone);
+  if (!scheduledStart) throw new Error("Appointment date and time are invalid.");
+  const scheduledEnd = appointmentEnd(scheduledStart, parsed.totalLaborHours);
+  const duplicateAppointment = await prisma.appointment.findFirst({
+    where: {
+      shopId: context.shopId,
+      vehicleId: parsed.vehicleId,
+      scheduledStart,
+      status: { notIn: ["CANCELLED", "NO_SHOW"] },
+    },
+  });
+
+  if (duplicateAppointment) {
+    throw new Error("This vehicle already has an appointment at that time.");
+  }
+
+  await prisma.$transaction(async (tx) => {
+    const appointment = await tx.appointment.create({
+      data: {
+        shopId: context.shopId,
+        customerId: parsed.customerId,
+        vehicleId: parsed.vehicleId,
+        scheduledStart,
+        scheduledEnd,
+        status: parsed.status,
+        totalLaborMinutes: Math.round(parsed.totalLaborHours * 60),
+        totalPriceCents: parsed.totalPriceCents,
+        source: parsed.source,
+        attributionSource: parsed.attributionSource,
+        opportunityId: parsed.opportunityId,
+        outreachRecordId: parsed.outreachRecordId,
+        notes: parsed.notes,
+        services: {
+          create: serviceRows.map((service) => ({
+            shopId: context.shopId,
+            ...service,
+          })),
+        },
+      },
+    });
+
+    if (parsed.maintenanceRecordIds.length > 0) {
+      await tx.vehicleMaintenanceRecord.updateMany({
+        where: { id: { in: parsed.maintenanceRecordIds }, shopId: context.shopId },
+        data: {
+          outreachStatus: "SCHEDULED",
+          appointmentId: appointment.id,
+        },
+      });
+    }
+    if (parsed.declinedWorkRecordIds.length > 0) {
+      await tx.declinedWorkRecord.updateMany({
+        where: { id: { in: parsed.declinedWorkRecordIds }, shopId: context.shopId },
+        data: {
+          status: "BOOKED",
+          outreachStatus: "SCHEDULED",
+          appointmentId: appointment.id,
+        },
+      });
+    }
+    if (parsed.outreachRecordId) {
+      await tx.outreachRecord.updateMany({
+        where: { id: parsed.outreachRecordId, shopId: context.shopId },
+        data: {
+          status: "SCHEDULED",
+          responseStatus: "BOOKED",
+          appointmentId: appointment.id,
+        },
+      });
+    }
+    if (parsed.opportunityId) {
+      await tx.maintenanceRevenueOpportunity.updateMany({
+        where: { id: parsed.opportunityId, shopId: context.shopId },
+        data: {
+          stage: "BOOKED",
+          lastActivityAt: new Date(),
+        },
+      });
+    }
+    await tx.auditLog.create({
+      data: {
+        shopId: context.shopId,
+        actorUserId: context.userId,
+        action: "appointment.created",
+        entityType: "Appointment",
+        entityId: appointment.id,
+        metadata: {
+          attributionSource: parsed.attributionSource,
+          opportunityId: parsed.opportunityId,
+        },
+      },
+    });
+  });
+}
+
+export async function updatePilotAppointment(
+  context: AuthenticatedShopContext,
+  input: unknown,
+) {
+  const parsed = appointmentUpdateSchema.parse(input);
+  const appointment = await prisma.appointment.findUnique({
+    where: { id: parsed.appointmentId },
+    include: { services: true },
+  });
+  assertSameShop(context, appointment?.shopId);
+  if (!appointment) throw new Error("Appointment not found.");
+
+  const changesSchedule = Boolean(parsed.date || parsed.time || parsed.durationMinutes || parsed.totalLaborHours);
+  if (appointment.status === "COMPLETED" && changesSchedule) {
+    throw new Error("Completed appointments cannot be moved or resized.");
+  }
+
+  const start = parsed.date || parsed.time
+    ? appointmentDateTime(
+        parsed.date ?? dateKeyInTimeZone(appointment.scheduledStart, context.timezone),
+        parsed.time ?? timeKeyInTimeZone(appointment.scheduledStart, context.timezone),
+        context.timezone,
+      )
+    : appointment.scheduledStart;
+  if (!start) throw new Error("Appointment date and time are invalid.");
+  const durationMinutes = parsed.durationMinutes ??
+    Math.max(30, Math.round((appointment.scheduledEnd.getTime() - appointment.scheduledStart.getTime()) / 60_000));
+  const totalLaborMinutes = parsed.totalLaborHours
+    ? Math.round(parsed.totalLaborHours * 60)
+    : parsed.durationMinutes
+      ? durationMinutes
+      : appointment.totalLaborMinutes;
+
+  if (changesSchedule) {
+    const duplicateAppointment = await prisma.appointment.findFirst({
+      where: {
+        id: { not: appointment.id },
+        shopId: context.shopId,
+        vehicleId: appointment.vehicleId,
+        scheduledStart: start,
+        status: { notIn: ["CANCELLED", "NO_SHOW"] },
+      },
+    });
+    if (duplicateAppointment) {
+      throw new Error("This vehicle already has an appointment at that time.");
+    }
+  }
+
+  await prisma.$transaction(async (tx) => {
+    const nextStatus = parsed.status ?? appointment.status;
+    await tx.appointment.update({
+      where: { id: appointment.id },
+      data: {
+        scheduledStart: start,
+        scheduledEnd: new Date(start.getTime() + durationMinutes * 60_000),
+        totalLaborMinutes,
+        totalPriceCents: parsed.totalPriceCents ?? appointment.totalPriceCents,
+        status: nextStatus,
+        notes: parsed.notes ?? appointment.notes,
+        cancelledAt: ["CANCELLED", "NO_SHOW"].includes(nextStatus) ? new Date() : appointment.cancelledAt,
+      },
+    });
+    await tx.auditLog.create({
+      data: {
+        shopId: context.shopId,
+        actorUserId: context.userId,
+        action: "appointment.updated",
+        entityType: "Appointment",
+        entityId: appointment.id,
+        metadata: {
+          status: nextStatus,
+          moved: changesSchedule,
+        },
+      },
+    });
+  });
+}
+
+export async function snoozePilotOpportunity(
+  context: AuthenticatedShopContext,
+  input: unknown,
+) {
+  const parsed = opportunitySnoozeSchema.parse(input);
+  const [maintenanceRecords, declinedWorkRecords] = await Promise.all([
+    prisma.vehicleMaintenanceRecord.findMany({
+      where: { id: { in: parsed.maintenanceRecordIds }, shopId: context.shopId },
+    }),
+    prisma.declinedWorkRecord.findMany({
+      where: { id: { in: parsed.declinedWorkRecordIds }, shopId: context.shopId },
+    }),
+  ]);
+  if (maintenanceRecords.length !== parsed.maintenanceRecordIds.length) {
+    throw new Error("One or more selected maintenance services are unavailable.");
+  }
+  if (declinedWorkRecords.length !== parsed.declinedWorkRecordIds.length) {
+    throw new Error("One or more declined-work services are unavailable.");
+  }
+  if (maintenanceRecords.length === 0 && declinedWorkRecords.length === 0) {
+    throw new Error("Select at least one opportunity to snooze.");
+  }
+
+  const outreachIds = maintenanceRecords
+    .map((record) => record.outreachRecordId)
+    .filter((id): id is string => Boolean(id));
+
+  await prisma.$transaction(async (tx) => {
+    await tx.vehicleMaintenanceRecord.updateMany({
+      where: { id: { in: parsed.maintenanceRecordIds }, shopId: context.shopId },
+      data: { outreachStatus: "SNOOZED" },
+    });
+    await tx.declinedWorkRecord.updateMany({
+      where: { id: { in: parsed.declinedWorkRecordIds }, shopId: context.shopId },
+      data: { status: "SNOOZED", outreachStatus: "SNOOZED" },
+    });
+    if (outreachIds.length > 0) {
+      await tx.outreachRecord.updateMany({
+        where: { id: { in: outreachIds }, shopId: context.shopId },
+        data: {
+          status: "SNOOZED",
+          followUpDate: new Date(parsed.followUpDate),
+          performedByUserId: context.userId,
+        },
+      });
+    }
+    await tx.auditLog.create({
+      data: {
+        shopId: context.shopId,
+        actorUserId: context.userId,
+        action: "opportunity.snoozed",
+        entityType: "Opportunity",
+        metadata: {
+          maintenanceRecordIds: parsed.maintenanceRecordIds,
+          declinedWorkRecordIds: parsed.declinedWorkRecordIds,
+          followUpDate: parsed.followUpDate,
+        },
       },
     });
   });
@@ -656,6 +1041,31 @@ export async function completePilotAppointment(
       where: { appointmentId: appointment.id, shopId: context.shopId },
       data: { status: "COMPLETED", outreachStatus: "SCHEDULED" },
     });
+    if (appointment.opportunityId) {
+      await tx.maintenanceRevenueOpportunity.updateMany({
+        where: { id: appointment.opportunityId, shopId: context.shopId },
+        data: { stage: "COMPLETED", lastActivityAt: new Date() },
+      });
+    }
+    if (appointment.outreachRecordId) {
+      await tx.outreachRecord.updateMany({
+        where: { id: appointment.outreachRecordId, shopId: context.shopId },
+        data: { status: "SCHEDULED", responseStatus: "BOOKED" },
+      });
+    }
+    await tx.auditLog.create({
+      data: {
+        shopId: context.shopId,
+        actorUserId: context.userId,
+        action: "appointment.completed",
+        entityType: "Appointment",
+        entityId: appointment.id,
+        metadata: {
+          completedRevenueCents: input.completedRevenueCents,
+          completedLaborMinutes: Math.round(input.completedLaborHours * 60),
+        },
+      },
+    });
   });
 }
 
@@ -676,6 +1086,7 @@ export async function importPilotCsvRows(
     mapping: input.mapping,
     importType: input.importType,
     state,
+    timeZone: context.timezone,
   });
   const rowActions = Object.fromEntries(
     Object.entries(input.rowActions ?? {}).map(([rowNumber, action]) => [Number(rowNumber), action]),
@@ -904,6 +1315,7 @@ export async function importPilotCsvRows(
       const scheduledStart = appointmentDateTime(
         stringValue(normalized, "appointmentDate"),
         stringValue(normalized, "appointmentTime"),
+        context.timezone,
       );
       if (scheduledStart) {
         const scheduledEnd = new Date(scheduledStart.getTime() + laborMinutes * 60 * 1000);

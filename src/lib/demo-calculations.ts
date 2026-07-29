@@ -230,6 +230,7 @@ export function createAppointmentFromRecords({
   time,
   status,
   notes,
+  scheduledStart,
 }: {
   state: DemoState;
   customerId: string;
@@ -239,12 +240,13 @@ export function createAppointmentFromRecords({
   time: string;
   status: Appointment["status"];
   notes?: string;
+  scheduledStart?: string;
 }) {
   const records = state.maintenanceRecords.filter((record) =>
     maintenanceRecordIds.includes(record.id),
   );
   const totals = calculateAppointmentTotals(records);
-  const scheduledStart = new Date(`${date}T${time}:00`);
+  const startDate = new Date(scheduledStart ?? `${date}T${time}:00`);
   const appointmentId = `appt-${Date.now()}`;
 
   return {
@@ -254,8 +256,8 @@ export function createAppointmentFromRecords({
     vehicleId,
     maintenanceRecordIds,
     serviceNames: records.map((record) => record.serviceName),
-    scheduledStart: scheduledStart.toISOString(),
-    scheduledEnd: addHours(scheduledStart, totals.recommendedHours).toISOString(),
+    scheduledStart: startDate.toISOString(),
+    scheduledEnd: addHours(startDate, totals.recommendedHours).toISOString(),
     status,
     totalPriceCents: totals.totalPriceCents,
     totalLaborHours: totals.recommendedHours,

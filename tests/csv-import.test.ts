@@ -122,6 +122,23 @@ describe("CSV import workflow", () => {
     });
   });
 
+  it("detects appointment duplicates using the shop timezone", () => {
+    const rows = parseCsv(
+      "First Name,Last Name,Email,VIN,Year,Make,Model,Current Mileage,Service Name,Appointment Date,Appointment Time,Price,Labor Hours\nVictor,Chen,victor@example.com,5XYP3DHC5MG100008,2021,Kia,Telluride,49750,Battery,2026-07-28,13:30,250,1",
+    );
+    const preview = previewImport({
+      rows,
+      mapping: detectColumnMapping(Object.keys(rows[0])),
+      importType: "APPOINTMENTS",
+      state: createInitialDemoState(),
+      timeZone: "America/New_York",
+    });
+
+    expect(preview.rows[0].entities.customer.status).toBe("MATCH");
+    expect(preview.rows[0].entities.vehicle.status).toBe("MATCH");
+    expect(preview.rows[0].entities.child.status).toBe("DUPLICATE");
+  });
+
   it("matches an existing customer while creating a new vehicle under that customer", () => {
     const rows = parseCsv(
       "First Name,Last Name,Email,VIN,Year,Make,Model,Current Mileage,Service Name,Service Date,Service Mileage,Price,Labor Hours\nJustin,Camacho,justin@example.com,5NMS3CADXLH123456,2021,Hyundai,Santa Fe,30000,Oil Change,2026-07-10,30000,90,0.5",
