@@ -17,7 +17,7 @@ import {
 import { assertSameShop, type AuthenticatedShopContext } from "@/lib/auth";
 import { customerSchema, vehicleSchema } from "@/lib/validation";
 import { resolveMaintenanceInterval, timeIntervalToMonths } from "@/lib/service-intervals";
-import { SafeActionError } from "@/lib/server-diagnostics";
+import { safeDatabaseError, SafeActionError } from "@/lib/server-diagnostics";
 import {
   previewImport,
   summarizeImport,
@@ -136,6 +136,64 @@ function monthsFromTime(value: number | null | undefined, unit: TimeIntervalUnit
   return months === null ? null : Math.max(1, Math.round(months));
 }
 
+type StateServiceDefinition = {
+  id: string;
+  shopId: string;
+  name: string;
+  category: string;
+  defaultMileageInterval: number | null;
+  defaultTimeIntervalMonths: number | null;
+  defaultTimeIntervalValue?: number | null;
+  defaultTimeIntervalUnit?: TimeIntervalUnit | null;
+  defaultNotificationThreshold: number;
+  estimatedLaborMinutes: number;
+  defaultPriceCents: number;
+  description: string | null;
+  isActive: boolean;
+};
+
+type StateMaintenanceRecord = {
+  id: string;
+  shopId: string;
+  vehicleId: string;
+  serviceDefinitionId: string | null;
+  serviceName: string;
+  customServiceName?: string | null;
+  customCategory?: string | null;
+  lastCompletedDate: Date | null;
+  lastCompletedMileage: number | null;
+  recommendedMileageInterval: number | null;
+  recommendedTimeIntervalMonths: number | null;
+  mileageIntervalOverride?: number | null;
+  timeIntervalValueOverride?: number | null;
+  timeIntervalUnitOverride?: TimeIntervalUnit | null;
+  notificationThreshold: number;
+  outreachThresholdType?: VehicleMaintenanceRecord["outreachThresholdType"] | null;
+  outreachThresholdValue?: number | null;
+  priceCents: number;
+  laborMinutes: number;
+  priceOverrideCents?: number | null;
+  laborMinutesOverride?: number | null;
+  outreachStatus: VehicleMaintenanceRecord["outreachStatus"];
+  outreachRecordId: string | null;
+  appointmentId: string | null;
+  isActive?: boolean | null;
+  notes?: string | null;
+  createdByUserId?: string | null;
+  updatedByUserId?: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+function isMissingServiceIntervalSchema(error: unknown) {
+  const database = safeDatabaseError(error);
+  return database.code === "P2022" && (
+    database.message?.includes("defaultTimeIntervalValue") ||
+    database.message?.includes("outreachThresholdType") ||
+    database.message?.includes("isActive")
+  );
+}
+
 function isDemoEntityId(id: string) {
   return /^(cust|veh|svc|item|appt|hist|service|outreach|declined|import)-/.test(id);
 }
@@ -247,6 +305,76 @@ async function requireMaintenanceRecordInActiveShop(
   });
 }
 
+async function loadStateServiceDefinitions(shopId: string): Promise<StateServiceDefinition[]> {
+  try {
+    return await prisma.serviceDefinition.findMany({
+      where: { shopId },
+      orderBy: { name: "asc" },
+    });
+  } catch (error) {
+    if (!isMissingServiceIntervalSchema(error)) throw error;
+
+    console.warn("Maintiva service interval migration missing during state load; using legacy service definition columns.", {
+      database: safeDatabaseError(error),
+    });
+    return prisma.serviceDefinition.findMany({
+      where: { shopId },
+      orderBy: { name: "asc" },
+      select: {
+        id: true,
+        shopId: true,
+        name: true,
+        category: true,
+        defaultMileageInterval: true,
+        defaultTimeIntervalMonths: true,
+        defaultNotificationThreshold: true,
+        estimatedLaborMinutes: true,
+        defaultPriceCents: true,
+        description: true,
+        isActive: true,
+      },
+    });
+  }
+}
+
+async function loadStateMaintenanceRecords(shopId: string): Promise<StateMaintenanceRecord[]> {
+  try {
+    return await prisma.vehicleMaintenanceRecord.findMany({
+      where: { shopId, archivedAt: null },
+      orderBy: { updatedAt: "desc" },
+    });
+  } catch (error) {
+    if (!isMissingServiceIntervalSchema(error)) throw error;
+
+    console.warn("Maintiva service interval migration missing during state load; using legacy maintenance record columns.", {
+      database: safeDatabaseError(error),
+    });
+    return prisma.vehicleMaintenanceRecord.findMany({
+      where: { shopId, archivedAt: null },
+      orderBy: { updatedAt: "desc" },
+      select: {
+        id: true,
+        shopId: true,
+        vehicleId: true,
+        serviceDefinitionId: true,
+        serviceName: true,
+        lastCompletedDate: true,
+        lastCompletedMileage: true,
+        recommendedMileageInterval: true,
+        recommendedTimeIntervalMonths: true,
+        notificationThreshold: true,
+        priceCents: true,
+        laborMinutes: true,
+        outreachStatus: true,
+        outreachRecordId: true,
+        appointmentId: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+  }
+}
+
 export async function seedDefaultServicesForShop(shopId: string) {
   await prisma.serviceDefinition.createMany({
     data: defaultServices.map((service) => ({
@@ -343,8 +471,6 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
       memberships: { include: { user: true }, where: { isActive: true } },
       customers: { where: { archivedAt: null }, orderBy: [{ lastName: "asc" }, { firstName: "asc" }] },
       vehicles: { where: { archivedAt: null }, orderBy: [{ make: "asc" }, { model: "asc" }] },
-      serviceDefinitions: { orderBy: { name: "asc" } },
-      maintenanceRecords: { where: { archivedAt: null }, orderBy: { updatedAt: "desc" } },
       serviceHistoryRecords: { orderBy: { completedAt: "desc" } },
       declinedWorkRecords: { orderBy: { declinedAt: "desc" } },
       outreachRecords: { orderBy: { createdAt: "desc" } },
@@ -356,8 +482,12 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
     },
   });
   assertSameShop(context, shop.id);
+  const [serviceDefinitions, maintenanceRecords] = await Promise.all([
+    loadStateServiceDefinitions(context.shopId),
+    loadStateMaintenanceRecords(context.shopId),
+  ]);
 
-  const services: MaintenanceService[] = shop.serviceDefinitions.map((service) => ({
+  const services: MaintenanceService[] = serviceDefinitions.map((service) => ({
     id: service.id,
     shopId: service.shopId,
     name: service.name,
@@ -365,7 +495,7 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
     defaultMileageInterval: service.defaultMileageInterval,
     defaultTimeIntervalMonths: service.defaultTimeIntervalMonths,
     defaultTimeIntervalValue: service.defaultTimeIntervalValue ?? service.defaultTimeIntervalMonths,
-    defaultTimeIntervalUnit: service.defaultTimeIntervalUnit,
+    defaultTimeIntervalUnit: service.defaultTimeIntervalUnit ?? "MONTHS",
     defaultNotificationThreshold: service.defaultNotificationThreshold,
     estimatedLaborMinutes: service.estimatedLaborMinutes,
     defaultPriceCents: service.defaultPriceCents,
@@ -431,7 +561,7 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
       lastServiceDate: dateOnly(vehicle.lastServiceDate || vehicle.updatedAt),
     })),
     services,
-    maintenanceRecords: shop.maintenanceRecords.map((record): VehicleMaintenanceRecord => {
+    maintenanceRecords: maintenanceRecords.map((record): VehicleMaintenanceRecord => {
       const service = record.serviceDefinitionId ? serviceById.get(record.serviceDefinitionId) : undefined;
       const vehicle = vehicleById.get(record.vehicleId);
       const baseRecord: VehicleMaintenanceRecord = {
@@ -446,20 +576,20 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
         lastCompletedMileage: record.lastCompletedMileage ?? 0,
         recommendedMileageInterval: record.recommendedMileageInterval,
         recommendedTimeIntervalMonths: record.recommendedTimeIntervalMonths,
-        mileageIntervalOverride: record.mileageIntervalOverride,
-        timeIntervalValueOverride: record.timeIntervalValueOverride,
-        timeIntervalUnitOverride: record.timeIntervalUnitOverride,
+        mileageIntervalOverride: record.mileageIntervalOverride ?? null,
+        timeIntervalValueOverride: record.timeIntervalValueOverride ?? null,
+        timeIntervalUnitOverride: record.timeIntervalUnitOverride ?? null,
         priceCents: record.priceCents,
         laborHours: record.laborMinutes / 60,
-        priceOverrideCents: record.priceOverrideCents,
-        laborMinutesOverride: record.laborMinutesOverride,
+        priceOverrideCents: record.priceOverrideCents ?? null,
+        laborMinutesOverride: record.laborMinutesOverride ?? null,
         notificationThreshold: record.notificationThreshold,
-        outreachThresholdType: record.outreachThresholdType,
-        outreachThresholdValue: record.outreachThresholdValue,
+        outreachThresholdType: record.outreachThresholdType ?? "MILES_BEFORE_DUE",
+        outreachThresholdValue: record.outreachThresholdValue ?? 500,
         outreachStatus: record.outreachStatus,
         outreachRecordId: record.outreachRecordId ?? undefined,
         appointmentId: record.appointmentId ?? undefined,
-        isActive: record.isActive,
+        isActive: record.isActive ?? true,
         notes: record.notes ?? undefined,
         createdByUserId: record.createdByUserId ?? undefined,
         updatedByUserId: record.updatedByUserId ?? undefined,
@@ -525,10 +655,10 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
       shopId: record.shopId,
       customerId: record.customerId,
       vehicleId: record.vehicleId,
-      maintenanceRecordIds: shop.maintenanceRecords
+      maintenanceRecordIds: maintenanceRecords
         .filter((item) => item.outreachRecordId === record.id)
         .map((item) => item.id),
-      serviceNames: shop.maintenanceRecords
+      serviceNames: maintenanceRecords
         .filter((item) => item.outreachRecordId === record.id)
         .map((item) => item.serviceName),
       message: record.message,
