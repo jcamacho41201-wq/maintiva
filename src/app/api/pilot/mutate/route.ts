@@ -5,20 +5,31 @@ import {
   AuthRequiredError,
   OnboardingRequiredError,
   TenantAccessError,
-  getAuthenticatedShopContext,
+  requireActiveShopMembership,
 } from "@/lib/auth";
 import {
   addPilotCustomer,
+  addPilotMaintenanceItem,
+  addPilotServiceDefinition,
   addPilotVehicle,
   bookPilotAppointment,
   buildPilotState,
   completePilotAppointment,
+  deactivatePilotMaintenanceItem,
   importPilotCsvRows,
+  markPilotMaintenanceServiceComplete,
   markPilotOutreachManuallySent,
+  updatePilotMaintenanceItem,
   updatePilotCustomer,
+  updatePilotServiceDefinition,
   updatePilotVehicle,
+  updatePilotVehicleMileage,
 } from "@/lib/pilot-state";
-import { logPilotMutationFailure } from "@/lib/server-diagnostics";
+import {
+  clientMutationError,
+  logPilotMutationFailure,
+  safeMutationOperation,
+} from "@/lib/server-diagnostics";
 import { BrowserShopIdError, rejectBrowserShopId } from "@/lib/tenant-security";
 
 const mutationSchema = z.discriminatedUnion("action", [
@@ -34,6 +45,24 @@ const mutationSchema = z.discriminatedUnion("action", [
     id: z.string().min(1),
     payload: z.unknown(),
   }),
+  z.object({ action: z.literal("addServiceDefinition"), payload: z.unknown() }),
+  z.object({
+    action: z.literal("updateServiceDefinition"),
+    id: z.string().min(1),
+    payload: z.unknown(),
+  }),
+  z.object({ action: z.literal("addMaintenanceItem"), payload: z.unknown() }),
+  z.object({
+    action: z.literal("updateMaintenanceItem"),
+    id: z.string().min(1),
+    payload: z.unknown(),
+  }),
+  z.object({
+    action: z.literal("deactivateMaintenanceItem"),
+    id: z.string().min(1),
+  }),
+  z.object({ action: z.literal("markMaintenanceServiceComplete"), payload: z.unknown() }),
+  z.object({ action: z.literal("updateVehicleMileage"), payload: z.unknown() }),
   z.object({
     action: z.literal("markOutreachManuallySent"),
     payload: z.object({
@@ -133,11 +162,14 @@ const mutationSchema = z.discriminatedUnion("action", [
 export async function POST(request: Request) {
   let context: AuthenticatedShopContext | undefined;
   let json: unknown;
+  let operation = safeMutationOperation(undefined);
   try {
     json = await request.json();
     rejectBrowserShopId(json);
-    context = await getAuthenticatedShopContext();
+    operation = safeMutationOperation(json);
+    context = await requireActiveShopMembership();
     const body = mutationSchema.parse(json);
+    operation = safeMutationOperation(body);
 
     switch (body.action) {
       case "addCustomer":
@@ -151,6 +183,27 @@ export async function POST(request: Request) {
         break;
       case "updateVehicle":
         await updatePilotVehicle(context, body.id, body.payload);
+        break;
+      case "addServiceDefinition":
+        await addPilotServiceDefinition(context, body.payload);
+        break;
+      case "updateServiceDefinition":
+        await updatePilotServiceDefinition(context, body.id, body.payload);
+        break;
+      case "addMaintenanceItem":
+        await addPilotMaintenanceItem(context, body.payload);
+        break;
+      case "updateMaintenanceItem":
+        await updatePilotMaintenanceItem(context, body.id, body.payload);
+        break;
+      case "deactivateMaintenanceItem":
+        await deactivatePilotMaintenanceItem(context, body.id);
+        break;
+      case "markMaintenanceServiceComplete":
+        await markPilotMaintenanceServiceComplete(context, body.payload);
+        break;
+      case "updateVehicleMileage":
+        await updatePilotVehicleMileage(context, body.payload);
         break;
       case "markOutreachManuallySent":
         await markPilotOutreachManuallySent(context, body.payload);
@@ -168,7 +221,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ state: await buildPilotState(context) });
   } catch (error) {
-    logPilotMutationFailure({ error, context, payload: json });
+    logPilotMutationFailure({ error, context, payload: json, operation });
     if (error instanceof OnboardingRequiredError) {
       return NextResponse.json(
         { code: "ONBOARDING_REQUIRED", message: error.message },
@@ -187,9 +240,16 @@ export async function POST(request: Request) {
         { status: 403 },
       );
     }
+    const clientError = clientMutationError(error, operation);
+    if (clientError) {
+      return NextResponse.json(
+        { code: clientError.code, message: clientError.message },
+        { status: clientError.status },
+      );
+    }
     if (error instanceof z.ZodError) {
       return NextResponse.json(
-        { code: "VALIDATION_FAILED", message: "Invalid request payload.", issues: error.issues },
+        { code: "VALIDATION_FAILED", message: "A required service field is missing or invalid.", issues: error.issues },
         { status: 400 },
       );
     }

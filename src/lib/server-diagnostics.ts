@@ -7,6 +7,52 @@ type SafeError = {
   hint?: string;
 };
 
+export type SafeMutationOperation = {
+  action?: string;
+  table?: string;
+  operation?: "SELECT" | "INSERT" | "UPDATE" | "DELETE";
+  vehicleId?: string;
+  serviceDefinitionId?: string;
+  maintenanceRecordId?: string;
+  targetVehicleShopId?: string;
+};
+
+export class SafeActionError extends Error {
+  readonly code: string;
+  readonly status: number;
+  readonly table?: string;
+  readonly operation?: SafeMutationOperation["operation"];
+  readonly details?: string;
+  readonly hint?: string;
+
+  constructor({
+    code,
+    message,
+    status = 400,
+    table,
+    operation,
+    details,
+    hint,
+  }: {
+    code: string;
+    message: string;
+    status?: number;
+    table?: string;
+    operation?: SafeMutationOperation["operation"];
+    details?: string;
+    hint?: string;
+  }) {
+    super(message);
+    this.name = "SafeActionError";
+    this.code = code;
+    this.status = status;
+    this.table = table;
+    this.operation = operation;
+    this.details = details;
+    this.hint = hint;
+  }
+}
+
 function valueFrom(error: unknown, key: "code" | "message" | "detail" | "details" | "hint") {
   if (!error || typeof error !== "object") return undefined;
   const value = (error as Record<string, unknown>)[key];
@@ -21,6 +67,12 @@ export function safeDatabaseError(error: unknown): SafeError {
     details: valueFrom(error, "details") ?? valueFrom(error, "detail") ?? valueFrom(cause, "details") ?? valueFrom(cause, "detail"),
     hint: valueFrom(error, "hint") ?? valueFrom(cause, "hint"),
   };
+}
+
+function safeId(value: unknown) {
+  if (typeof value !== "string" || value.length === 0) return undefined;
+  if (value.length <= 14) return value;
+  return `${value.slice(0, 8)}...${value.slice(-4)}`;
 }
 
 export function safeMutationPayloadShape(value: unknown) {
@@ -46,25 +98,128 @@ export function safeMutationPayloadShape(value: unknown) {
   };
 }
 
+export function safeMutationOperation(value: unknown): SafeMutationOperation {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const record = value as Record<string, unknown>;
+  const action = typeof record.action === "string" ? record.action : undefined;
+  const payload = record.payload && typeof record.payload === "object" && !Array.isArray(record.payload)
+    ? record.payload as Record<string, unknown>
+    : {};
+  const id = typeof record.id === "string" ? record.id : undefined;
+
+  const operationByAction: Record<string, SafeMutationOperation> = {
+    addServiceDefinition: { table: "ServiceDefinition", operation: "INSERT" },
+    updateServiceDefinition: { table: "ServiceDefinition", operation: "UPDATE", serviceDefinitionId: safeId(id) },
+    addMaintenanceItem: {
+      table: "VehicleMaintenanceRecord",
+      operation: "INSERT",
+      vehicleId: safeId(payload.vehicleId),
+      serviceDefinitionId: safeId(payload.serviceDefinitionId),
+    },
+    updateMaintenanceItem: { table: "VehicleMaintenanceRecord", operation: "UPDATE", maintenanceRecordId: id },
+    deactivateMaintenanceItem: { table: "VehicleMaintenanceRecord", operation: "UPDATE", maintenanceRecordId: safeId(id) },
+    markMaintenanceServiceComplete: {
+      table: "ServiceHistoryRecord",
+      operation: "INSERT",
+      maintenanceRecordId: safeId(payload.maintenanceRecordId),
+    },
+    updateVehicleMileage: {
+      table: "Vehicle",
+      operation: "UPDATE",
+      vehicleId: safeId(payload.vehicleId),
+    },
+  };
+
+  return {
+    action,
+    ...(action ? operationByAction[action] : undefined),
+  };
+}
+
+export function clientMutationError(error: unknown, operation: SafeMutationOperation) {
+  if (error instanceof SafeActionError) {
+    return {
+      code: error.code,
+      message: error.message,
+      status: error.status,
+    };
+  }
+
+  const database = safeDatabaseError(error);
+  const serviceIntervalActions = new Set([
+    "addServiceDefinition",
+    "updateServiceDefinition",
+    "addMaintenanceItem",
+    "updateMaintenanceItem",
+    "deactivateMaintenanceItem",
+    "markMaintenanceServiceComplete",
+    "updateVehicleMileage",
+  ]);
+  const schemaCodes = new Set(["P2021", "P2022", "42703", "42P01", "42704"]);
+  const duplicateCodes = new Set(["P2002", "23505"]);
+  const invalidIdCodes = new Set(["22P02", "P2023"]);
+
+  if (schemaCodes.has(database.code ?? "") && serviceIntervalActions.has(operation.action ?? "")) {
+    return {
+      code: "SERVICE_INTERVAL_SCHEMA_MISSING",
+      message: "The database update for service intervals has not been installed.",
+      status: 500,
+    };
+  }
+
+  if (duplicateCodes.has(database.code ?? "")) {
+    return {
+      code: "DUPLICATE_RECORD",
+      message: operation.table === "ServiceDefinition"
+        ? "A service with this name already exists for your shop."
+        : "This service already exists for the vehicle.",
+      status: 409,
+    };
+  }
+
+  if (invalidIdCodes.has(database.code ?? "")) {
+    return {
+      code: "INVALID_RECORD_ID",
+      message: "One of the selected records is invalid. Refresh the page and try again.",
+      status: 400,
+    };
+  }
+
+  return undefined;
+}
+
 export function logPilotMutationFailure({
   error,
   context,
   payload,
+  operation,
 }: {
   error: unknown;
   context?: AuthenticatedShopContext;
   payload?: unknown;
+  operation?: SafeMutationOperation;
 }) {
   console.error("Maintiva pilot mutation failed", {
     auth: context
       ? {
-          userId: context.userId,
-          shopId: context.shopId,
+          userId: safeId(context.userId),
+          shopId: safeId(context.shopId),
           membershipActive: true,
           role: context.role,
         }
       : undefined,
     mutation: safeMutationPayloadShape(payload),
+    operation: operation ?? safeMutationOperation(payload),
     database: safeDatabaseError(error),
+    actionError: error instanceof SafeActionError
+      ? {
+          code: error.code,
+          message: error.message,
+          details: error.details,
+          hint: error.hint,
+          table: error.table,
+          operation: error.operation,
+        }
+      : undefined,
   });
 }

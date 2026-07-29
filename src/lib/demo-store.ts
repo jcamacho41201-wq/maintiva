@@ -7,8 +7,11 @@ import {
   type Customer,
   type DemoState,
   type ImportHistoryRecord,
+  type MaintenanceService,
   type OutreachRecord,
+  type TimeIntervalUnit,
   type Vehicle,
+  type VehicleMaintenanceRecord,
 } from "@/lib/demo-data";
 import { hasActiveVehicleAppointmentAt } from "@/lib/appointment";
 import { createAppointmentFromRecords } from "@/lib/demo-calculations";
@@ -26,7 +29,50 @@ const storageKey = "maintiva-demo-state-v2";
 const changeEvent = "maintiva-demo-state";
 let cachedState: DemoState | undefined;
 const serverSnapshot = createInitialDemoState();
+const authenticatedLoadingSnapshot: DemoState = {
+  ...serverSnapshot,
+  shop: {
+    ...serverSnapshot.shop,
+    id: "",
+    name: "Loading shop",
+    slug: "",
+    isDemo: false,
+    onboardingCompletedAt: null,
+  },
+  users: [],
+  customers: [],
+  vehicles: [],
+  services: [],
+  maintenanceRecords: [],
+  serviceRecords: [],
+  declinedWorkRecords: [],
+  importHistory: [],
+  outreachRecords: [],
+  appointments: [],
+  seededAt: "",
+};
 export type MutationResult = { ok: boolean; message?: string };
+
+export type ServiceDefinitionInput = Omit<MaintenanceService, "id" | "shopId">;
+export type MaintenanceItemInput = {
+  vehicleId: string;
+  serviceDefinitionId?: string | null;
+  customServiceName?: string;
+  customCategory?: string;
+  addToLibrary?: boolean;
+  useShopDefaults?: boolean;
+  allowDuplicate?: boolean;
+  mileageIntervalOverride?: number | null;
+  timeIntervalValueOverride?: number | null;
+  timeIntervalUnitOverride?: TimeIntervalUnit | null;
+  priceOverrideCents?: number | null;
+  laborMinutesOverride?: number | null;
+  lastCompletedDate?: string;
+  lastCompletedMileage?: number | null;
+  outreachThresholdType?: VehicleMaintenanceRecord["outreachThresholdType"];
+  outreachThresholdValue?: number;
+  notes?: string;
+};
 
 function getServerSnapshot() {
   return serverSnapshot;
@@ -34,9 +80,32 @@ function getServerSnapshot() {
 
 function normalizeState(state: DemoState): DemoState {
   const baseline = createInitialDemoState();
+  const services = (state.services ?? baseline.services).map((service) => ({
+    ...service,
+    defaultMileageInterval: service.defaultMileageInterval ?? null,
+    defaultTimeIntervalValue: service.defaultTimeIntervalValue ?? service.defaultTimeIntervalMonths ?? null,
+    defaultTimeIntervalUnit: service.defaultTimeIntervalUnit ?? "MONTHS",
+    defaultTimeIntervalMonths: service.defaultTimeIntervalMonths ?? monthsFromTime(
+      service.defaultTimeIntervalValue,
+      service.defaultTimeIntervalUnit,
+    ),
+  }));
   return {
     ...baseline,
     ...state,
+    services,
+    maintenanceRecords: (state.maintenanceRecords ?? baseline.maintenanceRecords).map((record) => ({
+      ...record,
+      serviceId: record.serviceId ?? null,
+      mileageIntervalOverride: record.mileageIntervalOverride ?? null,
+      timeIntervalValueOverride: record.timeIntervalValueOverride ?? null,
+      timeIntervalUnitOverride: record.timeIntervalUnitOverride ?? null,
+      priceOverrideCents: record.priceOverrideCents ?? null,
+      laborMinutesOverride: record.laborMinutesOverride ?? null,
+      outreachThresholdType: record.outreachThresholdType ?? "MILES_BEFORE_DUE",
+      outreachThresholdValue: record.outreachThresholdValue ?? 500,
+      isActive: record.isActive ?? true,
+    })),
     declinedWorkRecords: state.declinedWorkRecords ?? baseline.declinedWorkRecords,
     importHistory: state.importHistory ?? baseline.importHistory,
     outreachRecords: (state.outreachRecords ?? baseline.outreachRecords).map((record) => ({
@@ -66,7 +135,7 @@ function readState() {
   }
 
   if (!shouldUseLocalDemoPersistence()) {
-    return cachedState ?? getServerSnapshot();
+    return cachedState ?? authenticatedLoadingSnapshot;
   }
 
   if (cachedState) {
@@ -176,6 +245,17 @@ function numeric(value: string | number | undefined) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+function serviceSlug(name: string) {
+  return name.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || `service-${Date.now()}`;
+}
+
+function monthsFromTime(value?: number | null, unit?: TimeIntervalUnit | null) {
+  if (!value || !unit) return null;
+  if (unit === "DAYS") return Math.max(1, Math.round(value / 30.4375));
+  if (unit === "YEARS") return value * 12;
+  return value;
+}
+
 export function useDemoStore() {
   const state = useSyncExternalStore(subscribe, readState, getServerSnapshot);
 
@@ -192,7 +272,7 @@ export function useDemoStore() {
 
     return {
       state,
-      ready: true,
+      ready: shouldUseLocalDemoPersistence() || Boolean(state.shop.id),
       resetDemoData() {
         if (!shouldUseLocalDemoPersistence()) return;
         saveState(createInitialDemoState());
@@ -256,6 +336,274 @@ export function useDemoStore() {
             vehicle.id === vehicleId ? { ...vehicle, ...input } : vehicle,
           ),
         }));
+      },
+      addServiceDefinition(input: ServiceDefinitionInput) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "addServiceDefinition", payload: input });
+        }
+
+        update((draft) => ({
+          ...draft,
+          services: [
+            ...draft.services,
+            {
+              ...input,
+              id: `svc-${serviceSlug(input.name)}-${Date.now()}`,
+              shopId: draft.shop.id,
+              defaultTimeIntervalMonths: monthsFromTime(input.defaultTimeIntervalValue, input.defaultTimeIntervalUnit),
+            },
+          ],
+        }));
+        return Promise.resolve({ ok: true, message: undefined });
+      },
+      updateServiceDefinition(serviceId: string, input: Partial<ServiceDefinitionInput>) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "updateServiceDefinition", id: serviceId, payload: input });
+        }
+
+        update((draft) => ({
+          ...draft,
+          services: draft.services.map((service) =>
+            service.id === serviceId
+              ? {
+                  ...service,
+                  ...input,
+                  defaultTimeIntervalMonths: input.defaultTimeIntervalValue !== undefined || input.defaultTimeIntervalUnit !== undefined
+                    ? monthsFromTime(
+                      input.defaultTimeIntervalValue ?? service.defaultTimeIntervalValue,
+                      input.defaultTimeIntervalUnit ?? service.defaultTimeIntervalUnit,
+                    )
+                    : service.defaultTimeIntervalMonths,
+                }
+              : service,
+          ),
+        }));
+        return Promise.resolve({ ok: true, message: undefined });
+      },
+      addMaintenanceItem(input: MaintenanceItemInput) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "addMaintenanceItem", payload: input });
+        }
+
+        let blocked = "";
+        update((draft) => {
+          const service = input.serviceDefinitionId
+            ? draft.services.find((item) => item.id === input.serviceDefinitionId)
+            : undefined;
+          if (
+            service &&
+            !input.allowDuplicate &&
+            draft.maintenanceRecords.some((record) =>
+              record.vehicleId === input.vehicleId &&
+              record.serviceId === service.id &&
+              record.isActive !== false,
+            )
+          ) {
+            blocked = "This active service is already assigned to the vehicle.";
+            return draft;
+          }
+
+          let serviceId = service?.id ?? null;
+          let services = draft.services;
+          if (!service && input.addToLibrary && input.customServiceName) {
+            serviceId = `svc-${serviceSlug(input.customServiceName)}-${Date.now()}`;
+            services = [
+              ...services,
+              {
+                id: serviceId,
+                shopId: draft.shop.id,
+                name: input.customServiceName,
+                category: input.customCategory || "Custom",
+                defaultMileageInterval: input.mileageIntervalOverride ?? null,
+                defaultTimeIntervalMonths: monthsFromTime(input.timeIntervalValueOverride, input.timeIntervalUnitOverride),
+                defaultTimeIntervalValue: input.timeIntervalValueOverride ?? null,
+                defaultTimeIntervalUnit: input.timeIntervalUnitOverride ?? "MONTHS",
+                defaultNotificationThreshold: 10,
+                estimatedLaborMinutes: input.laborMinutesOverride ?? 0,
+                defaultPriceCents: input.priceOverrideCents ?? 0,
+                description: input.notes ?? "",
+                isActive: true,
+              },
+            ];
+          }
+
+          const useDefaults = Boolean(serviceId && input.useShopDefaults !== false);
+          const selectedService = serviceId ? services.find((item) => item.id === serviceId) : undefined;
+          const mileageOverride = useDefaults ? null : input.mileageIntervalOverride ?? null;
+          const timeValueOverride = useDefaults ? null : input.timeIntervalValueOverride ?? null;
+          const timeUnitOverride = useDefaults ? null : input.timeIntervalUnitOverride ?? null;
+          const priceOverride = useDefaults ? null : input.priceOverrideCents ?? null;
+          const laborOverride = useDefaults ? null : input.laborMinutesOverride ?? null;
+          const serviceName = selectedService?.name ?? input.customServiceName ?? "Custom service";
+
+          return {
+            ...draft,
+            services,
+            maintenanceRecords: [
+              ...draft.maintenanceRecords,
+              {
+                id: `item-${input.vehicleId}-${serviceSlug(serviceName)}-${Date.now()}`,
+                shopId: draft.shop.id,
+                vehicleId: input.vehicleId,
+                serviceId,
+                serviceName,
+                customServiceName: serviceId ? undefined : input.customServiceName,
+                customCategory: serviceId ? undefined : input.customCategory || "Custom",
+                lastCompletedDate: input.lastCompletedDate || new Date().toISOString().slice(0, 10),
+                lastCompletedMileage: input.lastCompletedMileage ?? 0,
+                recommendedMileageInterval: mileageOverride,
+                recommendedTimeIntervalMonths: monthsFromTime(timeValueOverride, timeUnitOverride),
+                mileageIntervalOverride: mileageOverride,
+                timeIntervalValueOverride: timeValueOverride,
+                timeIntervalUnitOverride: timeUnitOverride,
+                priceCents: priceOverride ?? selectedService?.defaultPriceCents ?? input.priceOverrideCents ?? 0,
+                laborHours: (laborOverride ?? selectedService?.estimatedLaborMinutes ?? input.laborMinutesOverride ?? 0) / 60,
+                priceOverrideCents: priceOverride,
+                laborMinutesOverride: laborOverride,
+                notificationThreshold: 10,
+                outreachThresholdType: input.outreachThresholdType ?? "MILES_BEFORE_DUE",
+                outreachThresholdValue: input.outreachThresholdValue ?? 500,
+                outreachStatus: "NEEDS_OUTREACH",
+                isActive: true,
+                notes: input.notes,
+                createdByUserId: draft.users[0]?.id,
+                updatedByUserId: draft.users[0]?.id,
+              },
+            ],
+          };
+        });
+        return Promise.resolve(blocked ? { ok: false, message: blocked } : { ok: true, message: undefined });
+      },
+      updateMaintenanceItem(recordId: string, input: Partial<MaintenanceItemInput>) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "updateMaintenanceItem", id: recordId, payload: input });
+        }
+
+        update((draft) => ({
+          ...draft,
+          maintenanceRecords: draft.maintenanceRecords.map((record) => {
+            if (record.id !== recordId) return record;
+            const reset = input.useShopDefaults === true;
+            return {
+              ...record,
+              lastCompletedDate: input.lastCompletedDate ?? record.lastCompletedDate,
+              lastCompletedMileage: input.lastCompletedMileage ?? record.lastCompletedMileage,
+              mileageIntervalOverride: reset ? null : input.mileageIntervalOverride ?? record.mileageIntervalOverride,
+              timeIntervalValueOverride: reset ? null : input.timeIntervalValueOverride ?? record.timeIntervalValueOverride,
+              timeIntervalUnitOverride: reset ? null : input.timeIntervalUnitOverride ?? record.timeIntervalUnitOverride,
+              recommendedMileageInterval: reset ? null : input.mileageIntervalOverride ?? record.recommendedMileageInterval,
+              recommendedTimeIntervalMonths: reset
+                ? null
+                : input.timeIntervalValueOverride !== undefined || input.timeIntervalUnitOverride !== undefined
+                  ? monthsFromTime(
+                    input.timeIntervalValueOverride ?? record.timeIntervalValueOverride,
+                    input.timeIntervalUnitOverride ?? record.timeIntervalUnitOverride,
+                  )
+                  : record.recommendedTimeIntervalMonths,
+              priceOverrideCents: reset ? null : input.priceOverrideCents ?? record.priceOverrideCents,
+              laborMinutesOverride: reset ? null : input.laborMinutesOverride ?? record.laborMinutesOverride,
+              outreachThresholdType: input.outreachThresholdType ?? record.outreachThresholdType,
+              outreachThresholdValue: input.outreachThresholdValue ?? record.outreachThresholdValue,
+              notes: input.notes ?? record.notes,
+              updatedByUserId: draft.users[0]?.id,
+            };
+          }),
+        }));
+        return Promise.resolve({ ok: true, message: undefined });
+      },
+      deactivateMaintenanceItem(recordId: string) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "deactivateMaintenanceItem", id: recordId });
+        }
+
+        update((draft) => ({
+          ...draft,
+          maintenanceRecords: draft.maintenanceRecords.map((record) =>
+            record.id === recordId
+              ? { ...record, isActive: false, outreachStatus: "STOPPED", updatedByUserId: draft.users[0]?.id }
+              : record,
+          ),
+        }));
+        return Promise.resolve({ ok: true, message: undefined });
+      },
+      markMaintenanceServiceComplete(input: {
+        maintenanceRecordId: string;
+        completedAt: string;
+        completedMileage: number;
+        finalPriceCents: number;
+        finalLaborMinutes: number;
+        notes?: string;
+      }) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "markMaintenanceServiceComplete", payload: input });
+        }
+
+        update((draft) => {
+          const record = draft.maintenanceRecords.find((item) => item.id === input.maintenanceRecordId);
+          const vehicle = record ? draft.vehicles.find((item) => item.id === record.vehicleId) : undefined;
+          if (!record || !vehicle) return draft;
+          return {
+            ...draft,
+            vehicles: draft.vehicles.map((item) =>
+              item.id === vehicle.id
+                ? { ...item, currentMileage: Math.max(item.currentMileage, input.completedMileage), lastServiceDate: input.completedAt }
+                : item,
+            ),
+            serviceRecords: [
+              {
+                id: `hist-${record.id}-${Date.now()}`,
+                shopId: draft.shop.id,
+                customerId: vehicle.customerId,
+                vehicleId: vehicle.id,
+                serviceName: record.serviceName,
+                completedAt: input.completedAt,
+                mileage: input.completedMileage,
+                priceCents: input.finalPriceCents,
+                notes: input.notes ?? "",
+              },
+              ...draft.serviceRecords,
+            ],
+            maintenanceRecords: draft.maintenanceRecords.map((item) =>
+              item.id === record.id
+                ? {
+                    ...item,
+                    lastCompletedDate: input.completedAt,
+                    lastCompletedMileage: input.completedMileage,
+                    priceCents: input.finalPriceCents,
+                    laborHours: input.finalLaborMinutes / 60,
+                    outreachStatus: "NEEDS_OUTREACH",
+                    appointmentId: undefined,
+                    updatedByUserId: draft.users[0]?.id,
+                  }
+                : item,
+            ),
+          };
+        });
+        return Promise.resolve({ ok: true, message: undefined });
+      },
+      updateVehicleMileage(input: {
+        vehicleId: string;
+        currentMileage: number;
+        allowLowerCorrection?: boolean;
+        correctionReason?: string;
+      }) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "updateVehicleMileage", payload: input });
+        }
+
+        let blocked = "";
+        update((draft) => ({
+          ...draft,
+          vehicles: draft.vehicles.map((vehicle) => {
+            if (vehicle.id !== input.vehicleId) return vehicle;
+            if (input.currentMileage < vehicle.currentMileage && !input.allowLowerCorrection) {
+              blocked = "Confirm a mileage correction before lowering the current reading.";
+              return vehicle;
+            }
+            return { ...vehicle, currentMileage: input.currentMileage };
+          }),
+        }));
+        return Promise.resolve(blocked ? { ok: false, message: blocked } : { ok: true, message: undefined });
       },
       sendRecommendation(input: {
         customerId: string;
@@ -441,10 +789,20 @@ export function useDemoStore() {
               lastCompletedMileage: numeric(normalized.serviceMileage) || vehicle.currentMileage,
               recommendedMileageInterval: 12_000,
               recommendedTimeIntervalMonths: 12,
+              mileageIntervalOverride: null,
+              timeIntervalValueOverride: null,
+              timeIntervalUnitOverride: null,
               priceCents,
               laborHours,
+              priceOverrideCents: priceCents,
+              laborMinutesOverride: Math.round(laborHours * 60),
               notificationThreshold: 10,
+              outreachThresholdType: "MILES_BEFORE_DUE",
+              outreachThresholdValue: 500,
               outreachStatus: "NEEDS_OUTREACH",
+              isActive: true,
+              createdByUserId: draft.users[0]?.id,
+              updatedByUserId: draft.users[0]?.id,
             });
             if (text(normalized.serviceDate)) {
               serviceRecords.push({

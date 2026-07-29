@@ -143,6 +143,18 @@ enum DeclinedWorkStatus {
   SNOOZED
 }
 
+enum TimeIntervalUnit {
+  DAYS
+  MONTHS
+  YEARS
+}
+
+enum OutreachThresholdType {
+  MILES_BEFORE_DUE
+  DAYS_BEFORE_DUE
+  PERCENT_REMAINING
+}
+
 model User {
   id          String           @id
   email       String           @unique
@@ -153,6 +165,8 @@ model User {
   outreachRecords OutreachRecord[]
   importHistory ImportHistoryRecord[]
   auditLogs   AuditLog[]
+  createdMaintenanceRecords VehicleMaintenanceRecord[] @relation("MaintenanceRecordCreatedBy")
+  updatedMaintenanceRecords VehicleMaintenanceRecord[] @relation("MaintenanceRecordUpdatedBy")
 }
 
 model Shop {
@@ -274,8 +288,10 @@ model ServiceDefinition {
   shopId                       String
   name                         String
   category                     String
-  defaultMileageInterval       Int
-  defaultTimeIntervalMonths    Int
+  defaultMileageInterval       Int?
+  defaultTimeIntervalMonths    Int?
+  defaultTimeIntervalValue     Int?
+  defaultTimeIntervalUnit      TimeIntervalUnit           @default(MONTHS)
   defaultNotificationThreshold Int                        @default(10)
   estimatedLaborMinutes        Int
   defaultPriceCents            Int
@@ -296,34 +312,49 @@ model VehicleMaintenanceRecord {
   id                              String                 @id @default(cuid())
   shopId                          String
   vehicleId                       String
-  serviceDefinitionId             String
+  serviceDefinitionId             String?
   serviceName                     String
+  customServiceName               String?
+  customCategory                  String?
   lastCompletedDate               DateTime?
   lastCompletedMileage            Int?
-  recommendedMileageInterval      Int
-  recommendedTimeIntervalMonths   Int
+  recommendedMileageInterval      Int?
+  recommendedTimeIntervalMonths   Int?
+  mileageIntervalOverride         Int?
+  timeIntervalValueOverride       Int?
+  timeIntervalUnitOverride        TimeIntervalUnit?
   notificationThreshold           Int                    @default(10)
+  outreachThresholdType           OutreachThresholdType  @default(MILES_BEFORE_DUE)
+  outreachThresholdValue          Int                    @default(500)
   priceCents                      Int
   laborMinutes                    Int
+  priceOverrideCents              Int?
+  laborMinutesOverride            Int?
   status                          MaintenanceStatus      @default(HEALTHY)
   outreachStatus                  OutreachStatus         @default(NEEDS_OUTREACH)
   outreachRecordId                String?
   appointmentId                   String?
+  isActive                        Boolean                @default(true)
   archivedAt                      DateTime?
   notes                           String?
+  createdByUserId                 String?
+  updatedByUserId                 String?
   createdAt                       DateTime               @default(now())
   updatedAt                       DateTime               @updatedAt
   shop                            Shop                   @relation(fields: [shopId], references: [id], onDelete: Cascade)
   vehicle                         Vehicle                @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
-  serviceDefinition               ServiceDefinition      @relation(fields: [serviceDefinitionId], references: [id], onDelete: Restrict)
+  serviceDefinition               ServiceDefinition?     @relation(fields: [serviceDefinitionId], references: [id], onDelete: SetNull)
   outreachRecord                  OutreachRecord?        @relation(fields: [outreachRecordId], references: [id], onDelete: SetNull)
   appointment                     Appointment?           @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  createdBy                       User?                  @relation("MaintenanceRecordCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  updatedBy                       User?                  @relation("MaintenanceRecordUpdatedBy", fields: [updatedByUserId], references: [id], onDelete: SetNull)
   serviceHistoryRecords           ServiceHistoryRecord[]
   appointmentServices             AppointmentService[]
   revenueOpportunities            MaintenanceRevenueOpportunity[]
 
-  @@unique([shopId, vehicleId, serviceDefinitionId])
   @@index([shopId, vehicleId, status])
+  @@index([shopId, vehicleId, isActive])
+  @@index([shopId, vehicleId, serviceDefinitionId])
   @@index([shopId, outreachStatus])
 }
 

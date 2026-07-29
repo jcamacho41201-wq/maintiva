@@ -131,6 +131,10 @@ export async function getAuthenticatedShopContext(): Promise<AuthenticatedShopCo
   };
 }
 
+export async function requireActiveShopMembership() {
+  return getAuthenticatedShopContext();
+}
+
 export async function requirePageShopContext() {
   try {
     return await getAuthenticatedShopContext();
