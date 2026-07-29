@@ -39,6 +39,29 @@ export type AppointmentStatus =
   | "NO_SHOW";
 export type TimeIntervalUnit = "DAYS" | "MONTHS" | "YEARS";
 export type OutreachThresholdType = "MILES_BEFORE_DUE" | "DAYS_BEFORE_DUE" | "PERCENT_REMAINING";
+export type MileageReadingSource =
+  | "SHOP_REPAIR_ORDER"
+  | "SHOP_MANUAL_ENTRY"
+  | "SERVICE_HISTORY_IMPORT"
+  | "CUSTOMER_REPORTED"
+  | "APPOINTMENT_INTAKE"
+  | "CORRECTION"
+  | "OTHER";
+export type MileageVerificationStatus =
+  | "VERIFIED"
+  | "CUSTOMER_REPORTED"
+  | "IMPORTED"
+  | "UNVERIFIED"
+  | "EXCLUDED";
+export type MileageAnomalyStatus = "NONE" | "NEEDS_REVIEW" | "RESOLVED";
+export type DrivingProfileEstimateSource =
+  | "SHOP_VERIFIED_READINGS"
+  | "IMPORTED_READINGS"
+  | "CUSTOMER_REPORTED"
+  | "VERIFIED_PLUS_DEFAULT"
+  | "SHOP_DEFAULT"
+  | "MANUAL_OVERRIDE";
+export type DrivingProfileConfidence = "LOW" | "MEDIUM" | "HIGH";
 
 export type Shop = {
   id: string;
@@ -49,6 +72,7 @@ export type Shop = {
   address: string;
   timezone: string;
   dailyBayHours: number;
+  defaultAnnualMileage: number;
   isDemo: boolean;
   onboardingCompletedAt: string | null;
 };
@@ -159,6 +183,44 @@ export type ServiceRecord = {
   notes: string;
 };
 
+export type VehicleMileageReading = {
+  id: string;
+  shopId: string;
+  vehicleId: string;
+  readingMileage: number;
+  readingDate: string;
+  source: MileageReadingSource;
+  verificationStatus: MileageVerificationStatus;
+  anomalyStatus: MileageAnomalyStatus;
+  includedInForecast: boolean;
+  correctionReason?: string;
+  reviewNotes?: string;
+  sourceReferenceType?: string;
+  sourceReferenceId?: string;
+  recordedByUserId?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type VehicleDrivingProfile = {
+  id: string;
+  shopId: string;
+  vehicleId: string;
+  customerReportedAnnualMileage?: number | null;
+  customerReportedAt?: string | null;
+  customerReportedByUserId?: string | null;
+  calculatedAnnualMileage: number;
+  estimateSource: DrivingProfileEstimateSource;
+  confidence: DrivingProfileConfidence;
+  confidenceReason: string;
+  manualAnnualMileageOverride?: number | null;
+  manualOverrideReason?: string | null;
+  manualOverrideNotes?: string | null;
+  manualOverrideSetAt?: string | null;
+  manualOverrideSetByUserId?: string | null;
+  lastCalculatedAt: string;
+};
+
 export type DeclinedWorkRecord = {
   id: string;
   shopId: string;
@@ -239,6 +301,8 @@ export type DemoState = {
   vehicles: Vehicle[];
   services: MaintenanceService[];
   maintenanceRecords: VehicleMaintenanceRecord[];
+  mileageReadings: VehicleMileageReading[];
+  drivingProfiles: VehicleDrivingProfile[];
   serviceRecords: ServiceRecord[];
   declinedWorkRecords: DeclinedWorkRecord[];
   outreachRecords: OutreachRecord[];
@@ -256,6 +320,7 @@ export const demoShop: Shop = {
   address: "1200 DeKalb Ave NE, Atlanta, GA",
   timezone: "America/New_York",
   dailyBayHours: 64,
+  defaultAnnualMileage: 12_500,
   isDemo: true,
   onboardingCompletedAt: "2026-07-01T09:00:00-04:00",
 };
@@ -705,21 +770,6 @@ export const importHistory: ImportHistoryRecord[] = [
   },
 ];
 
-export const initialDemoState: DemoState = {
-  shop: demoShop,
-  users: demoUsers,
-  customers,
-  vehicles,
-  services: serviceDefinitions,
-  maintenanceRecords: maintenanceItems,
-  serviceRecords,
-  declinedWorkRecords,
-  outreachRecords,
-  appointments,
-  importHistory,
-  seededAt: asOfDate.toISOString(),
-};
-
 export const revenueForecast = [
   { label: "Next 7 days", predicted: 184500, scheduled: 0 },
   { label: "Next 30 days", predicted: 841000, scheduled: 0 },
@@ -748,25 +798,75 @@ export const vehicleLookup = Object.fromEntries(
   ]),
 );
 
-export const mileageReadings = Object.fromEntries(
-  vehicles.map((vehicle) => [
-    vehicle.id,
-    [
-      {
-        mileage: Math.max(0, vehicle.currentMileage - 3200),
-        recordedAt: "2026-01-10",
-        source: "SHOP_REPAIR_ORDER",
-        confidence: "VERIFIED",
-      },
-      {
-        mileage: vehicle.currentMileage,
-        recordedAt: vehicle.lastServiceDate,
-        source: "SHOP_REPAIR_ORDER",
-        confidence: "VERIFIED",
-      },
-    ],
-  ]),
-);
+export const mileageReadings: VehicleMileageReading[] = vehicles.flatMap((vehicle) => [
+  {
+    id: `mile-${vehicle.id}-baseline`,
+    shopId: demoShop.id,
+    vehicleId: vehicle.id,
+    readingMileage: Math.max(0, vehicle.currentMileage - Math.round(vehicle.estimatedAnnualMileage / 2)),
+    readingDate: "2026-01-10",
+    source: "SHOP_REPAIR_ORDER",
+    verificationStatus: "VERIFIED",
+    anomalyStatus: "NONE",
+    includedInForecast: true,
+    sourceReferenceType: "ServiceHistoryRecord",
+    recordedByUserId: "user-owner",
+    createdAt: "2026-01-10T15:00:00-05:00",
+    updatedAt: "2026-01-10T15:00:00-05:00",
+  },
+  {
+    id: `mile-${vehicle.id}-latest`,
+    shopId: demoShop.id,
+    vehicleId: vehicle.id,
+    readingMileage: vehicle.currentMileage,
+    readingDate: vehicle.lastServiceDate,
+    source: "SHOP_REPAIR_ORDER",
+    verificationStatus: "VERIFIED",
+    anomalyStatus: "NONE",
+    includedInForecast: true,
+    sourceReferenceType: "Vehicle",
+    sourceReferenceId: vehicle.id,
+    recordedByUserId: "user-owner",
+    createdAt: `${vehicle.lastServiceDate}T15:00:00-04:00`,
+    updatedAt: `${vehicle.lastServiceDate}T15:00:00-04:00`,
+  },
+]);
+
+export const drivingProfiles: VehicleDrivingProfile[] = vehicles.map((vehicle) => ({
+  id: `profile-${vehicle.id}`,
+  shopId: demoShop.id,
+  vehicleId: vehicle.id,
+  customerReportedAnnualMileage: vehicle.estimatedAnnualMileage,
+  customerReportedAt: vehicle.lastServiceDate,
+  customerReportedByUserId: "user-owner",
+  calculatedAnnualMileage: vehicle.estimatedAnnualMileage,
+  estimateSource: "SHOP_VERIFIED_READINGS",
+  confidence: "MEDIUM",
+  confidenceReason: "Using verified shop readings for demo vehicle mileage pacing.",
+  manualAnnualMileageOverride: null,
+  manualOverrideReason: null,
+  manualOverrideNotes: null,
+  manualOverrideSetAt: null,
+  manualOverrideSetByUserId: null,
+  lastCalculatedAt: asOfDate.toISOString(),
+}));
+
+export const initialDemoState: DemoState = {
+  shop: demoShop,
+  users: demoUsers,
+  customers,
+  vehicles,
+  services: serviceDefinitions,
+  maintenanceRecords: maintenanceItems,
+  mileageReadings,
+  drivingProfiles,
+  serviceRecords,
+  declinedWorkRecords,
+  outreachRecords,
+  appointments,
+  importHistory,
+  seededAt: asOfDate.toISOString(),
+};
 
 export function createInitialDemoState(): DemoState {
   return structuredClone(initialDemoState);

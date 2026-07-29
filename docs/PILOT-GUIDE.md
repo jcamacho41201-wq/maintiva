@@ -22,6 +22,14 @@ The migration creates the Prisma-backed application tables, timestamp triggers, 
 6. In Supabase Auth, set the site URL to `APP_URL` and add redirects for `/onboarding` and `/password-reset`.
 7. Create the pilot owner user in Supabase Auth and let first login complete shop onboarding.
 
+For adaptive mileage forecasting, confirm the catch-up migration exists before deployment review:
+
+```text
+supabase/migrations/20260729170000_adaptive_mileage_foundation.sql
+```
+
+Before applying it to the linked Supabase project, verify local schema and data backups, run `npx supabase migration list`, run `npx supabase db push --dry-run`, review the planned SQL, and get explicit approval.
+
 ## Data Import Workflow
 
 Use `/import` for pilot imports.
@@ -52,6 +60,19 @@ Authenticated pilot imports are written server-side through the current shop con
 8. Complete the appointment in the shop's existing system, then reconcile recovered revenue in Maintiva reporting.
 
 Maintiva does not send live SMS, email, or calls in this MVP.
+
+## Mileage Workflow
+
+Use a vehicle page to review and update mileage.
+
+1. Confirm Current mileage is sourced from the latest valid included mileage reading when readings exist.
+2. Open Driving Profile and review annual, monthly, daily, source, and confidence values.
+3. Save customer-reported annual mileage when the customer gives a representative estimate.
+4. Use a manual override only with a reason, then reset it when enough mileage history exists.
+5. Review Mileage History rows and exclude readings that are corrections, duplicates, or unresolved anomalies.
+6. Use each maintenance item forecast preview to compare mileage-based and time-based due dates.
+
+The mileage workflow does not automatically create, close, suppress, or modify revenue opportunities.
 
 ## Capacity Planning
 
@@ -89,6 +110,8 @@ Do not expose service-role keys in browser or Vercel public variables. Keep `NEX
 - Dashboard renders revenue recovery KPIs.
 - Import page parses a CSV, detects mapping, validates rows, detects duplicates, writes accepted rows, records import history, and downloads template/error reports.
 - Revenue Recovery Queue explains due, overdue, and declined-work opportunities.
+- Vehicle page shows Driving Profile, Mileage History, latest valid mileage, confidence, source, manual override/reset, and service forecast preview.
+- Updating vehicle mileage creates a mileage reading and keeps it visible after refresh once the adaptive mileage migration is applied.
 - Manual outreach copy can be generated, copied, marked manually sent, and assigned a response status.
 - Appointment booking from outreach updates dashboard revenue, appointments, and capacity in demo/local mode.
 - Capacity and ROI pages render without console or page errors.

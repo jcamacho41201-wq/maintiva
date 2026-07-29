@@ -124,9 +124,28 @@ export function safeMutationOperation(value: unknown): SafeMutationOperation {
       maintenanceRecordId: safeId(payload.maintenanceRecordId),
     },
     updateVehicleMileage: {
-      table: "Vehicle",
+      table: "VehicleMileageReading",
+      operation: "INSERT",
+      vehicleId: safeId(payload.vehicleId),
+    },
+    setCustomerReportedMileage: {
+      table: "VehicleDrivingProfile",
       operation: "UPDATE",
       vehicleId: safeId(payload.vehicleId),
+    },
+    setManualMileageOverride: {
+      table: "VehicleDrivingProfile",
+      operation: "UPDATE",
+      vehicleId: safeId(payload.vehicleId),
+    },
+    resetManualMileageOverride: {
+      table: "VehicleDrivingProfile",
+      operation: "UPDATE",
+      vehicleId: safeId(payload.vehicleId),
+    },
+    reviewMileageReading: {
+      table: "VehicleMileageReading",
+      operation: "UPDATE",
     },
   };
 
@@ -153,7 +172,6 @@ export function clientMutationError(error: unknown, operation: SafeMutationOpera
     "updateMaintenanceItem",
     "deactivateMaintenanceItem",
     "markMaintenanceServiceComplete",
-    "updateVehicleMileage",
   ]);
   const schemaCodes = new Set(["P2021", "P2022", "42703", "42P01", "42704"]);
   const duplicateCodes = new Set(["P2002", "23505"]);
@@ -163,6 +181,21 @@ export function clientMutationError(error: unknown, operation: SafeMutationOpera
     return {
       code: "SERVICE_INTERVAL_SCHEMA_MISSING",
       message: "The database update for service intervals has not been installed.",
+      status: 500,
+    };
+  }
+
+  const adaptiveMileageActions = new Set([
+    "updateVehicleMileage",
+    "setCustomerReportedMileage",
+    "setManualMileageOverride",
+    "resetManualMileageOverride",
+    "reviewMileageReading",
+  ]);
+  if (schemaCodes.has(database.code ?? "") && adaptiveMileageActions.has(operation.action ?? "")) {
+    return {
+      code: "ADAPTIVE_MILEAGE_SCHEMA_MISSING",
+      message: "The database update for adaptive mileage forecasting has not been installed.",
       status: 500,
     };
   }

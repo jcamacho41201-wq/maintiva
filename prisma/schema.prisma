@@ -155,6 +155,45 @@ enum OutreachThresholdType {
   PERCENT_REMAINING
 }
 
+enum MileageReadingSource {
+  SHOP_REPAIR_ORDER
+  SHOP_MANUAL_ENTRY
+  SERVICE_HISTORY_IMPORT
+  CUSTOMER_REPORTED
+  APPOINTMENT_INTAKE
+  CORRECTION
+  OTHER
+}
+
+enum MileageVerificationStatus {
+  VERIFIED
+  CUSTOMER_REPORTED
+  IMPORTED
+  UNVERIFIED
+  EXCLUDED
+}
+
+enum MileageAnomalyStatus {
+  NONE
+  NEEDS_REVIEW
+  RESOLVED
+}
+
+enum DrivingProfileEstimateSource {
+  SHOP_VERIFIED_READINGS
+  IMPORTED_READINGS
+  CUSTOMER_REPORTED
+  VERIFIED_PLUS_DEFAULT
+  SHOP_DEFAULT
+  MANUAL_OVERRIDE
+}
+
+enum DrivingProfileConfidence {
+  LOW
+  MEDIUM
+  HIGH
+}
+
 model User {
   id          String           @id
   email       String           @unique
@@ -167,6 +206,9 @@ model User {
   auditLogs   AuditLog[]
   createdMaintenanceRecords VehicleMaintenanceRecord[] @relation("MaintenanceRecordCreatedBy")
   updatedMaintenanceRecords VehicleMaintenanceRecord[] @relation("MaintenanceRecordUpdatedBy")
+  mileageReadingsRecorded VehicleMileageReading[] @relation("MileageReadingRecordedBy")
+  drivingProfilesCustomerReported VehicleDrivingProfile[] @relation("DrivingProfileCustomerReportedBy")
+  drivingProfilesManualOverride VehicleDrivingProfile[] @relation("DrivingProfileManualOverrideSetBy")
 }
 
 model Shop {
@@ -178,6 +220,7 @@ model Shop {
   address              String?
   timezone             String                     @default("America/New_York")
   dailyBayHours        Int                        @default(64)
+  defaultAnnualMileage Int                        @default(12500)
   status               ShopStatus                 @default(ONBOARDING)
   isDemo               Boolean                    @default(false)
   onboardingCompletedAt DateTime?
@@ -197,6 +240,8 @@ model Shop {
   importHistory        ImportHistoryRecord[]
   importRows           ImportRowRecord[]
   auditLogs            AuditLog[]
+  mileageReadings      VehicleMileageReading[]
+  drivingProfiles      VehicleDrivingProfile[]
 
   @@index([status])
 }
@@ -277,6 +322,8 @@ model Vehicle {
   revenueOpportunities  MaintenanceRevenueOpportunity[]
   outreachRecords       OutreachRecord[]
   appointments          Appointment[]
+  mileageReadings       VehicleMileageReading[]
+  drivingProfile        VehicleDrivingProfile?
 
   @@index([shopId, customerId])
   @@index([shopId, archivedAt])
@@ -356,6 +403,60 @@ model VehicleMaintenanceRecord {
   @@index([shopId, vehicleId, isActive])
   @@index([shopId, vehicleId, serviceDefinitionId])
   @@index([shopId, outreachStatus])
+}
+
+model VehicleMileageReading {
+  id                   String                    @id @default(cuid())
+  shopId               String
+  vehicleId            String
+  readingMileage       Int
+  readingDate          DateTime
+  source               MileageReadingSource
+  verificationStatus   MileageVerificationStatus @default(UNVERIFIED)
+  anomalyStatus        MileageAnomalyStatus      @default(NONE)
+  includedInForecast   Boolean                   @default(true)
+  correctionReason     String?
+  reviewNotes          String?
+  sourceReferenceType  String?
+  sourceReferenceId    String?
+  recordedByUserId     String?
+  createdAt            DateTime                  @default(now())
+  updatedAt            DateTime                  @updatedAt
+  shop                 Shop                      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  vehicle              Vehicle                   @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  recordedBy           User?                     @relation("MileageReadingRecordedBy", fields: [recordedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([shopId, vehicleId, readingDate])
+  @@index([shopId, vehicleId, includedInForecast, anomalyStatus])
+  @@index([shopId, sourceReferenceType, sourceReferenceId])
+}
+
+model VehicleDrivingProfile {
+  id                            String                       @id @default(cuid())
+  shopId                        String
+  vehicleId                     String                       @unique
+  customerReportedAnnualMileage Int?
+  customerReportedAt            DateTime?
+  customerReportedByUserId      String?
+  calculatedAnnualMileage       Int
+  estimateSource                DrivingProfileEstimateSource @default(SHOP_DEFAULT)
+  confidence                    DrivingProfileConfidence     @default(LOW)
+  confidenceReason              String
+  manualAnnualMileageOverride   Int?
+  manualOverrideReason          String?
+  manualOverrideNotes           String?
+  manualOverrideSetAt           DateTime?
+  manualOverrideSetByUserId     String?
+  lastCalculatedAt              DateTime                     @default(now())
+  createdAt                     DateTime                     @default(now())
+  updatedAt                     DateTime                     @updatedAt
+  shop                          Shop                         @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  vehicle                       Vehicle                      @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  customerReportedBy            User?                        @relation("DrivingProfileCustomerReportedBy", fields: [customerReportedByUserId], references: [id], onDelete: SetNull)
+  manualOverrideSetBy           User?                        @relation("DrivingProfileManualOverrideSetBy", fields: [manualOverrideSetByUserId], references: [id], onDelete: SetNull)
+
+  @@index([shopId, confidence])
+  @@index([shopId, estimateSource])
 }
 
 model ServiceHistoryRecord {

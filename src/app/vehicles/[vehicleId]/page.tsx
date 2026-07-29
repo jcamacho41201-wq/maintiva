@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { FormEvent, useMemo, useState } from "react";
 import {
   Archive,
+  Activity,
   ClipboardCheck,
   Gauge,
   History,
@@ -23,8 +24,9 @@ import {
   getRecommendedRecords,
   vehicleLabel,
 } from "@/lib/demo-calculations";
-import { type MaintenanceService, type OutreachThresholdType, type TimeIntervalUnit, type Vehicle, type VehicleMaintenanceRecord } from "@/lib/demo-data";
+import { type MaintenanceService, type OutreachThresholdType, type TimeIntervalUnit, type Vehicle, type VehicleDrivingProfile, type VehicleMaintenanceRecord, type VehicleMileageReading } from "@/lib/demo-data";
 import { type MaintenanceItemInput, useDemoStore } from "@/lib/demo-store";
+import { calculateDrivingProfile, estimateServiceDueDate } from "@/lib/adaptive-mileage";
 import { formatInterval, resolveMaintenanceInterval } from "@/lib/service-intervals";
 import { formatCurrency, formatDate, formatHours } from "@/lib/utils";
 
@@ -50,6 +52,22 @@ type PlanFormState = {
 
 function opportunityLabel(status: string) {
   return status.replaceAll("_", " ").toLowerCase().replace(/^\w/, (letter) => letter.toUpperCase());
+}
+
+function compactLabel(value: string) {
+  return value.replaceAll("_", " ").toLowerCase().replace(/^\w/, (letter) => letter.toUpperCase());
+}
+
+function sourceLabel(value: VehicleDrivingProfile["estimateSource"]) {
+  const labels: Record<VehicleDrivingProfile["estimateSource"], string> = {
+    SHOP_VERIFIED_READINGS: "Verified shop readings",
+    IMPORTED_READINGS: "Imported readings",
+    CUSTOMER_REPORTED: "Customer reported",
+    VERIFIED_PLUS_DEFAULT: "One reading + shop default",
+    SHOP_DEFAULT: "Shop default",
+    MANUAL_OVERRIDE: "Manual override",
+  };
+  return labels[value];
 }
 
 function parseOptionalInt(value: string) {
@@ -238,6 +256,197 @@ function MileageModal({
           </button>
         </div>
       </form>
+    </div>
+  );
+}
+
+function DrivingProfilePanel({
+  vehicle,
+  profile,
+  readings,
+}: {
+  vehicle: Vehicle;
+  profile: VehicleDrivingProfile;
+  readings: VehicleMileageReading[];
+}) {
+  const store = useDemoStore();
+  const sortedReadings = [...readings].sort((a, b) => b.readingDate.localeCompare(a.readingDate));
+  const [reportedMileage, setReportedMileage] = useState((profile.customerReportedAnnualMileage ?? vehicle.estimatedAnnualMileage).toString());
+  const [overrideMileage, setOverrideMileage] = useState((profile.manualAnnualMileageOverride ?? "").toString());
+  const [overrideReason, setOverrideReason] = useState(profile.manualOverrideReason ?? "");
+  const [overrideNotes, setOverrideNotes] = useState(profile.manualOverrideNotes ?? "");
+  const [error, setError] = useState("");
+  const dailyMileage = Math.round(profile.calculatedAnnualMileage / 365);
+  const monthlyMileage = Math.round(profile.calculatedAnnualMileage / 12);
+  const latestReading = sortedReadings.find((reading) => reading.includedInForecast && reading.anomalyStatus !== "NEEDS_REVIEW");
+
+  async function saveReported() {
+    const annualMileage = parseRequiredInt(reportedMileage);
+    if (annualMileage <= 0) {
+      setError("Annual mileage must be greater than zero.");
+      return;
+    }
+    const result = await store.setCustomerReportedMileage({ vehicleId: vehicle.id, annualMileage });
+    if (!result.ok) {
+      setError(result.message ?? "Unable to save reported mileage.");
+      return;
+    }
+    setError("");
+  }
+
+  async function saveOverride() {
+    const annualMileage = parseRequiredInt(overrideMileage);
+    if (annualMileage <= 0 || overrideReason.trim().length < 3) {
+      setError("Manual override requires annual mileage and a reason.");
+      return;
+    }
+    const result = await store.setManualMileageOverride({
+      vehicleId: vehicle.id,
+      annualMileage,
+      reason: overrideReason.trim(),
+      notes: overrideNotes.trim() || undefined,
+    });
+    if (!result.ok) {
+      setError(result.message ?? "Unable to save manual override.");
+      return;
+    }
+    setError("");
+  }
+
+  async function resetOverride() {
+    const result = await store.resetManualMileageOverride({ vehicleId: vehicle.id });
+    if (!result.ok) {
+      setError(result.message ?? "Unable to reset override.");
+      return;
+    }
+    setOverrideMileage("");
+    setOverrideReason("");
+    setOverrideNotes("");
+    setError("");
+  }
+
+  async function toggleReading(reading: VehicleMileageReading) {
+    const result = await store.reviewMileageReading({
+      id: reading.id,
+      includedInForecast: !reading.includedInForecast,
+      anomalyStatus: reading.anomalyStatus === "NEEDS_REVIEW" && !reading.includedInForecast ? "RESOLVED" : reading.anomalyStatus,
+      reviewNotes: !reading.includedInForecast ? "Restored to forecast." : "Excluded from forecast.",
+    });
+    if (!result.ok) setError(result.message ?? "Unable to review mileage reading.");
+  }
+
+  return (
+    <div className="grid gap-4 xl:grid-cols-[360px_1fr]">
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <Activity className="h-5 w-5 text-violet-900" />
+            <h2 className="text-lg font-semibold">Driving Profile</h2>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-2 gap-3">
+            <DetailTile label="Annual pace" value={`${profile.calculatedAnnualMileage.toLocaleString()} mi`} />
+            <DetailTile label="Daily pace" value={`${dailyMileage.toLocaleString()} mi`} />
+            <DetailTile label="Monthly pace" value={`${monthlyMileage.toLocaleString()} mi`} />
+            <DetailTile label="Confidence" value={profile.confidence} />
+          </div>
+          <div className="rounded-lg border border-zinc-200 p-3 text-sm">
+            <p className="font-semibold">{sourceLabel(profile.estimateSource)}</p>
+            <p className="mt-1 text-zinc-600">{profile.confidenceReason}</p>
+            <p className="mt-2 text-zinc-500">
+              Latest fact: {latestReading ? `${latestReading.readingMileage.toLocaleString()} mi on ${formatDate(latestReading.readingDate)}` : "unknown"}
+            </p>
+          </div>
+          <div className="grid gap-2 text-sm">
+            <label className="font-medium">
+              Customer-reported annual mileage
+              <input
+                type="number"
+                min="1"
+                value={reportedMileage}
+                onChange={(event) => setReportedMileage(event.target.value)}
+                className="mt-1 w-full rounded-lg border border-zinc-200 px-3 py-2"
+              />
+            </label>
+            <button onClick={() => void saveReported()} className="rounded-lg border border-violet-200 px-3 py-2 font-semibold text-violet-950">
+              Save reported mileage
+            </button>
+          </div>
+          <div className="space-y-2 rounded-lg border border-zinc-200 p-3 text-sm">
+            <label className="font-medium">
+              Manual annual override
+              <input
+                type="number"
+                min="1"
+                value={overrideMileage}
+                onChange={(event) => setOverrideMileage(event.target.value)}
+                className="mt-1 w-full rounded-lg border border-zinc-200 px-3 py-2"
+              />
+            </label>
+            <input
+              value={overrideReason}
+              onChange={(event) => setOverrideReason(event.target.value)}
+              placeholder="Reason"
+              className="w-full rounded-lg border border-zinc-200 px-3 py-2"
+            />
+            <textarea
+              value={overrideNotes}
+              onChange={(event) => setOverrideNotes(event.target.value)}
+              placeholder="Notes"
+              className="min-h-16 w-full rounded-lg border border-zinc-200 px-3 py-2"
+            />
+            <div className="flex flex-wrap gap-2">
+              <button onClick={() => void saveOverride()} className="rounded-lg bg-violet-950 px-3 py-2 font-semibold text-white">
+                Save override
+              </button>
+              <button onClick={() => void resetOverride()} className="rounded-lg border border-zinc-200 px-3 py-2 font-semibold">
+                Reset
+              </button>
+            </div>
+          </div>
+          {error && <p className="text-sm font-medium text-red-600">{error}</p>}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <h2 className="text-lg font-semibold">Mileage History</h2>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {sortedReadings.map((reading) => (
+            <div key={reading.id} className="grid gap-3 rounded-lg border border-zinc-200 p-3 text-sm md:grid-cols-[1fr_auto] md:items-center">
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="font-semibold">{reading.readingMileage.toLocaleString()} mi</p>
+                  <Badge variant={reading.includedInForecast ? "green" : "neutral"}>
+                    {reading.includedInForecast ? "Included" : "Excluded"}
+                  </Badge>
+                  <Badge variant={reading.anomalyStatus === "NEEDS_REVIEW" ? "orange" : "neutral"}>
+                    {compactLabel(reading.anomalyStatus)}
+                  </Badge>
+                </div>
+                <p className="mt-1 text-zinc-500">
+                  {formatDate(reading.readingDate)} · {compactLabel(reading.source)} · {compactLabel(reading.verificationStatus)}
+                </p>
+                {reading.correctionReason && <p className="mt-1 text-zinc-600">{reading.correctionReason}</p>}
+                {reading.reviewNotes && <p className="mt-1 text-zinc-600">{reading.reviewNotes}</p>}
+              </div>
+              <button
+                onClick={() => void toggleReading(reading)}
+                className="rounded-lg border border-zinc-200 px-3 py-2 font-semibold"
+              >
+                {reading.includedInForecast ? "Exclude" : "Include"}
+              </button>
+            </div>
+          ))}
+          {sortedReadings.length === 0 && (
+            <p className="rounded-lg border border-dashed border-zinc-300 p-6 text-sm text-zinc-500">
+              Unknown mileage history.
+            </p>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }
@@ -735,6 +944,36 @@ export default function VehicleMaintenancePage() {
     .filter((record) => record.vehicleId === vehicle.id)
     .filter((record) => !historyFilter || record.serviceName === historyFilter)
     .sort((a, b) => b.completedAt.localeCompare(a.completedAt));
+  const mileageReadings = state.mileageReadings.filter((reading) => reading.vehicleId === vehicle.id);
+  const persistedProfile = state.drivingProfiles.find((profile) => profile.vehicleId === vehicle.id);
+  const calculatedProfile = calculateDrivingProfile({
+    shopId: state.shop.id,
+    vehicleId: vehicle.id,
+    readings: mileageReadings,
+    shopDefaultAnnualMileage: state.shop.defaultAnnualMileage,
+    customerReportedAnnualMileage: persistedProfile?.customerReportedAnnualMileage ?? vehicle.estimatedAnnualMileage,
+    customerReportedAt: persistedProfile?.customerReportedAt ?? null,
+    customerReportedByUserId: persistedProfile?.customerReportedByUserId ?? null,
+    existingProfile: persistedProfile,
+  });
+  const drivingProfile: VehicleDrivingProfile = persistedProfile ?? {
+    id: `profile-${vehicle.id}`,
+    shopId: state.shop.id,
+    vehicleId: vehicle.id,
+    customerReportedAnnualMileage: calculatedProfile.customerReportedAnnualMileage,
+    customerReportedAt: calculatedProfile.customerReportedAt,
+    customerReportedByUserId: calculatedProfile.customerReportedByUserId,
+    calculatedAnnualMileage: calculatedProfile.calculatedAnnualMileage,
+    estimateSource: calculatedProfile.estimateSource,
+    confidence: calculatedProfile.confidence,
+    confidenceReason: calculatedProfile.confidenceReason,
+    manualAnnualMileageOverride: calculatedProfile.manualAnnualMileageOverride,
+    manualOverrideReason: calculatedProfile.manualOverrideReason,
+    manualOverrideNotes: calculatedProfile.manualOverrideNotes,
+    manualOverrideSetAt: calculatedProfile.manualOverrideSetAt,
+    manualOverrideSetByUserId: calculatedProfile.manualOverrideSetByUserId,
+    lastCalculatedAt: calculatedProfile.lastCalculatedAt,
+  };
 
   return (
     <div className="space-y-6">
@@ -782,6 +1021,8 @@ export default function VehicleMaintenancePage() {
           </Card>
         ))}
       </section>
+
+      <DrivingProfilePanel vehicle={vehicle} profile={drivingProfile} readings={mileageReadings} />
 
       <Card>
         <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -838,6 +1079,24 @@ export default function VehicleMaintenancePage() {
                 <DetailTile label="Price" value={formatCurrency(effective.priceCents)} />
                 <DetailTile label="Labor" value={formatHours(effective.laborMinutes)} />
               </div>
+
+              {(() => {
+                const preview = estimateServiceDueDate({
+                  currentMileage: vehicle.currentMileage,
+                  dailyMileage: drivingProfile.calculatedAnnualMileage / 365,
+                  effective,
+                });
+                return (
+                  <div className="mt-4 rounded-lg border border-zinc-200 p-3 text-sm">
+                    <p className="font-semibold">Forecast preview</p>
+                    <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                      <DetailTile label="Remaining miles" value={preview.remainingMiles === null ? "Unknown" : `${preview.remainingMiles.toLocaleString()} mi`} />
+                      <DetailTile label="Mileage date" value={preview.mileageBasedDueDate ? formatDate(preview.mileageBasedDueDate) : "Unknown"} />
+                      <DetailTile label="First due" value={preview.firstDueDate ? `${formatDate(preview.firstDueDate)} by ${preview.firstTrigger}` : "Unknown"} />
+                    </div>
+                  </div>
+                );
+              })()}
 
               <div className="mt-4 rounded-lg bg-zinc-50 p-3 text-sm text-zinc-600">
                 <p>{effective.triggerText}</p>

@@ -11,7 +11,9 @@ import {
   vehicles,
   outreachRecords,
   declinedWorkRecords,
+  drivingProfiles,
   importHistory,
+  mileageReadings,
 } from "../src/lib/demo-data";
 import { getRecordStatus } from "../src/lib/demo-calculations";
 
@@ -24,6 +26,8 @@ async function main() {
   await prisma.auditLog.deleteMany();
   await prisma.appointmentService.deleteMany();
   await prisma.appointment.deleteMany();
+  await prisma.vehicleDrivingProfile.deleteMany();
+  await prisma.vehicleMileageReading.deleteMany();
   await prisma.importHistoryRecord.deleteMany();
   await prisma.declinedWorkRecord.deleteMany();
   await prisma.vehicleMaintenanceRecord.deleteMany();
@@ -46,6 +50,7 @@ async function main() {
       address: demoShop.address,
       timezone: demoShop.timezone,
       dailyBayHours: demoShop.dailyBayHours,
+      defaultAnnualMileage: demoShop.defaultAnnualMileage,
       isDemo: true,
       status: "ACTIVE",
       onboardingCompletedAt: new Date(demoShop.onboardingCompletedAt ?? new Date()),
@@ -175,6 +180,8 @@ async function main() {
           vehicles,
           services: serviceDefinitions,
           maintenanceRecords: maintenanceItems,
+          mileageReadings,
+          drivingProfiles,
           serviceRecords,
           outreachRecords,
           appointments,
@@ -213,6 +220,46 @@ async function main() {
         updatedByUserId: demoUsers[0]?.id,
       };
     }),
+  });
+
+  await prisma.vehicleMileageReading.createMany({
+    data: mileageReadings.map((reading) => ({
+      id: reading.id,
+      shopId: reading.shopId,
+      vehicleId: reading.vehicleId,
+      readingMileage: reading.readingMileage,
+      readingDate: new Date(reading.readingDate),
+      source: reading.source,
+      verificationStatus: reading.verificationStatus,
+      anomalyStatus: reading.anomalyStatus,
+      includedInForecast: reading.includedInForecast,
+      correctionReason: reading.correctionReason ?? null,
+      reviewNotes: reading.reviewNotes ?? null,
+      sourceReferenceType: reading.sourceReferenceType ?? null,
+      sourceReferenceId: reading.sourceReferenceId ?? null,
+      recordedByUserId: reading.recordedByUserId ?? null,
+    })),
+  });
+
+  await prisma.vehicleDrivingProfile.createMany({
+    data: drivingProfiles.map((profile) => ({
+      id: profile.id,
+      shopId: profile.shopId,
+      vehicleId: profile.vehicleId,
+      customerReportedAnnualMileage: profile.customerReportedAnnualMileage,
+      customerReportedAt: profile.customerReportedAt ? new Date(profile.customerReportedAt) : null,
+      customerReportedByUserId: profile.customerReportedByUserId,
+      calculatedAnnualMileage: profile.calculatedAnnualMileage,
+      estimateSource: profile.estimateSource,
+      confidence: profile.confidence,
+      confidenceReason: profile.confidenceReason,
+      manualAnnualMileageOverride: profile.manualAnnualMileageOverride,
+      manualOverrideReason: profile.manualOverrideReason,
+      manualOverrideNotes: profile.manualOverrideNotes,
+      manualOverrideSetAt: profile.manualOverrideSetAt ? new Date(profile.manualOverrideSetAt) : null,
+      manualOverrideSetByUserId: profile.manualOverrideSetByUserId,
+      lastCalculatedAt: new Date(profile.lastCalculatedAt),
+    })),
   });
 
   await prisma.declinedWorkRecord.createMany({

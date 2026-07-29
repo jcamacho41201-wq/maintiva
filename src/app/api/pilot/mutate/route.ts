@@ -19,6 +19,10 @@ import {
   importPilotCsvRows,
   markPilotMaintenanceServiceComplete,
   markPilotOutreachManuallySent,
+  resetPilotManualMileageOverride,
+  reviewPilotMileageReading,
+  setPilotCustomerReportedMileage,
+  setPilotManualMileageOverride,
   updatePilotMaintenanceItem,
   updatePilotCustomer,
   updatePilotServiceDefinition,
@@ -63,6 +67,10 @@ const mutationSchema = z.discriminatedUnion("action", [
   }),
   z.object({ action: z.literal("markMaintenanceServiceComplete"), payload: z.unknown() }),
   z.object({ action: z.literal("updateVehicleMileage"), payload: z.unknown() }),
+  z.object({ action: z.literal("setCustomerReportedMileage"), payload: z.unknown() }),
+  z.object({ action: z.literal("setManualMileageOverride"), payload: z.unknown() }),
+  z.object({ action: z.literal("resetManualMileageOverride"), payload: z.unknown() }),
+  z.object({ action: z.literal("reviewMileageReading"), payload: z.unknown() }),
   z.object({
     action: z.literal("markOutreachManuallySent"),
     payload: z.object({
@@ -204,6 +212,18 @@ export async function POST(request: Request) {
         break;
       case "updateVehicleMileage":
         await updatePilotVehicleMileage(context, body.payload);
+        break;
+      case "setCustomerReportedMileage":
+        await setPilotCustomerReportedMileage(context, body.payload);
+        break;
+      case "setManualMileageOverride":
+        await setPilotManualMileageOverride(context, body.payload);
+        break;
+      case "resetManualMileageOverride":
+        await resetPilotManualMileageOverride(context, body.payload);
+        break;
+      case "reviewMileageReading":
+        await reviewPilotMileageReading(context, body.payload);
         break;
       case "markOutreachManuallySent":
         await markPilotOutreachManuallySent(context, body.payload);
