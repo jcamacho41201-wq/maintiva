@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import { CalendarCheck, Clock3, Mail, MessageSquare, Phone, Send } from "lucide-react";
 import { RecommendationModal } from "@/components/recommendation-modal";
@@ -38,13 +39,13 @@ function priorityVariant(priority: string) {
 
 function selectedRecordIds(group: RevenueQueueGroup) {
   return group.opportunities
-    .map((opportunity) => opportunity.id.replace(/^opp-/, ""))
-    .filter((id) => !id.startsWith("declined-"));
+    .map((opportunity) => opportunity.maintenanceRecordId)
+    .filter((id): id is string => Boolean(id));
 }
 
 export default function AutomationPage() {
   const store = useDemoStore();
-  const { state } = store;
+  const { state, ready, loadError } = store;
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
   const [filter, setFilter] = useState<QueueFilter>("ALL");
   const [sort, setSort] = useState<QueueSort>("PRIORITY");
@@ -149,6 +150,25 @@ export default function AutomationPage() {
           ))}
         </CardHeader>
         <CardContent className="grid gap-4 xl:grid-cols-2">
+          {!ready && (
+            <div className="rounded-lg border border-zinc-200 p-6 text-sm font-medium text-zinc-600 xl:col-span-2">
+              Loading revenue opportunities…
+            </div>
+          )}
+          {loadError && (
+            <div className="rounded-lg border border-red-200 bg-red-50 p-6 text-sm text-red-800 xl:col-span-2">
+              <p className="font-semibold">Revenue opportunities could not be loaded.</p>
+              <p className="mt-1">Refresh the page or try again after the shop data connection is restored.</p>
+            </div>
+          )}
+          {ready && !loadError && filteredGroups.length === 0 && (
+            <div className="rounded-lg border border-dashed border-zinc-300 p-6 text-sm text-zinc-600 xl:col-span-2">
+              <p className="font-semibold text-zinc-900">No open revenue opportunities yet.</p>
+              <p className="mt-1">
+                Opportunities are created from real declined-work records and due or overdue vehicle maintenance records.
+              </p>
+            </div>
+          )}
           {filteredGroups.map((group) => {
             const lastContact = group.lastContactedAt;
             const canRecommend = selectedRecordIds(group).length > 0;
@@ -157,8 +177,12 @@ export default function AutomationPage() {
                 <CardContent className="space-y-5">
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <h2 className="text-lg font-semibold">{group.customerName}</h2>
-                      <p className="text-sm text-zinc-500">{group.vehicleLabel}</p>
+                      <Link href={`/customers/${group.customerId}`} className="text-lg font-semibold hover:text-violet-900">
+                        {group.customerName}
+                      </Link>
+                      <Link href={`/vehicles/${group.vehicleId}`} className="block text-sm text-zinc-500 hover:text-violet-900">
+                        {group.vehicleLabel}
+                      </Link>
                     </div>
                     <Badge variant={priorityVariant(group.priority)}>
                       {group.priority.toLowerCase()} priority

@@ -25,7 +25,31 @@ import {
 const storageKey = "maintiva-demo-state-v2";
 const changeEvent = "maintiva-demo-state";
 let cachedState: DemoState | undefined;
+let pilotStateLoadFailed = false;
 const serverSnapshot = createInitialDemoState();
+const authenticatedLoadingSnapshot: DemoState = {
+  ...serverSnapshot,
+  shop: {
+    ...serverSnapshot.shop,
+    id: "",
+    name: "Loading shop",
+    slug: "",
+    isDemo: false,
+    onboardingCompletedAt: null,
+  },
+  users: [],
+  customers: [],
+  vehicles: [],
+  services: [],
+  maintenanceRecords: [],
+  revenueOpportunities: [],
+  serviceRecords: [],
+  declinedWorkRecords: [],
+  importHistory: [],
+  outreachRecords: [],
+  appointments: [],
+  seededAt: "",
+};
 export type MutationResult = { ok: boolean; message?: string };
 
 function getServerSnapshot() {
@@ -37,6 +61,7 @@ function normalizeState(state: DemoState): DemoState {
   return {
     ...baseline,
     ...state,
+    revenueOpportunities: state.revenueOpportunities ?? [],
     declinedWorkRecords: state.declinedWorkRecords ?? baseline.declinedWorkRecords,
     importHistory: state.importHistory ?? baseline.importHistory,
     outreachRecords: (state.outreachRecords ?? baseline.outreachRecords).map((record) => ({
@@ -66,7 +91,7 @@ function readState() {
   }
 
   if (!shouldUseLocalDemoPersistence()) {
-    return cachedState ?? getServerSnapshot();
+    return cachedState ?? authenticatedLoadingSnapshot;
   }
 
   if (cachedState) {
@@ -97,18 +122,34 @@ async function hydratePilotState() {
   if (["/login", "/password-reset", "/onboarding", "/privacy", "/terms"].includes(window.location.pathname)) {
     return;
   }
-  const response = await fetch("/api/pilot/state", { credentials: "include" });
-  if (response.status === 409) {
-    window.location.href = "/onboarding";
-    return;
+  try {
+    const response = await fetch("/api/pilot/state", { credentials: "include" });
+    if (response.status === 409) {
+      window.location.href = "/onboarding";
+      return;
+    }
+    if (response.status === 401) {
+      window.location.href = "/login";
+      return;
+    }
+    if (!response.ok) {
+      pilotStateLoadFailed = true;
+      saveState({
+        ...authenticatedLoadingSnapshot,
+        seededAt: new Date().toISOString(),
+      });
+      return;
+    }
+    const data = (await response.json()) as { state: DemoState };
+    pilotStateLoadFailed = false;
+    saveState(data.state);
+  } catch {
+    pilotStateLoadFailed = true;
+    saveState({
+      ...authenticatedLoadingSnapshot,
+      seededAt: new Date().toISOString(),
+    });
   }
-  if (response.status === 401) {
-    window.location.href = "/login";
-    return;
-  }
-  if (!response.ok) return;
-  const data = (await response.json()) as { state: DemoState };
-  saveState(data.state);
 }
 
 export async function mutatePilotState(body: unknown): Promise<MutationResult> {
@@ -192,7 +233,8 @@ export function useDemoStore() {
 
     return {
       state,
-      ready: true,
+      loadError: pilotStateLoadFailed,
+      ready: shouldUseLocalDemoPersistence() || Boolean(state.shop.id) || pilotStateLoadFailed,
       resetDemoData() {
         if (!shouldUseLocalDemoPersistence()) return;
         saveState(createInitialDemoState());

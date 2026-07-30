@@ -173,6 +173,7 @@ async function main() {
           vehicles,
           services: serviceDefinitions,
           maintenanceRecords: maintenanceItems,
+          revenueOpportunities: [],
           serviceRecords,
           outreachRecords,
           appointments,
