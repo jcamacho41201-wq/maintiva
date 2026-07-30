@@ -24,25 +24,26 @@ import {
 } from "@/lib/supabase/client";
 import { cn } from "@/lib/utils";
 
-const navItems = [
-  { href: "/", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/automation", label: "Revenue Queue", icon: ClipboardList },
-  { href: "/customers", label: "Customers", icon: Users },
-  { href: "/vehicles/veh-jeep", label: "Maintenance", icon: Wrench },
-  { href: "/import", label: "Import Data", icon: FileUp },
-  { href: "/capacity", label: "Capacity", icon: Gauge },
-  { href: "/appointments", label: "Appointments", icon: CalendarDays },
-  { href: "/services", label: "Services Library", icon: Library },
-  { href: "/analytics", label: "ROI Report", icon: BarChart3 },
-  { href: "/settings", label: "Settings", icon: Settings },
-];
-
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const { state, resetDemoData } = useDemoStore();
+  const { state, resetDemoData, ready } = useDemoStore();
   const showDemoReset = process.env.NEXT_PUBLIC_MAINTIVA_ENABLE_DEMO_RESET === "true";
   const authConfigured = isBrowserSupabaseConfigured();
   const canResetLocalDemo = state.shop.isDemo && !authConfigured && showDemoReset;
+  const currentUser = state.users.find((user) => user.id === state.currentUserId) ?? state.users[0];
+  const firstVehicleHref = state.vehicles[0] ? `/vehicles/${state.vehicles[0].id}` : "/customers";
+  const navItems = [
+    { href: "/", activeHref: "/", label: "Dashboard", icon: LayoutDashboard },
+    { href: "/automation", activeHref: "/automation", label: "Revenue Queue", icon: ClipboardList },
+    { href: "/customers", activeHref: "/customers", label: "Customers", icon: Users },
+    { href: firstVehicleHref, activeHref: "/vehicles", label: "Maintenance", icon: Wrench },
+    { href: "/import", activeHref: "/import", label: "Import Data", icon: FileUp },
+    { href: "/capacity", activeHref: "/capacity", label: "Capacity", icon: Gauge },
+    { href: "/appointments", activeHref: "/appointments", label: "Appointments", icon: CalendarDays },
+    { href: "/services", activeHref: "/services", label: "Services Library", icon: Library },
+    { href: "/analytics", activeHref: "/analytics", label: "ROI Report", icon: BarChart3 },
+    { href: "/settings", activeHref: "/settings", label: "Settings", icon: Settings },
+  ];
 
   async function signOut() {
     if (!authConfigured) return;
@@ -69,7 +70,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">
             Current shop
           </p>
-          <p className="mt-1 font-semibold">{state.shop.name}</p>
+          <p className="mt-1 font-semibold">{ready ? state.shop.name : "Loading shop"}</p>
           {state.shop.isDemo && (
             <span className="mt-2 inline-flex rounded-full border border-violet-200 bg-violet-50 px-2.5 py-1 text-xs font-semibold text-violet-700">
               Demo tenant
@@ -79,14 +80,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <nav className="flex-1 space-y-1 px-4 py-5">
           {navItems.map((item) => {
             const active =
-              item.href === "/"
-                ? pathname === item.href
-                : pathname.startsWith(item.href);
+              item.activeHref === "/"
+                ? pathname === item.activeHref
+                : pathname.startsWith(item.activeHref);
             const Icon = item.icon;
 
             return (
               <Link
-                key={item.href}
+                key={item.label}
                 href={item.href}
                 className={cn(
                   "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-zinc-600 transition hover:bg-violet-50 hover:text-violet-900",
@@ -101,8 +102,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </nav>
         <div className="border-t border-zinc-100 p-4">
           <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-3">
-            <p className="text-sm font-semibold">{state.users[0]?.name ?? "Avery Stone"}</p>
-            <p className="text-xs text-zinc-500">{state.users[0]?.role ?? "OWNER"}</p>
+            <p className="text-sm font-semibold">{currentUser?.name ?? (ready ? "Team member" : "Loading user")}</p>
+            <p className="text-xs text-zinc-500">{currentUser?.role ?? ""}</p>
           </div>
         </div>
       </aside>

@@ -9,6 +9,7 @@ export type AuthenticatedShopContext = {
   email: string;
   shopId: string;
   shopName: string;
+  shopTimezone: string;
   role: "OWNER" | "MANAGER" | "SERVICE_ADVISOR" | "TECHNICIAN";
   isDemo: boolean;
 };
@@ -99,7 +100,14 @@ export async function getAuthenticatedShopContext(): Promise<AuthenticatedShopCo
         },
       },
       include: {
-        shop: true,
+        shop: {
+          select: {
+            id: true,
+            name: true,
+            timezone: true,
+            isDemo: true,
+          },
+        },
         user: true,
       },
       orderBy: {
@@ -126,9 +134,14 @@ export async function getAuthenticatedShopContext(): Promise<AuthenticatedShopCo
     email: authUser.email,
     shopId: membership.shopId,
     shopName: membership.shop.name,
+    shopTimezone: membership.shop.timezone,
     role: membership.role,
     isDemo: membership.shop.isDemo,
   };
+}
+
+export async function requireActiveShopMembership() {
+  return getAuthenticatedShopContext();
 }
 
 export async function requirePageShopContext() {
