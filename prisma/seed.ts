@@ -199,7 +199,7 @@ async function main() {
         vehicleId: item.vehicleId,
         serviceDefinitionId: item.serviceId,
         serviceName: item.serviceName,
-        lastCompletedDate: new Date(item.lastCompletedDate),
+        lastCompletedDate: item.lastCompletedDate ? new Date(item.lastCompletedDate) : null,
         lastCompletedMileage: item.lastCompletedMileage,
         recommendedMileageInterval: item.recommendedMileageInterval,
         recommendedTimeIntervalMonths: item.recommendedTimeIntervalMonths,

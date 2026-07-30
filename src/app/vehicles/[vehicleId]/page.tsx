@@ -152,8 +152,8 @@ function maintenanceToForm(record: VehicleMaintenanceRecord, service?: Maintenan
     timeIntervalUnit: record.timeIntervalUnitOverride ?? defaults.timeIntervalUnit,
     price: ((record.priceOverrideCents ?? service?.defaultPriceCents ?? record.priceCents) / 100).toString(),
     laborHours: ((record.laborMinutesOverride ?? service?.estimatedLaborMinutes ?? Math.round(record.laborHours * 60)) / 60).toString(),
-    lastCompletedDate: record.lastCompletedDate,
-    lastCompletedMileage: record.lastCompletedMileage.toString(),
+    lastCompletedDate: record.lastCompletedDate ?? "",
+    lastCompletedMileage: record.lastCompletedMileage?.toString() ?? "",
     outreachThresholdType: record.outreachThresholdType ?? "MILES_BEFORE_DUE",
     outreachThresholdValue: (record.outreachThresholdValue ?? 500).toString(),
     notes: record.notes ?? "",
@@ -1468,9 +1468,6 @@ export default function VehicleMaintenancePage() {
     .sort((a, b) => a.effective.lifeRemaining - b.effective.lifeRemaining);
   const recommended = getRecommendedRecords(state, vehicle.id).map(({ record }) => record);
   const openRecommended = recommended.filter((record) => record.outreachStatus !== "SCHEDULED");
-  const predictedAnnualRevenue = maintenance
-    .filter((item) => ["DUE_SOON", "DUE", "OVERDUE"].includes(item.effective.status))
-    .reduce((sum, item) => sum + item.effective.priceCents, 0);
   const opportunityStatus =
     recommended.length > 0 && recommended.every((record) => record.outreachStatus === "SCHEDULED")
       ? "SCHEDULED"
@@ -1562,7 +1559,7 @@ export default function VehicleMaintenancePage() {
           ["Current mileage", `${vehicle.currentMileage.toLocaleString()} mi`],
           ["Plan items", `${maintenance.length}`],
           ["Vehicle health", `${vehicle.overallHealth}%`],
-          ["Open revenue", formatCurrency(predictedAnnualRevenue)],
+          ["Ready for outreach", `${openRecommended.length}`],
         ].map(([label, value]) => (
           <Card key={label}>
             <CardContent>
@@ -1614,7 +1611,7 @@ export default function VehicleMaintenancePage() {
                     <Badge variant={effective.usesShopDefault ? "purple" : "neutral"}>{effective.sourceLabel}</Badge>
                   </div>
                   <p className="mt-1 text-sm text-zinc-500">
-                    Last completed {record.lastCompletedDate ? formatDate(record.lastCompletedDate) : "not recorded"} at {record.lastCompletedMileage?.toLocaleString() ?? "unknown"} mi
+                    Last completed {record.lastCompletedDate ? formatDate(record.lastCompletedDate) : "not recorded"} · {record.lastCompletedMileage === null ? "Last completed mileage not entered" : `${record.lastCompletedMileage.toLocaleString()} mi`}
                   </p>
                 </div>
                 <Badge variant={statusVariant(effective.status)}>

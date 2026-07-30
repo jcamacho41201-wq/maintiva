@@ -198,12 +198,6 @@ function appointmentDateTime(date: string, time: string) {
   return Number.isNaN(parsed.getTime()) ? undefined : parsed;
 }
 
-function addMonths(date: Date, months: number) {
-  const next = new Date(date);
-  next.setMonth(next.getMonth() + months);
-  return next;
-}
-
 function daysBetween(start: Date, end = new Date()) {
   return Math.max(0, Math.floor((end.getTime() - start.getTime()) / 86_400_000));
 }
@@ -224,8 +218,7 @@ function priorityForOpportunity(input: {
   if (
     input.source === "DECLINED_WORK" ||
     input.daysOverdue >= 30 ||
-    input.milesOverdue >= 1000 ||
-    input.estimatedRevenueCents >= 30000
+    input.milesOverdue >= 1000
   ) {
     return {
       priority: "HIGH" as const,
@@ -269,8 +262,165 @@ function stageFromOutreach(input: {
 
 type OpportunitySyncClient = Pick<
   typeof prisma,
-  "maintenanceRevenueOpportunity" | "vehicleMaintenanceRecord" | "declinedWorkRecord"
+  "$executeRaw" | "maintenanceRevenueOpportunity" | "vehicleMaintenanceRecord" | "declinedWorkRecord"
 >;
+
+function toStateVehicle(vehicle: {
+  id: string;
+  shopId: string;
+  customerId: string;
+  year: number;
+  make: string;
+  model: string;
+  vin: string | null;
+  licensePlate: string | null;
+  engine: string | null;
+  trim: string | null;
+  vehicleType: string | null;
+  currentMileage: number;
+  estimatedAnnualMileage: number | null;
+  overallHealth: number;
+  lastServiceDate: Date | null;
+  updatedAt?: Date;
+}): Vehicle {
+  return {
+    id: vehicle.id,
+    shopId: vehicle.shopId,
+    customerId: vehicle.customerId,
+    year: vehicle.year,
+    make: vehicle.make,
+    model: vehicle.model,
+    vin: vehicle.vin ?? "",
+    licensePlate: vehicle.licensePlate ?? "",
+    engine: vehicle.engine ?? "",
+    trim: vehicle.trim ?? "",
+    vehicleType: vehicle.vehicleType ?? "Passenger vehicle",
+    currentMileage: vehicle.currentMileage,
+    estimatedAnnualMileage: vehicle.estimatedAnnualMileage ?? DEFAULT_ANNUAL_MILEAGE,
+    overallHealth: vehicle.overallHealth,
+    lastServiceDate: dateOnly(vehicle.lastServiceDate || vehicle.updatedAt),
+  };
+}
+
+function toStateServiceDefinition(service: {
+  id: string;
+  shopId: string;
+  name: string;
+  category: string;
+  defaultMileageInterval: number | null;
+  defaultTimeIntervalMonths: number | null;
+  defaultTimeIntervalValue: number | null;
+  defaultTimeIntervalUnit: TimeIntervalUnit;
+  defaultNotificationThreshold: number;
+  estimatedLaborMinutes: number;
+  defaultPriceCents: number;
+  description: string | null;
+  isActive: boolean;
+}): MaintenanceService {
+  return {
+    id: service.id,
+    shopId: service.shopId,
+    name: service.name,
+    category: service.category,
+    defaultMileageInterval: service.defaultMileageInterval,
+    defaultTimeIntervalMonths: service.defaultTimeIntervalMonths,
+    defaultTimeIntervalValue: service.defaultTimeIntervalValue ?? service.defaultTimeIntervalMonths,
+    defaultTimeIntervalUnit: service.defaultTimeIntervalUnit ?? "MONTHS",
+    defaultNotificationThreshold: service.defaultNotificationThreshold,
+    estimatedLaborMinutes: service.estimatedLaborMinutes,
+    defaultPriceCents: service.defaultPriceCents,
+    description: service.description ?? "",
+    isActive: service.isActive,
+  };
+}
+
+function toStateMaintenanceRecord(record: {
+  id: string;
+  shopId: string;
+  vehicleId: string;
+  serviceDefinitionId: string | null;
+  serviceName: string;
+  customServiceName: string | null;
+  customCategory: string | null;
+  lastCompletedDate: Date | null;
+  lastCompletedMileage: number | null;
+  recommendedMileageInterval: number | null;
+  recommendedTimeIntervalMonths: number | null;
+  mileageIntervalOverride: number | null;
+  timeIntervalValueOverride: number | null;
+  timeIntervalUnitOverride: TimeIntervalUnit | null;
+  notificationThreshold: number;
+  outreachThresholdType: VehicleMaintenanceRecord["outreachThresholdType"];
+  outreachThresholdValue: number;
+  priceCents: number;
+  laborMinutes: number;
+  priceOverrideCents: number | null;
+  laborMinutesOverride: number | null;
+  outreachStatus: VehicleMaintenanceRecord["outreachStatus"];
+  outreachRecordId: string | null;
+  appointmentId: string | null;
+  isActive: boolean | null;
+  notes: string | null;
+  createdByUserId: string | null;
+  updatedByUserId: string | null;
+}): VehicleMaintenanceRecord {
+  return {
+    id: record.id,
+    shopId: record.shopId,
+    vehicleId: record.vehicleId,
+    serviceId: record.serviceDefinitionId,
+    serviceName: record.serviceName,
+    customServiceName: record.customServiceName ?? undefined,
+    customCategory: record.customCategory ?? undefined,
+    lastCompletedDate: dateOnly(record.lastCompletedDate) || null,
+    lastCompletedMileage: record.lastCompletedMileage,
+    recommendedMileageInterval: record.recommendedMileageInterval,
+    recommendedTimeIntervalMonths: record.recommendedTimeIntervalMonths,
+    mileageIntervalOverride: record.mileageIntervalOverride,
+    timeIntervalValueOverride: record.timeIntervalValueOverride,
+    timeIntervalUnitOverride: record.timeIntervalUnitOverride,
+    priceCents: record.priceCents,
+    laborHours: record.laborMinutes / 60,
+    priceOverrideCents: record.priceOverrideCents,
+    laborMinutesOverride: record.laborMinutesOverride,
+    notificationThreshold: record.notificationThreshold,
+    outreachThresholdType: record.outreachThresholdType,
+    outreachThresholdValue: record.outreachThresholdValue,
+    outreachStatus: record.outreachStatus,
+    outreachRecordId: record.outreachRecordId ?? undefined,
+    appointmentId: record.appointmentId ?? undefined,
+    isActive: record.isActive ?? true,
+    notes: record.notes ?? undefined,
+    createdByUserId: record.createdByUserId ?? undefined,
+    updatedByUserId: record.updatedByUserId ?? undefined,
+  };
+}
+
+function maintenanceStatusForDatabase(status: ReturnType<typeof resolveMaintenanceInterval>["status"]) {
+  return status === "NOT_ENOUGH_HISTORY" ? "HEALTHY" : status;
+}
+
+function isMaintenanceOpportunityEligible(status: ReturnType<typeof resolveMaintenanceInterval>["status"]) {
+  return ["DUE_SOON", "DUE", "OVERDUE"].includes(status);
+}
+
+function preserveRevenueStage({
+  existingStage,
+  recalculatedStage,
+  closingStage,
+}: {
+  existingStage?: "IDENTIFIED" | "CONTACTED" | "RESPONDED" | "BOOKED" | "COMPLETED" | "LOST";
+  recalculatedStage: "IDENTIFIED" | "CONTACTED" | "RESPONDED" | "BOOKED" | "COMPLETED" | "LOST";
+  closingStage?: "COMPLETED" | "LOST";
+}) {
+  if (closingStage) return closingStage;
+  if (!existingStage || ["COMPLETED", "LOST"].includes(existingStage)) return recalculatedStage;
+  if (["BOOKED", "COMPLETED", "LOST"].includes(recalculatedStage)) return recalculatedStage;
+  if (existingStage === "BOOKED") return "BOOKED";
+  if (existingStage === "RESPONDED") return "RESPONDED";
+  if (existingStage === "CONTACTED" && recalculatedStage === "IDENTIFIED") return "CONTACTED";
+  return recalculatedStage;
+}
 
 async function syncMaintenanceRevenueOpportunities(
   tx: OpportunitySyncClient,
@@ -282,13 +432,27 @@ async function syncMaintenanceRevenueOpportunities(
 
   const records = await tx.vehicleMaintenanceRecord.findMany({
     where: { id: { in: uniqueIds }, shopId: context.shopId },
-    include: { vehicle: true },
+    include: { vehicle: true, serviceDefinition: true },
   });
   const synced = [];
 
   for (const record of records) {
     assertSameShop(context, record.shopId);
     assertSameShop(context, record.vehicle.shopId);
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${context.shopId}:maintenance:${record.id}`}))`;
+    const effective = resolveMaintenanceInterval({
+      record: toStateMaintenanceRecord(record),
+      service: record.serviceDefinition ? toStateServiceDefinition(record.serviceDefinition) : undefined,
+      vehicle: toStateVehicle(record.vehicle),
+      asOf: new Date(),
+    });
+    const computedStatus = maintenanceStatusForDatabase(effective.status);
+    if (record.status !== computedStatus) {
+      await tx.vehicleMaintenanceRecord.update({
+        where: { id: record.id },
+        data: { status: computedStatus, updatedByUserId: context.userId },
+      });
+    }
     const existing = await tx.maintenanceRevenueOpportunity.findFirst({
       where: {
         shopId: context.shopId,
@@ -297,12 +461,17 @@ async function syncMaintenanceRevenueOpportunities(
       },
     });
 
-    if (record.status === "HEALTHY" || record.archivedAt || record.isActive === false) {
+    const eligible = isMaintenanceOpportunityEligible(effective.status);
+    if (!eligible || record.archivedAt || record.isActive === false) {
       if (existing && !["COMPLETED", "LOST"].includes(existing.stage)) {
         synced.push(await tx.maintenanceRevenueOpportunity.update({
           where: { id: existing.id },
           data: {
-            stage: record.archivedAt || record.isActive === false ? "LOST" : "COMPLETED",
+            stage: preserveRevenueStage({
+              existingStage: existing.stage,
+              recalculatedStage: "COMPLETED",
+              closingStage: record.archivedAt || record.isActive === false ? "LOST" : "COMPLETED",
+            }),
             explanation: record.archivedAt || record.isActive === false
               ? "Maintenance item was archived and no longer appears in the open queue."
               : "Maintenance item is no longer due.",
@@ -313,34 +482,32 @@ async function syncMaintenanceRevenueOpportunities(
       continue;
     }
 
-    const mileageInterval = record.recommendedMileageInterval ?? 0;
-    const timeIntervalMonths = record.recommendedTimeIntervalMonths ?? 0;
-    const dueMileage = mileageInterval > 0
-      ? (record.lastCompletedMileage ?? record.vehicle.currentMileage) + mileageInterval
-      : null;
-    const dueDate = record.lastCompletedDate && timeIntervalMonths > 0
-      ? addMonths(record.lastCompletedDate, timeIntervalMonths)
-      : null;
-    const milesOverdue = dueMileage ? Math.max(0, record.vehicle.currentMileage - dueMileage) : 0;
-    const daysLate = dueDate ? daysBetween(dueDate) : 0;
-    const source = record.status === "OVERDUE" || milesOverdue > 0 || daysLate > 0
+    if (existing && ["COMPLETED", "LOST"].includes(existing.stage)) {
+      continue;
+    }
+
+    const dueMileage = effective.nextDueMileage;
+    const dueDate = effective.nextDueDate ? dateFromDateOnly(effective.nextDueDate) : null;
+    const milesOverdue = effective.milesUntilDue !== null ? Math.max(0, -effective.milesUntilDue) : 0;
+    const daysLate = effective.daysUntilDue !== null ? Math.max(0, -effective.daysUntilDue) : 0;
+    const source = effective.status === "OVERDUE" || milesOverdue > 0 || daysLate > 0
       ? "OVERDUE_MAINTENANCE" as const
       : "DUE_MAINTENANCE" as const;
-    const stage = stageFromOutreach({
+    const recalculatedStage = stageFromOutreach({
       outreachStatus: record.outreachStatus,
       appointmentId: record.appointmentId,
-      completed: record.status === "COMPLETED",
     });
+    const stage = preserveRevenueStage({ existingStage: existing?.stage, recalculatedStage });
     const priority = priorityForOpportunity({
       source,
       daysOverdue: daysLate,
       milesOverdue,
-      estimatedRevenueCents: record.priceCents,
+      estimatedRevenueCents: effective.priceCents,
       booked: stage === "BOOKED" || stage === "COMPLETED",
     });
     const explanation = source === "OVERDUE_MAINTENANCE"
-      ? `${record.serviceName} is overdue for this vehicle.`
-      : `${record.serviceName} is due for this vehicle.`;
+      ? `${effective.serviceName} is overdue for this vehicle.`
+      : `${effective.serviceName} ${effective.dueText.toLowerCase()}.`;
     const data = {
       shopId: context.shopId,
       customerId: record.vehicle.customerId,
@@ -352,8 +519,8 @@ async function syncMaintenanceRevenueOpportunities(
       priority: priority.priority,
       explanation,
       priorityReason: priority.priorityReason,
-      estimatedRevenueCents: record.priceCents,
-      estimatedLaborMinutes: record.laborMinutes,
+      estimatedRevenueCents: effective.priceCents,
+      estimatedLaborMinutes: effective.laborMinutes,
       dueDate,
       dueMileage,
       daysOverdue: daysLate,
@@ -390,6 +557,7 @@ async function syncDeclinedWorkRevenueOpportunities(
     assertSameShop(context, record.shopId);
     assertSameShop(context, record.vehicle.shopId);
     if (record.vehicle.customerId !== record.customerId) continue;
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${context.shopId}:declined-work:${record.id}`}))`;
 
     const existing = await tx.maintenanceRevenueOpportunity.findFirst({
       where: {
@@ -1108,8 +1276,8 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
         serviceName: record.serviceName,
         customServiceName: record.customServiceName ?? undefined,
         customCategory: record.customCategory ?? undefined,
-        lastCompletedDate: dateOnly(record.lastCompletedDate || record.createdAt),
-        lastCompletedMileage: record.lastCompletedMileage ?? 0,
+        lastCompletedDate: dateOnly(record.lastCompletedDate) || null,
+        lastCompletedMileage: record.lastCompletedMileage,
         recommendedMileageInterval: record.recommendedMileageInterval,
         recommendedTimeIntervalMonths: record.recommendedTimeIntervalMonths,
         mileageIntervalOverride: record.mileageIntervalOverride ?? null,
@@ -1384,6 +1552,10 @@ export async function addPilotVehicle(context: AuthenticatedShopContext, input: 
         updatedByUserId: context.userId,
       })),
     });
+    const createdMaintenanceRecords = await tx.vehicleMaintenanceRecord.findMany({
+      where: { shopId: context.shopId, vehicleId: vehicle.id, isActive: true, archivedAt: null },
+      select: { id: true },
+    });
 
     if (parsed.currentMileage > 0) {
       const warningMessages = validationIssues
@@ -1405,6 +1577,11 @@ export async function addPilotVehicle(context: AuthenticatedShopContext, input: 
       });
       await recalculatePersistedDrivingProfile({ tx, context, vehicleId: vehicle.id });
     }
+    await syncMaintenanceRevenueOpportunities(
+      tx,
+      context,
+      createdMaintenanceRecords.map((record) => record.id),
+    );
   });
 }
 
@@ -1489,18 +1666,36 @@ export async function updatePilotServiceDefinition(
 ) {
   const existing = await requireServiceDefinitionInActiveShop(context, serviceDefinitionId);
   const parsed = serviceDefinitionSchema.partial().parse(input);
-  await prisma.serviceDefinition.update({
-    where: { id: serviceDefinitionId },
-    data: {
-      ...parsed,
-      defaultTimeIntervalMonths: parsed.defaultTimeIntervalValue !== undefined || parsed.defaultTimeIntervalUnit !== undefined
-        ? monthsFromTime(
-          parsed.defaultTimeIntervalValue ?? existing?.defaultTimeIntervalValue,
-          parsed.defaultTimeIntervalUnit ?? existing?.defaultTimeIntervalUnit,
-        )
-        : undefined,
-      description: parsed.description === undefined ? undefined : parsed.description || null,
-    },
+  await prisma.$transaction(async (tx) => {
+    await tx.serviceDefinition.update({
+      where: { id: serviceDefinitionId },
+      data: {
+        ...parsed,
+        defaultTimeIntervalMonths: parsed.defaultTimeIntervalValue !== undefined || parsed.defaultTimeIntervalUnit !== undefined
+          ? monthsFromTime(
+            parsed.defaultTimeIntervalValue ?? existing?.defaultTimeIntervalValue,
+            parsed.defaultTimeIntervalUnit ?? existing?.defaultTimeIntervalUnit,
+          )
+          : undefined,
+        description: parsed.description === undefined ? undefined : parsed.description || null,
+      },
+    });
+    const inheritedMaintenanceRecords = await tx.vehicleMaintenanceRecord.findMany({
+      where: {
+        shopId: context.shopId,
+        serviceDefinitionId,
+        isActive: true,
+        archivedAt: null,
+        mileageIntervalOverride: null,
+        timeIntervalValueOverride: null,
+      },
+      select: { id: true },
+    });
+    await syncMaintenanceRevenueOpportunities(
+      tx,
+      context,
+      inheritedMaintenanceRecords.map((record) => record.id),
+    );
   });
 }
 
@@ -1567,35 +1762,39 @@ export async function addPilotMaintenanceItem(context: AuthenticatedShopContext,
   const timeUnitOverride = useDefaults ? null : parsed.timeIntervalUnitOverride ?? null;
   const priceOverride = useDefaults ? null : parsed.priceOverrideCents ?? null;
   const laborOverride = useDefaults ? null : parsed.laborMinutesOverride ?? null;
-  const maintenance = await prisma.vehicleMaintenanceRecord.create({
-    data: {
-      shopId: context.shopId,
-      vehicleId: vehicle.id,
-      serviceDefinitionId: service?.id ?? null,
-      serviceName: service?.name ?? parsed.customServiceName?.trim() ?? "Custom service",
-      customServiceName: service ? null : parsed.customServiceName?.trim() ?? null,
-      customCategory: service ? null : parsed.customCategory || "Custom",
-      lastCompletedDate: parsed.lastCompletedDate ? new Date(parsed.lastCompletedDate) : null,
-      lastCompletedMileage: parsed.lastCompletedMileage ?? null,
-      recommendedMileageInterval: mileageOverride,
-      recommendedTimeIntervalMonths: monthsFromTime(timeValueOverride, timeUnitOverride),
-      mileageIntervalOverride: mileageOverride,
-      timeIntervalValueOverride: timeValueOverride,
-      timeIntervalUnitOverride: timeUnitOverride,
-      notificationThreshold: 10,
-      outreachThresholdType: parsed.outreachThresholdType,
-      outreachThresholdValue: parsed.outreachThresholdValue,
-      priceCents: priceOverride ?? service?.defaultPriceCents ?? parsed.priceOverrideCents ?? 0,
-      laborMinutes: laborOverride ?? service?.estimatedLaborMinutes ?? parsed.laborMinutesOverride ?? 0,
-      priceOverrideCents: priceOverride,
-      laborMinutesOverride: laborOverride,
-      status: "HEALTHY",
-      outreachStatus: "NEEDS_OUTREACH",
-      isActive: true,
-      notes: parsed.notes || null,
-      createdByUserId: context.userId,
-      updatedByUserId: context.userId,
-    },
+  const maintenance = await prisma.$transaction(async (tx) => {
+    const created = await tx.vehicleMaintenanceRecord.create({
+      data: {
+        shopId: context.shopId,
+        vehicleId: vehicle.id,
+        serviceDefinitionId: service?.id ?? null,
+        serviceName: service?.name ?? parsed.customServiceName?.trim() ?? "Custom service",
+        customServiceName: service ? null : parsed.customServiceName?.trim() ?? null,
+        customCategory: service ? null : parsed.customCategory || "Custom",
+        lastCompletedDate: parsed.lastCompletedDate ? new Date(parsed.lastCompletedDate) : null,
+        lastCompletedMileage: parsed.lastCompletedMileage ?? null,
+        recommendedMileageInterval: mileageOverride,
+        recommendedTimeIntervalMonths: monthsFromTime(timeValueOverride, timeUnitOverride),
+        mileageIntervalOverride: mileageOverride,
+        timeIntervalValueOverride: timeValueOverride,
+        timeIntervalUnitOverride: timeUnitOverride,
+        notificationThreshold: 10,
+        outreachThresholdType: parsed.outreachThresholdType,
+        outreachThresholdValue: parsed.outreachThresholdValue,
+        priceCents: priceOverride ?? service?.defaultPriceCents ?? parsed.priceOverrideCents ?? 0,
+        laborMinutes: laborOverride ?? service?.estimatedLaborMinutes ?? parsed.laborMinutesOverride ?? 0,
+        priceOverrideCents: priceOverride,
+        laborMinutesOverride: laborOverride,
+        status: "HEALTHY",
+        outreachStatus: "NEEDS_OUTREACH",
+        isActive: true,
+        notes: parsed.notes || null,
+        createdByUserId: context.userId,
+        updatedByUserId: context.userId,
+      },
+    });
+    await syncMaintenanceRevenueOpportunities(tx, context, [created.id]);
+    return created;
   });
   assertSameShop(context, maintenance.shopId);
 }
@@ -1609,31 +1808,34 @@ export async function updatePilotMaintenanceItem(
   const parsed = maintenanceItemUpdateSchema.parse(input);
   const clearOverrides = parsed.useShopDefaults === true;
 
-  await prisma.vehicleMaintenanceRecord.update({
-    where: { id: maintenanceRecordId },
-    data: {
-      recommendedMileageInterval: clearOverrides ? null : parsed.mileageIntervalOverride,
-      recommendedTimeIntervalMonths: clearOverrides
-        ? null
-        : parsed.timeIntervalValueOverride !== undefined || parsed.timeIntervalUnitOverride !== undefined
-          ? monthsFromTime(
-            parsed.timeIntervalValueOverride ?? existing.timeIntervalValueOverride,
-            parsed.timeIntervalUnitOverride ?? existing.timeIntervalUnitOverride,
-          )
-          : undefined,
-      mileageIntervalOverride: clearOverrides ? null : parsed.mileageIntervalOverride,
-      timeIntervalValueOverride: clearOverrides ? null : parsed.timeIntervalValueOverride,
-      timeIntervalUnitOverride: clearOverrides ? null : parsed.timeIntervalUnitOverride,
-      priceOverrideCents: clearOverrides ? null : parsed.priceOverrideCents,
-      laborMinutesOverride: clearOverrides ? null : parsed.laborMinutesOverride,
-      lastCompletedDate: parsed.lastCompletedDate ? new Date(parsed.lastCompletedDate) : undefined,
-      lastCompletedMileage: parsed.lastCompletedMileage,
-      outreachThresholdType: parsed.outreachThresholdType,
-      outreachThresholdValue: parsed.outreachThresholdValue,
-      notes: parsed.notes,
-      updatedByUserId: context.userId,
-      outreachStatus: "NEEDS_OUTREACH",
-    },
+  await prisma.$transaction(async (tx) => {
+    await tx.vehicleMaintenanceRecord.update({
+      where: { id: maintenanceRecordId },
+      data: {
+        recommendedMileageInterval: clearOverrides ? null : parsed.mileageIntervalOverride,
+        recommendedTimeIntervalMonths: clearOverrides
+          ? null
+          : parsed.timeIntervalValueOverride !== undefined || parsed.timeIntervalUnitOverride !== undefined
+            ? monthsFromTime(
+              parsed.timeIntervalValueOverride ?? existing.timeIntervalValueOverride,
+              parsed.timeIntervalUnitOverride ?? existing.timeIntervalUnitOverride,
+            )
+            : undefined,
+        mileageIntervalOverride: clearOverrides ? null : parsed.mileageIntervalOverride,
+        timeIntervalValueOverride: clearOverrides ? null : parsed.timeIntervalValueOverride,
+        timeIntervalUnitOverride: clearOverrides ? null : parsed.timeIntervalUnitOverride,
+        priceOverrideCents: clearOverrides ? null : parsed.priceOverrideCents,
+        laborMinutesOverride: clearOverrides ? null : parsed.laborMinutesOverride,
+        lastCompletedDate: parsed.lastCompletedDate ? new Date(parsed.lastCompletedDate) : undefined,
+        lastCompletedMileage: parsed.lastCompletedMileage,
+        outreachThresholdType: parsed.outreachThresholdType,
+        outreachThresholdValue: parsed.outreachThresholdValue,
+        notes: parsed.notes,
+        updatedByUserId: context.userId,
+        outreachStatus: "NEEDS_OUTREACH",
+      },
+    });
+    await syncMaintenanceRevenueOpportunities(tx, context, [maintenanceRecordId]);
   });
 }
 
@@ -1797,6 +1999,18 @@ export async function markPilotMaintenanceServiceComplete(
       },
     });
     await recalculatePersistedDrivingProfile({ tx, context, vehicleId: record.vehicleId });
+    const activeMaintenanceRecords = await tx.vehicleMaintenanceRecord.findMany({
+      where: { shopId: context.shopId, vehicleId: record.vehicleId, isActive: true, archivedAt: null },
+      select: { id: true },
+    });
+    await syncMaintenanceRevenueOpportunities(
+      tx,
+      context,
+      [
+        record.id,
+        ...activeMaintenanceRecords.map((item) => item.id),
+      ],
+    );
   });
 }
 
@@ -1952,7 +2166,20 @@ export async function updatePilotVehicleMileage(context: AuthenticatedShopContex
     reading.readingMileage === parsed.currentMileage &&
     reading.source === source,
   );
-  if (duplicateReading) return;
+  if (duplicateReading) {
+    await prisma.$transaction(async (tx) => {
+      const activeMaintenanceRecords = await tx.vehicleMaintenanceRecord.findMany({
+        where: { shopId: context.shopId, vehicleId: vehicle.id, isActive: true, archivedAt: null },
+        select: { id: true },
+      });
+      await syncMaintenanceRevenueOpportunities(
+        tx,
+        context,
+        activeMaintenanceRecords.map((record) => record.id),
+      );
+    });
+    return;
+  }
 
   await prisma.$transaction(async (tx) => {
     const warningMessages = validationIssues
@@ -2002,6 +2229,15 @@ export async function updatePilotVehicleMileage(context: AuthenticatedShopContex
       },
     });
     await recalculatePersistedDrivingProfile({ tx, context, vehicleId: vehicle.id });
+    const activeMaintenanceRecords = await tx.vehicleMaintenanceRecord.findMany({
+      where: { shopId: context.shopId, vehicleId: vehicle.id, isActive: true, archivedAt: null },
+      select: { id: true },
+    });
+    await syncMaintenanceRevenueOpportunities(
+      tx,
+      context,
+      activeMaintenanceRecords.map((record) => record.id),
+    );
   });
 }
 
@@ -2245,7 +2481,18 @@ export async function recordPilotInspection(context: AuthenticatedShopContext, i
       }
     }
 
-    await syncMaintenanceRevenueOpportunities(tx, context, touchedMaintenanceRecordIds);
+    const activeMaintenanceRecords = await tx.vehicleMaintenanceRecord.findMany({
+      where: { shopId: context.shopId, vehicleId: vehicle.id, isActive: true, archivedAt: null },
+      select: { id: true },
+    });
+    await syncMaintenanceRevenueOpportunities(
+      tx,
+      context,
+      [
+        ...touchedMaintenanceRecordIds,
+        ...activeMaintenanceRecords.map((record) => record.id),
+      ],
+    );
     await syncDeclinedWorkRevenueOpportunities(tx, context, touchedDeclinedWorkRecordIds);
     await tx.auditLog.create({
       data: {
@@ -2667,6 +2914,7 @@ export async function importPilotCsvRows(
     const customerByKey = new Map<string, { id: string; firstName: string; lastName: string; email: string | null; phone: string | null }>();
     const vehicleByKey = new Map<string, { id: string; customerId: string; year: number; make: string; model: string; vin: string | null; currentMileage: number; licensePlate: string | null }>();
     const importedMileageKeys = new Set<string>();
+    const touchedVehicleIds = new Set<string>();
     const touchedMaintenanceRecordIds: string[] = [];
     const touchedDeclinedWorkRecordIds: string[] = [];
 
@@ -2765,6 +3013,7 @@ export async function importPilotCsvRows(
         continue;
       }
       if (row.entities.vehicle.key) vehicleByKey.set(row.entities.vehicle.key, vehicle);
+      touchedVehicleIds.add(vehicle.id);
 
       const serviceName = stringValue(normalized, "serviceName") || stringValue(normalized, "services");
       const priceCents = numberValue(normalized, "price");
@@ -2985,7 +3234,23 @@ export async function importPilotCsvRows(
       },
     });
 
-    await syncMaintenanceRevenueOpportunities(tx, context, touchedMaintenanceRecordIds);
+    const touchedVehicleMaintenanceRecords = await tx.vehicleMaintenanceRecord.findMany({
+      where: {
+        shopId: context.shopId,
+        vehicleId: { in: Array.from(touchedVehicleIds) },
+        isActive: true,
+        archivedAt: null,
+      },
+      select: { id: true },
+    });
+    await syncMaintenanceRevenueOpportunities(
+      tx,
+      context,
+      [
+        ...touchedMaintenanceRecordIds,
+        ...touchedVehicleMaintenanceRecords.map((record) => record.id),
+      ],
+    );
     await syncDeclinedWorkRevenueOpportunities(tx, context, touchedDeclinedWorkRecordIds);
 
     await tx.importRowRecord.createMany({

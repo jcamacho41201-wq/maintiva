@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const prismaMock = vi.hoisted(() => ({
+  $executeRaw: vi.fn(),
+  $transaction: vi.fn(),
   serviceDefinition: {
     findUnique: vi.fn(),
     findFirst: vi.fn(),
@@ -13,6 +15,12 @@ const prismaMock = vi.hoisted(() => ({
   },
   vehicleMaintenanceRecord: {
     findUnique: vi.fn(),
+    findFirst: vi.fn(),
+    findMany: vi.fn(),
+    create: vi.fn(),
+    update: vi.fn(),
+  },
+  maintenanceRevenueOpportunity: {
     findFirst: vi.fn(),
     create: vi.fn(),
     update: vi.fn(),
@@ -56,6 +64,9 @@ const advisorContext: AuthenticatedShopContext = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  prismaMock.$executeRaw.mockResolvedValue(0);
+  prismaMock.$transaction.mockImplementation((callback) => callback(prismaMock));
+  prismaMock.vehicleMaintenanceRecord.findMany.mockResolvedValue([]);
 });
 
 describe("service shop authorization", () => {
