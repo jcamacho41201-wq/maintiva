@@ -390,6 +390,14 @@ export function previewImport({
       if (Number.isNaN(normalized.price) || normalized.price <= 0) errors.push("Service price must be positive.");
       if (Number.isNaN(normalized.laborHours) || normalized.laborHours <= 0) errors.push("Labor hours must be positive.");
     }
+    if (
+      ["SERVICE_HISTORY", "COMBINED"].includes(importType) &&
+      (normalized.serviceName || normalized.services) &&
+      (normalized.serviceMileage > 0 || normalized.currentMileage > 0) &&
+      !normalized.serviceDate
+    ) {
+      errors.push("Reading Date is required when importing mileage history.");
+    }
     if (importType === "SERVICE_HISTORY" && !normalized.serviceDate) errors.push("Service date is invalid.");
     if (importType === "DECLINED_WORK" && !normalized.declinedDate) errors.push("Declined date is invalid.");
     if (importType === "APPOINTMENTS" && (!normalized.appointmentDate || !normalized.appointmentTime)) errors.push("Appointment date and time are required.");

@@ -10,6 +10,7 @@ import {
   getRecommendedRecords,
   vehicleLabel,
 } from "@/lib/demo-calculations";
+import { formatInterval, resolveMaintenanceInterval } from "@/lib/service-intervals";
 
 const dayMs = 86_400_000;
 
@@ -280,7 +281,7 @@ function buildPersistedRevenueOpportunities(state: DemoState): RevenueOpportunit
         serviceNames: [serviceName],
         maintenanceRecordId: opportunity.maintenanceRecordId,
         declinedWorkRecordId: opportunity.declinedWorkRecordId,
-        serviceDefinitionId: maintenanceRecord?.serviceId,
+        serviceDefinitionId: maintenanceRecord?.serviceId ?? undefined,
         sourceRecordId,
         sourceType: opportunity.declinedWorkRecordId ? "DeclinedWorkRecord" : "VehicleMaintenanceRecord",
         explanation: opportunity.explanation,
@@ -332,6 +333,8 @@ function buildDerivedDemoRevenueOpportunities(state: DemoState): RevenueOpportun
     if (!vehicle) return null;
     const appointment = appointmentForRecord(state, record);
     const outreach = state.outreachRecords.find((item) => item.id === record.outreachRecordId);
+    const service = state.services.find((item) => item.id === record.serviceId);
+    const effective = resolveMaintenanceInterval({ record, service, vehicle });
     const source: OpportunitySource =
       calculation.status === "OVERDUE" ? "OVERDUE_MAINTENANCE" : "DUE_MAINTENANCE";
     const daysOverdue = Math.max(0, -calculation.daysUntilDue);
@@ -340,7 +343,7 @@ function buildDerivedDemoRevenueOpportunities(state: DemoState): RevenueOpportun
       source,
       daysOverdue,
       milesOverdue,
-      estimatedRevenueCents: record.priceCents,
+      estimatedRevenueCents: effective.priceCents,
       outreachStatus: record.outreachStatus,
     });
 
@@ -355,22 +358,24 @@ function buildDerivedDemoRevenueOpportunities(state: DemoState): RevenueOpportun
       sourceLabel: sourceLabel(source),
       serviceNames: [record.serviceName],
       maintenanceRecordId: record.id,
-      serviceDefinitionId: record.serviceId,
+      serviceDefinitionId: record.serviceId ?? undefined,
       sourceRecordId: record.id,
       sourceType: "VehicleMaintenanceRecord",
-      explanation:
-        calculation.status === "OVERDUE"
-          ? `${record.serviceName} ${calculation.dueText.toLowerCase()} based on ${record.recommendedMileageInterval.toLocaleString()}-mile or ${record.recommendedTimeIntervalMonths}-month interval.`
-          : `${record.serviceName} due now based on ${record.recommendedMileageInterval.toLocaleString()}-mile interval.`,
+      explanation: `${effective.serviceName} ${effective.dueText.toLowerCase()} based on ${formatInterval(
+        effective.mileageInterval,
+        effective.timeIntervalValue,
+        effective.timeIntervalUnit,
+      )}.`,
       ...priority,
       lastServiceDate: record.lastCompletedDate,
       lastServiceMileage: record.lastCompletedMileage,
       currentMileage: vehicle.currentMileage,
-      dueMileage: record.lastCompletedMileage + record.recommendedMileageInterval,
+      dueDate: effective.nextDueDate ?? undefined,
+      dueMileage: effective.nextDueMileage ?? undefined,
       daysOverdue,
       milesOverdue,
-      estimatedRevenueCents: record.priceCents,
-      estimatedLaborHours: record.laborHours,
+      estimatedRevenueCents: effective.priceCents,
+      estimatedLaborHours: effective.laborMinutes / 60,
       outreachStatus: record.outreachStatus,
       appointmentStatus: appointment?.status ?? "UNSCHEDULED",
       stage: stageFor({

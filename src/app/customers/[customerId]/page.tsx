@@ -16,7 +16,7 @@ import {
 import { getOpenRevenueOpportunitiesForCustomer, type RevenueOpportunity } from "@/lib/revenue-recovery";
 import { useDemoStore } from "@/lib/demo-store";
 import { type Customer, type Vehicle } from "@/lib/demo-data";
-import { formatCurrency, formatDate } from "@/lib/utils";
+import { currentDateInTimeZone, formatCurrency, formatDate } from "@/lib/utils";
 
 function editableCustomerFields(customer: Customer) {
   return {
@@ -105,7 +105,7 @@ export default function CustomerDetailPage() {
     setError("");
   }
 
-  function saveVehicle(vehicle: Vehicle, input: Partial<Vehicle>) {
+  function saveVehicle(vehicle: Vehicle, input: Partial<Vehicle> & { mileageReadingDate?: string }) {
     if (!String(input.make ?? "").trim() || !String(input.model ?? "").trim()) {
       setError("Vehicle make and model are required.");
       return;
@@ -128,6 +128,7 @@ export default function CustomerDetailPage() {
       trim: String(data.get("trim")),
       currentMileage: Number(data.get("currentMileage")),
       estimatedAnnualMileage: Number(data.get("estimatedAnnualMileage")),
+      initialMileageReadingDate: String(data.get("initialMileageReadingDate")),
     };
     if (!input.make.trim() || !input.model.trim() || !input.vin.trim()) {
       setError("Vehicle make, model, and VIN are required.");
@@ -322,7 +323,12 @@ export default function CustomerDetailPage() {
                   </button>
                 </div>
                 {editingVehicleId === vehicle.id && (
-                  <VehicleEditForm vehicle={vehicle} onCancel={() => setEditingVehicleId(null)} onSave={(input) => saveVehicle(vehicle, input)} />
+                  <VehicleEditForm
+                    vehicle={vehicle}
+                    shopTimezone={state.shop.timezone}
+                    onCancel={() => setEditingVehicleId(null)}
+                    onSave={(input) => saveVehicle(vehicle, input)}
+                  />
                 )}
               </CardContent>
             </Card>
@@ -355,12 +361,46 @@ export default function CustomerDetailPage() {
               </button>
             </div>
             <div className="grid gap-4 p-5 sm:grid-cols-2">
-              {Object.entries(emptyVehicleForm(customer.id)).filter(([key]) => key !== "customerId").map(([key, value]) => (
-                <label key={key} className="text-sm font-medium">
-                  {key.replace(/([A-Z])/g, " $1").replace(/^\w/, (letter) => letter.toUpperCase())}
-                  <input name={key} defaultValue={value} type={typeof value === "number" ? "number" : "text"} className="mt-2 h-10 w-full rounded-lg border border-zinc-200 px-3 outline-none focus:border-violet-500" />
+              {Object.entries(emptyVehicleForm(customer.id)).filter(([key]) => key !== "customerId").map(([key, value]) => {
+                const isCustomerEstimate = key === "estimatedAnnualMileage";
+                return (
+                  <label key={key} className="text-sm font-medium">
+                    {isCustomerEstimate
+                      ? "Customer's Driving Estimate"
+                      : key.replace(/([A-Z])/g, " $1").replace(/^\w/, (letter) => letter.toUpperCase())}
+                    <input
+                      name={key}
+                      defaultValue={value}
+                      type={typeof value === "number" ? "number" : "text"}
+                      list={isCustomerEstimate ? "annual-mileage-estimates" : undefined}
+                      className="mt-2 h-10 w-full rounded-lg border border-zinc-200 px-3 outline-none focus:border-violet-500"
+                    />
+                    {isCustomerEstimate && (
+                      <span className="mt-1 block text-xs font-normal text-zinc-500">
+                        About how many miles do you drive each year?
+                      </span>
+                    )}
+                  </label>
+                );
+              })}
+              <datalist id="annual-mileage-estimates">
+                <option value="6000" />
+                <option value="12000" />
+                <option value="18000" />
+                <option value="24000" />
+              </datalist>
+                <label className="text-sm font-medium">
+                  Reading Date
+                  <input
+                    name="initialMileageReadingDate"
+                    type="date"
+                    required
+                    max={currentDateInTimeZone(state.shop.timezone)}
+                    defaultValue={currentDateInTimeZone(state.shop.timezone)}
+                    className="mt-2 h-10 w-full rounded-lg border border-zinc-200 px-3 outline-none focus:border-violet-500"
+                  />
+                  <span className="mt-1 block text-xs font-normal text-zinc-500">The date this odometer reading was observed.</span>
                 </label>
-              ))}
             </div>
             <div className="flex justify-end gap-2 border-t border-zinc-100 p-5">
               <button type="button" onClick={() => setAddingVehicle(false)} className="rounded-lg border border-zinc-200 px-4 py-2 text-sm font-semibold">Cancel</button>
@@ -437,19 +477,23 @@ function CustomerEditModal({
 
 function VehicleEditForm({
   vehicle,
+  shopTimezone,
   onCancel,
   onSave,
 }: {
   vehicle: Vehicle;
+  shopTimezone: string;
   onCancel: () => void;
-  onSave: (input: Partial<Vehicle>) => void;
+  onSave: (input: Partial<Vehicle> & { mileageReadingDate?: string }) => void;
 }) {
+  const today = currentDateInTimeZone(shopTimezone);
   const [form, setForm] = useState({
     year: vehicle.year,
     make: vehicle.make,
     model: vehicle.model,
     vin: vehicle.vin,
     currentMileage: vehicle.currentMileage,
+    mileageReadingDate: today,
   });
 
   return (
@@ -460,6 +504,18 @@ function VehicleEditForm({
         <input value={form.model} onChange={(event) => setForm({ ...form, model: event.target.value })} className="h-10 rounded-lg border border-zinc-200 px-3 outline-none focus:border-violet-500" />
         <input value={form.vin} onChange={(event) => setForm({ ...form, vin: event.target.value })} className="h-10 rounded-lg border border-zinc-200 px-3 outline-none focus:border-violet-500" />
         <input value={form.currentMileage} type="number" onChange={(event) => setForm({ ...form, currentMileage: Number(event.target.value) })} className="h-10 rounded-lg border border-zinc-200 px-3 outline-none focus:border-violet-500" />
+        <label className="text-sm font-medium">
+          Reading Date
+          <input
+            value={form.mileageReadingDate}
+            type="date"
+            required
+            max={today}
+            onChange={(event) => setForm({ ...form, mileageReadingDate: event.target.value })}
+            className="mt-2 h-10 w-full rounded-lg border border-zinc-200 px-3 outline-none focus:border-violet-500"
+          />
+          <span className="mt-1 block text-xs font-normal text-zinc-500">The date this odometer reading was observed.</span>
+        </label>
       </div>
       <div className="mt-3 flex gap-2">
         <button onClick={() => onSave(form)} className="rounded-lg bg-violet-950 px-3 py-2 text-sm font-semibold text-white">Save vehicle</button>

@@ -16,15 +16,14 @@ describe("pilot workflow flow", () => {
     expect(metrics.openBayCapacityHours).toBe(62);
   });
 
-  it("shows Justin's Jeep with three open recommended services and clear due text", () => {
+  it("shows Justin's Jeep with open recommended services and clear due text", () => {
     const state = createInitialDemoState();
     const jeepRecords = getRecommendedRecords(state, "veh-jeep").filter(
       ({ record }) => record.outreachStatus !== "SCHEDULED",
     );
 
-    expect(jeepRecords).toHaveLength(3);
+    expect(jeepRecords).toHaveLength(2);
     expect(jeepRecords.map(({ record }) => record.serviceName)).toEqual(expect.arrayContaining([
-      "Brake Pads",
       "Cabin Air Filter",
       "Oil Change",
     ]));

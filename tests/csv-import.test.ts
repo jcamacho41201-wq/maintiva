@@ -181,6 +181,22 @@ describe("CSV import workflow", () => {
     expect(summary.vehiclesToCreate).toBe(1);
   });
 
+  it("holds service-history mileage rows when the historical reading date is missing", () => {
+    const rows = parseCsv(
+      "First Name,Last Name,Email,VIN,Year,Make,Model,Current Mileage,Service Name,Service Mileage,Price,Labor Hours\nNia,Stone,nia@example.com,1FMCU0GD5KUA00001,2019,Ford,Escape,50000,Oil Change,50000,90,0.5",
+    );
+    const preview = previewImport({
+      rows,
+      mapping: detectColumnMapping(Object.keys(rows[0])),
+      importType: "COMBINED",
+      state: createInitialDemoState(),
+    });
+
+    expect(preview.rows[0].status).toBe("INVALID");
+    expect(preview.rows[0].errors).toContain("Reading Date is required when importing mileage history.");
+    expect(summarizeImport(preview.rows).heldRows).toBe(1);
+  });
+
   it("exports rejected rows as a downloadable error report", () => {
     const rows = parseCsv("Full Name,Email\nBroken,bad-email");
     const preview = previewImport({
