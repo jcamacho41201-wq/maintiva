@@ -203,9 +203,81 @@ describe("editable vehicle service intervals", () => {
     expect(overdueByTime.thresholdCause).toBe("time");
   });
 
+  it("uses <= for the configured mileage lead threshold without requiring the time threshold", () => {
+    const wrx: Vehicle = {
+      ...vehicle,
+      id: "veh-wrx",
+      year: 2018,
+      make: "Subaru",
+      model: "WRX Premium",
+      currentMileage: 121_500,
+    };
+    const acDiagnostic: MaintenanceService = {
+      ...service,
+      id: "svc-ac",
+      name: "A/C Diagnostic",
+      defaultMileageInterval: 1_940,
+      defaultTimeIntervalValue: 24,
+      defaultTimeIntervalMonths: 24,
+      defaultPriceCents: 14_900,
+      estimatedLaborMinutes: 60,
+    };
+    const outside = resolveMaintenanceInterval({
+      record: record({
+        serviceId: acDiagnostic.id,
+        serviceName: acDiagnostic.name,
+        lastCompletedDate: "2026-07-01",
+        lastCompletedMileage: 120_000,
+        outreachThresholdValue: 500,
+      }),
+      service: acDiagnostic,
+      vehicle: { ...wrx, currentMileage: 121_000 },
+      asOf,
+    });
+    const inside = resolveMaintenanceInterval({
+      record: record({
+        serviceId: acDiagnostic.id,
+        serviceName: acDiagnostic.name,
+        lastCompletedDate: "2026-07-01",
+        lastCompletedMileage: 120_000,
+        outreachThresholdValue: 500,
+      }),
+      service: acDiagnostic,
+      vehicle: wrx,
+      asOf,
+    });
+
+    expect(outside.nextDueMileage).toBe(121_940);
+    expect(outside.milesUntilDue).toBe(940);
+    expect(outside.status).toBe("HEALTHY");
+    expect(inside.nextDueMileage).toBe(121_940);
+    expect(inside.milesUntilDue).toBe(440);
+    expect(inside.status).toBe("DUE_SOON");
+    expect(inside.thresholdCause).toBe("mileage");
+  });
+
+  it("uses <= for the configured time lead threshold without requiring the mileage threshold", () => {
+    const timeBased = resolveMaintenanceInterval({
+      record: record({
+        lastCompletedDate: "2026-02-28",
+        lastCompletedMileage: 10_000,
+        outreachThresholdType: "DAYS_BEFORE_DUE",
+        outreachThresholdValue: 30,
+      }),
+      service,
+      vehicle: { ...vehicle, currentMileage: 10_200 },
+      asOf: new Date("2026-07-29T12:00:00Z"),
+    });
+
+    expect(timeBased.daysUntilDue).toBeLessThanOrEqual(30);
+    expect(timeBased.milesUntilDue).toBeGreaterThan(500);
+    expect(timeBased.status).toBe("DUE_SOON");
+    expect(timeBased.thresholdCause).toBe("time");
+  });
+
   it("does not invent due mileage or date when history is missing", () => {
     const missing = resolveMaintenanceInterval({
-      record: record({ lastCompletedDate: "", lastCompletedMileage: 0 }),
+      record: record({ lastCompletedDate: null, lastCompletedMileage: null }),
       service,
       vehicle: { ...vehicle, currentMileage: 0 },
       asOf,

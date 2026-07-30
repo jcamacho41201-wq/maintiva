@@ -148,8 +148,8 @@ export type VehicleMaintenanceRecord = {
   serviceName: string;
   customServiceName?: string;
   customCategory?: string;
-  lastCompletedDate: string;
-  lastCompletedMileage: number;
+  lastCompletedDate: string | null;
+  lastCompletedMileage: number | null;
   recommendedMileageInterval?: number | null;
   recommendedTimeIntervalMonths?: number | null;
   mileageIntervalOverride?: number | null;

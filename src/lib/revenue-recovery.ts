@@ -118,8 +118,7 @@ function priorityFor(input: {
   if (
     input.source === "DECLINED_WORK" ||
     input.daysOverdue >= 30 ||
-    input.milesOverdue >= 1000 ||
-    input.estimatedRevenueCents >= 30000
+    input.milesOverdue >= 1000
   ) {
     return {
       priority: "HIGH" as const,
@@ -287,8 +286,8 @@ function buildPersistedRevenueOpportunities(state: DemoState): RevenueOpportunit
         explanation: opportunity.explanation,
         priority: opportunity.priority,
         priorityReason: opportunity.priorityReason,
-        lastServiceDate: declinedWorkRecord?.declinedAt ?? maintenanceRecord?.lastCompletedDate,
-        lastServiceMileage: maintenanceRecord?.lastCompletedMileage,
+        lastServiceDate: declinedWorkRecord?.declinedAt ?? maintenanceRecord?.lastCompletedDate ?? undefined,
+        lastServiceMileage: maintenanceRecord?.lastCompletedMileage ?? undefined,
         currentMileage: vehicle.currentMileage,
         dueDate: opportunity.dueDate,
         dueMileage: opportunity.dueMileage,
@@ -367,8 +366,8 @@ function buildDerivedDemoRevenueOpportunities(state: DemoState): RevenueOpportun
         effective.timeIntervalUnit,
       )}.`,
       ...priority,
-      lastServiceDate: record.lastCompletedDate,
-      lastServiceMileage: record.lastCompletedMileage,
+      lastServiceDate: record.lastCompletedDate ?? undefined,
+      lastServiceMileage: record.lastCompletedMileage ?? undefined,
       currentMileage: vehicle.currentMileage,
       dueDate: effective.nextDueDate ?? undefined,
       dueMileage: effective.nextDueMileage ?? undefined,
@@ -383,8 +382,8 @@ function buildDerivedDemoRevenueOpportunities(state: DemoState): RevenueOpportun
         appointment,
         responseStatus: outreach?.responseStatus,
       }),
-      createdAt: record.lastCompletedDate,
-      lastActivityAt: outreach?.sentAt ?? appointment?.scheduledStart ?? record.lastCompletedDate,
+      createdAt: record.lastCompletedDate ?? asOfDate.toISOString(),
+      lastActivityAt: outreach?.sentAt ?? appointment?.scheduledStart ?? record.lastCompletedDate ?? asOfDate.toISOString(),
     };
   });
 

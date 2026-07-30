@@ -44,7 +44,6 @@ export function statusVariant(status: string) {
     return "green" as const;
   }
   if (
-    status === "DUE_SOON" ||
     status === "REQUESTED" ||
     status === "WATCHLIST" ||
     status === "DRAFTED" ||
@@ -56,14 +55,17 @@ export function statusVariant(status: string) {
     return "yellow" as const;
   }
   if (
+    status === "DUE_SOON" ||
+    status === "DUE" ||
     status === "OVERDUE" ||
     status === "NO_RESPONSE" ||
-    status === "DUE" ||
     status === "DECLINED" ||
     status === "FAILED" ||
     status === "DO_NOT_CONTACT"
   ) {
-    return "red" as const;
+    return status === "OVERDUE" || status === "NO_RESPONSE" || status === "FAILED" || status === "DO_NOT_CONTACT"
+      ? "red" as const
+      : "orange" as const;
   }
   if (status === "PAUSED" || status === "SNOOZED" || status === "NOT_NOW") {
     return "orange" as const;
