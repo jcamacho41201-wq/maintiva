@@ -10,6 +10,7 @@ import {
   type ImportHistoryRecord,
   type MaintenanceService,
   type OutreachRecord,
+  type RevenueOpportunityRecord,
   type Vehicle,
   type VehicleMaintenanceRecord,
 } from "@/lib/demo-data";
@@ -67,6 +68,243 @@ function appointmentDateTime(date: string, time: string) {
   if (!date || !time) return undefined;
   const parsed = new Date(`${date}T${time}:00`);
   return Number.isNaN(parsed.getTime()) ? undefined : parsed;
+}
+
+function addMonths(date: Date, months: number) {
+  const next = new Date(date);
+  next.setMonth(next.getMonth() + months);
+  return next;
+}
+
+function daysBetween(start: Date, end = new Date()) {
+  return Math.max(0, Math.floor((end.getTime() - start.getTime()) / 86_400_000));
+}
+
+function priorityForOpportunity(input: {
+  source: "DUE_MAINTENANCE" | "OVERDUE_MAINTENANCE" | "DECLINED_WORK";
+  daysOverdue: number;
+  milesOverdue: number;
+  estimatedRevenueCents: number;
+  booked: boolean;
+}) {
+  if (input.booked) {
+    return {
+      priority: "LOW" as const,
+      priorityReason: "Appointment already booked.",
+    };
+  }
+  if (
+    input.source === "DECLINED_WORK" ||
+    input.daysOverdue >= 30 ||
+    input.milesOverdue >= 1000 ||
+    input.estimatedRevenueCents >= 30000
+  ) {
+    return {
+      priority: "HIGH" as const,
+      priorityReason:
+        input.source === "DECLINED_WORK"
+          ? "Previously declined work is recoverable and ready for advisor follow-up."
+          : "High urgency or value based on overdue severity and estimated revenue.",
+    };
+  }
+  if (input.daysOverdue > 0 || input.milesOverdue > 0 || input.estimatedRevenueCents >= 10000) {
+    return {
+      priority: "MEDIUM" as const,
+      priorityReason: "Due service has meaningful value and should fill future capacity.",
+    };
+  }
+  return {
+    priority: "LOW" as const,
+    priorityReason: "Lower urgency; keep available for capacity gaps.",
+  };
+}
+
+function stageFromOutreach(input: {
+  outreachStatus?: string | null;
+  responseStatus?: string | null;
+  appointmentId?: string | null;
+  completed?: boolean;
+  lost?: boolean;
+}) {
+  if (input.completed) return "COMPLETED" as const;
+  if (input.lost) return "LOST" as const;
+  if (input.appointmentId || input.outreachStatus === "SCHEDULED") return "BOOKED" as const;
+  if (input.responseStatus && input.responseStatus !== "NO_RESPONSE") {
+    return input.responseStatus === "DECLINED" || input.responseStatus === "DO_NOT_CONTACT"
+      ? ("LOST" as const)
+      : ("RESPONDED" as const);
+  }
+  if (input.outreachStatus === "MANUALLY_SENT" || input.outreachStatus === "RESPONDED") return "CONTACTED" as const;
+  if (input.outreachStatus === "DECLINED" || input.outreachStatus === "STOPPED") return "LOST" as const;
+  return "IDENTIFIED" as const;
+}
+
+type OpportunitySyncClient = Pick<
+  typeof prisma,
+  "maintenanceRevenueOpportunity" | "vehicleMaintenanceRecord" | "declinedWorkRecord" | "outreachRecord"
+>;
+
+async function syncMaintenanceRevenueOpportunities(
+  tx: OpportunitySyncClient,
+  context: AuthenticatedShopContext,
+  maintenanceRecordIds: string[],
+) {
+  const uniqueIds = Array.from(new Set(maintenanceRecordIds));
+  if (uniqueIds.length === 0) return [];
+
+  const records = await tx.vehicleMaintenanceRecord.findMany({
+    where: { id: { in: uniqueIds }, shopId: context.shopId },
+    include: { vehicle: true },
+  });
+  const synced = [];
+
+  for (const record of records) {
+    assertSameShop(context, record.shopId);
+    assertSameShop(context, record.vehicle.shopId);
+    const existing = await tx.maintenanceRevenueOpportunity.findFirst({
+      where: {
+        shopId: context.shopId,
+        maintenanceRecordId: record.id,
+        declinedWorkRecordId: null,
+      },
+    });
+
+    const source = record.status === "OVERDUE" ? "OVERDUE_MAINTENANCE" as const : "DUE_MAINTENANCE" as const;
+    const dueMileage = (record.lastCompletedMileage ?? record.vehicle.currentMileage) + record.recommendedMileageInterval;
+    const dueDate = record.lastCompletedDate ? addMonths(record.lastCompletedDate, record.recommendedTimeIntervalMonths) : null;
+    const milesOverdue = Math.max(0, record.vehicle.currentMileage - dueMileage);
+    const daysLate = dueDate ? daysBetween(dueDate) : 0;
+    const stage = stageFromOutreach({
+      outreachStatus: record.outreachStatus,
+      appointmentId: record.appointmentId,
+      completed: record.status === "COMPLETED",
+    });
+
+    if (record.status === "HEALTHY" || record.archivedAt) {
+      if (existing && !["COMPLETED", "LOST"].includes(existing.stage)) {
+        synced.push(await tx.maintenanceRevenueOpportunity.update({
+          where: { id: existing.id },
+          data: {
+            stage: record.archivedAt ? "LOST" : "COMPLETED",
+            explanation: record.archivedAt
+              ? "Maintenance item was archived and no longer appears in the open queue."
+              : "Maintenance item is no longer due.",
+            lastActivityAt: new Date(),
+          },
+        }));
+      }
+      continue;
+    }
+
+    const priority = priorityForOpportunity({
+      source,
+      daysOverdue: daysLate,
+      milesOverdue,
+      estimatedRevenueCents: record.priceCents,
+      booked: stage === "BOOKED" || stage === "COMPLETED",
+    });
+    const explanation = source === "OVERDUE_MAINTENANCE"
+      ? `${record.serviceName} is overdue for this vehicle.`
+      : `${record.serviceName} is due for this vehicle.`;
+    const data = {
+      shopId: context.shopId,
+      customerId: record.vehicle.customerId,
+      vehicleId: record.vehicleId,
+      maintenanceRecordId: record.id,
+      declinedWorkRecordId: null,
+      source,
+      stage,
+      priority: priority.priority,
+      explanation,
+      priorityReason: priority.priorityReason,
+      estimatedRevenueCents: record.priceCents,
+      estimatedLaborMinutes: record.laborMinutes,
+      dueDate,
+      dueMileage,
+      daysOverdue: daysLate,
+      milesOverdue,
+      lastActivityAt: new Date(),
+    };
+
+    synced.push(existing
+      ? await tx.maintenanceRevenueOpportunity.update({
+          where: { id: existing.id },
+          data,
+        })
+      : await tx.maintenanceRevenueOpportunity.create({ data }));
+  }
+
+  return synced;
+}
+
+async function syncDeclinedWorkRevenueOpportunities(
+  tx: OpportunitySyncClient,
+  context: AuthenticatedShopContext,
+  declinedWorkRecordIds: string[],
+) {
+  const uniqueIds = Array.from(new Set(declinedWorkRecordIds));
+  if (uniqueIds.length === 0) return [];
+
+  const records = await tx.declinedWorkRecord.findMany({
+    where: { id: { in: uniqueIds }, shopId: context.shopId },
+    include: { vehicle: true },
+  });
+  const synced = [];
+
+  for (const record of records) {
+    assertSameShop(context, record.shopId);
+    assertSameShop(context, record.vehicle.shopId);
+    if (record.vehicle.customerId !== record.customerId) continue;
+
+    const existing = await tx.maintenanceRevenueOpportunity.findFirst({
+      where: {
+        shopId: context.shopId,
+        declinedWorkRecordId: record.id,
+        maintenanceRecordId: null,
+      },
+    });
+    const stage = stageFromOutreach({
+      outreachStatus: record.outreachStatus,
+      appointmentId: record.appointmentId,
+      completed: record.status === "COMPLETED",
+      lost: record.status === "DECLINED",
+    });
+    const priority = priorityForOpportunity({
+      source: "DECLINED_WORK",
+      daysOverdue: daysBetween(record.declinedAt),
+      milesOverdue: 0,
+      estimatedRevenueCents: record.recommendedPriceCents,
+      booked: stage === "BOOKED" || stage === "COMPLETED",
+    });
+    const data = {
+      shopId: context.shopId,
+      customerId: record.customerId,
+      vehicleId: record.vehicleId,
+      maintenanceRecordId: null,
+      declinedWorkRecordId: record.id,
+      source: "DECLINED_WORK" as const,
+      stage,
+      priority: priority.priority,
+      explanation: `${record.serviceName} was declined on ${record.declinedAt.toISOString().slice(0, 10)}.`,
+      priorityReason: priority.priorityReason,
+      estimatedRevenueCents: record.recommendedPriceCents,
+      estimatedLaborMinutes: record.laborMinutes,
+      dueDate: record.declinedAt,
+      dueMileage: null,
+      daysOverdue: daysBetween(record.declinedAt),
+      milesOverdue: 0,
+      lastActivityAt: new Date(),
+    };
+
+    synced.push(existing
+      ? await tx.maintenanceRevenueOpportunity.update({
+          where: { id: existing.id },
+          data,
+        })
+      : await tx.maintenanceRevenueOpportunity.create({ data }));
+  }
+
+  return synced;
 }
 
 export async function seedDefaultServicesForShop(shopId: string) {
@@ -167,6 +405,7 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
       maintenanceRecords: { where: { archivedAt: null }, orderBy: { updatedAt: "desc" } },
       serviceHistoryRecords: { orderBy: { completedAt: "desc" } },
       declinedWorkRecords: { orderBy: { declinedAt: "desc" } },
+      revenueOpportunities: { orderBy: [{ priority: "asc" }, { updatedAt: "desc" }] },
       outreachRecords: { orderBy: { createdAt: "desc" } },
       importHistory: { orderBy: { importedAt: "desc" } },
       appointments: {
@@ -263,6 +502,28 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
       outreachStatus: record.outreachStatus,
       outreachRecordId: record.outreachRecordId ?? undefined,
       appointmentId: record.appointmentId ?? undefined,
+    })),
+    revenueOpportunities: shop.revenueOpportunities.map((opportunity): RevenueOpportunityRecord => ({
+      id: opportunity.id,
+      shopId: opportunity.shopId,
+      customerId: opportunity.customerId,
+      vehicleId: opportunity.vehicleId,
+      maintenanceRecordId: opportunity.maintenanceRecordId ?? undefined,
+      declinedWorkRecordId: opportunity.declinedWorkRecordId ?? undefined,
+      source: opportunity.source,
+      stage: opportunity.stage,
+      priority: opportunity.priority,
+      explanation: opportunity.explanation,
+      priorityReason: opportunity.priorityReason,
+      estimatedRevenueCents: opportunity.estimatedRevenueCents,
+      estimatedLaborHours: opportunity.estimatedLaborMinutes / 60,
+      dueDate: iso(opportunity.dueDate) || undefined,
+      dueMileage: opportunity.dueMileage ?? undefined,
+      daysOverdue: opportunity.daysOverdue,
+      milesOverdue: opportunity.milesOverdue,
+      lastActivityAt: iso(opportunity.lastActivityAt) || undefined,
+      createdAt: iso(opportunity.createdAt),
+      updatedAt: iso(opportunity.updatedAt),
     })),
     serviceRecords: shop.serviceHistoryRecords.map((record) => ({
       id: record.id,
@@ -504,6 +765,18 @@ export async function markPilotOutreachManuallySent(
         outreachRecordId: outreach.id,
       },
     });
+    const synced = await syncMaintenanceRevenueOpportunities(tx, context, input.maintenanceRecordIds);
+    await tx.maintenanceRevenueOpportunity.updateMany({
+      where: { id: { in: synced.map((opportunity) => opportunity.id) }, shopId: context.shopId },
+      data: {
+        stage: input.responseStatus && input.responseStatus !== "NO_RESPONSE"
+          ? input.responseStatus === "DECLINED" || input.responseStatus === "DO_NOT_CONTACT"
+            ? "LOST"
+            : "RESPONDED"
+          : "CONTACTED",
+        lastActivityAt: new Date(),
+      },
+    });
   });
 }
 
@@ -570,6 +843,7 @@ export async function bookPilotAppointment(
   }
 
   await prisma.$transaction(async (tx) => {
+    const synced = await syncMaintenanceRevenueOpportunities(tx, context, input.maintenanceRecordIds);
     const appointment = await tx.appointment.create({
       data: {
         shopId: context.shopId,
@@ -582,6 +856,7 @@ export async function bookPilotAppointment(
         totalPriceCents: totals.totalPriceCents,
         source: "AUTOMATION",
         attributionSource: "MAINTIVA_OUTREACH",
+        opportunityId: synced[0]?.id,
         notes: input.notes,
         services: {
           create: records.map((record) => ({
@@ -602,6 +877,7 @@ export async function bookPilotAppointment(
         appointmentId: appointment.id,
       },
     });
+    await syncMaintenanceRevenueOpportunities(tx, context, input.maintenanceRecordIds);
   });
 }
 
@@ -656,6 +932,15 @@ export async function completePilotAppointment(
       where: { appointmentId: appointment.id, shopId: context.shopId },
       data: { status: "COMPLETED", outreachStatus: "SCHEDULED" },
     });
+    const maintenanceRecordIds = appointment.services
+      .map((service) => service.maintenanceRecordId)
+      .filter((id): id is string => Boolean(id));
+    await syncMaintenanceRevenueOpportunities(tx, context, maintenanceRecordIds);
+    const declinedRecords = await tx.declinedWorkRecord.findMany({
+      where: { appointmentId: appointment.id, shopId: context.shopId },
+      select: { id: true },
+    });
+    await syncDeclinedWorkRevenueOpportunities(tx, context, declinedRecords.map((record) => record.id));
   });
 }
 
@@ -704,6 +989,8 @@ export async function importPilotCsvRows(
   await prisma.$transaction(async (tx) => {
     const customerByKey = new Map<string, { id: string; firstName: string; lastName: string; email: string | null; phone: string | null }>();
     const vehicleByKey = new Map<string, { id: string; customerId: string; year: number; make: string; model: string; vin: string | null; currentMileage: number; licensePlate: string | null }>();
+    const touchedMaintenanceRecordIds: string[] = [];
+    const touchedDeclinedWorkRecordIds: string[] = [];
 
     for (const row of rowsToImport) {
       const normalized = row.normalized;
@@ -826,7 +1113,7 @@ export async function importPilotCsvRows(
         });
       }
 
-      await tx.vehicleMaintenanceRecord.upsert({
+      const maintenanceRecord = await tx.vehicleMaintenanceRecord.upsert({
         where: {
           shopId_vehicleId_serviceDefinitionId: {
             shopId: context.shopId,
@@ -860,6 +1147,7 @@ export async function importPilotCsvRows(
           priceCents,
         },
       });
+      touchedMaintenanceRecordIds.push(maintenanceRecord.id);
 
       if (stringValue(normalized, "serviceDate")) {
         await tx.serviceHistoryRecord.create({
@@ -883,7 +1171,7 @@ export async function importPilotCsvRows(
         stringValue(normalized, "declinedDate") ||
         stringValue(normalized, "status").toLowerCase().includes("declin")
       ) {
-        await tx.declinedWorkRecord.create({
+        const declinedRecord = await tx.declinedWorkRecord.create({
           data: {
             shopId: context.shopId,
             customerId: customer.id,
@@ -899,6 +1187,7 @@ export async function importPilotCsvRows(
             outreachStatus: "NEEDS_OUTREACH",
           },
         });
+        touchedDeclinedWorkRecordIds.push(declinedRecord.id);
       }
 
       const scheduledStart = appointmentDateTime(
@@ -943,6 +1232,9 @@ export async function importPilotCsvRows(
         }
       }
     }
+
+    await syncMaintenanceRevenueOpportunities(tx, context, touchedMaintenanceRecordIds);
+    await syncDeclinedWorkRevenueOpportunities(tx, context, touchedDeclinedWorkRecordIds);
 
     const importHistory = await tx.importHistoryRecord.create({
       data: {

@@ -215,6 +215,29 @@ export type Appointment = {
   notes: string;
 };
 
+export type RevenueOpportunityRecord = {
+  id: string;
+  shopId: string;
+  customerId: string;
+  vehicleId: string;
+  maintenanceRecordId?: string;
+  declinedWorkRecordId?: string;
+  source: "DUE_MAINTENANCE" | "OVERDUE_MAINTENANCE" | "DECLINED_WORK" | "DEFERRED_WORK" | "REACTIVATION";
+  stage: "IDENTIFIED" | "CONTACTED" | "RESPONDED" | "BOOKED" | "COMPLETED" | "LOST";
+  priority: "HIGH" | "MEDIUM" | "LOW";
+  explanation: string;
+  priorityReason: string;
+  estimatedRevenueCents: number;
+  estimatedLaborHours: number;
+  dueDate?: string;
+  dueMileage?: number;
+  daysOverdue: number;
+  milesOverdue: number;
+  lastActivityAt?: string;
+  createdAt: string;
+  updatedAt?: string;
+};
+
 export type DemoState = {
   shop: Shop;
   users: User[];
@@ -222,6 +245,7 @@ export type DemoState = {
   vehicles: Vehicle[];
   services: MaintenanceService[];
   maintenanceRecords: VehicleMaintenanceRecord[];
+  revenueOpportunities: RevenueOpportunityRecord[];
   serviceRecords: ServiceRecord[];
   declinedWorkRecords: DeclinedWorkRecord[];
   outreachRecords: OutreachRecord[];
@@ -685,6 +709,7 @@ export const initialDemoState: DemoState = {
   vehicles,
   services: serviceDefinitions,
   maintenanceRecords: maintenanceItems,
+  revenueOpportunities: [],
   serviceRecords,
   declinedWorkRecords,
   outreachRecords,

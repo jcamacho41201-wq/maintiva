@@ -13,6 +13,7 @@ import {
   getRecommendedRecords,
   vehicleLabel,
 } from "@/lib/demo-calculations";
+import { getOpenRevenueOpportunitiesForCustomer, type RevenueOpportunity } from "@/lib/revenue-recovery";
 import { useDemoStore } from "@/lib/demo-store";
 import { type Customer, type Vehicle } from "@/lib/demo-data";
 import { formatCurrency, formatDate } from "@/lib/utils";
@@ -39,6 +40,18 @@ function emptyVehicleForm(customerId: string) {
     currentMileage: 0,
     estimatedAnnualMileage: 12000,
   };
+}
+
+function opportunityStatusLabel(stage: RevenueOpportunity["stage"]) {
+  const labels: Record<RevenueOpportunity["stage"], string> = {
+    IDENTIFIED: "Needs outreach",
+    CONTACTED: "Contacted",
+    RESPONDED: "Responded",
+    BOOKED: "Booked",
+    COMPLETED: "Completed",
+    LOST: "Declined",
+  };
+  return labels[stage];
 }
 
 export default function CustomerDetailPage() {
@@ -74,6 +87,8 @@ export default function CustomerDetailPage() {
     .sort((a, b) => new Date(b.completedAt).getTime() - new Date(a.completedAt).getTime());
   const appointments = state.appointments.filter((appointment) => appointment.customerId === customer.id);
   const outreach = state.outreachRecords.filter((record) => record.customerId === customer.id);
+  const openRevenueOpportunities = getOpenRevenueOpportunitiesForCustomer(state, customer.id);
+  const openOpportunityValue = openRevenueOpportunities.reduce((sum, opportunity) => sum + opportunity.estimatedRevenueCents, 0);
 
   async function saveCustomer(input: ReturnType<typeof editableCustomerFields>) {
     if (!input.firstName.trim() || !input.lastName.trim()) {
@@ -179,6 +194,78 @@ export default function CustomerDetailPage() {
             <p className="text-sm font-medium text-zinc-500">Notes</p>
             <p className="mt-2 text-sm text-zinc-700">{customer.notes}</p>
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold">Open Revenue Opportunities</h2>
+              <p className="mt-1 text-sm text-zinc-500">
+                Real recoverable opportunities linked to this customer and their vehicles.
+              </p>
+            </div>
+            <Badge variant="purple">
+              {openRevenueOpportunities.length} · {formatCurrency(openOpportunityValue)}
+            </Badge>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {vehicles.map((vehicle) => {
+            const opportunities = openRevenueOpportunities.filter((opportunity) => opportunity.vehicleId === vehicle.id);
+            if (opportunities.length === 0) return null;
+            return (
+              <div key={vehicle.id} className="rounded-lg border border-zinc-200 p-4">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <Link href={`/vehicles/${vehicle.id}`} className="font-semibold text-violet-950">
+                    {vehicleLabel(vehicle)}
+                  </Link>
+                  <Badge>{opportunities.length} open</Badge>
+                </div>
+                <div className="mt-3 space-y-2">
+                  {opportunities.map((opportunity) => {
+                    const appointment = state.appointments.find((item) =>
+                      item.opportunityId === opportunity.id ||
+                      (
+                        opportunity.maintenanceRecordId &&
+                        item.maintenanceRecordIds.includes(opportunity.maintenanceRecordId)
+                      ),
+                    );
+                    return (
+                      <div key={opportunity.id} className="grid gap-3 rounded-lg bg-zinc-50 p-3 text-sm md:grid-cols-[1fr_auto] md:items-center">
+                        <div>
+                          <p className="font-semibold">{opportunity.serviceNames.join(", ")}</p>
+                          <p className="mt-1 text-zinc-600">
+                            {opportunity.sourceLabel} · {opportunityStatusLabel(opportunity.stage)} · {opportunity.priority} priority
+                          </p>
+                          <p className="mt-1 text-zinc-500">
+                            {opportunity.sourceType === "DeclinedWorkRecord" ? "Declined" : "Due"} {opportunity.dueDate ? formatDate(opportunity.dueDate) : "date not recorded"}
+                            {" · "}
+                            Last contact {opportunity.lastActivityAt ? formatDate(opportunity.lastActivityAt) : "never"}
+                          </p>
+                          {appointment && (
+                            <Link href="/appointments" className="mt-1 inline-block font-semibold text-violet-950">
+                              Linked appointment {formatDate(appointment.scheduledStart)}
+                            </Link>
+                          )}
+                        </div>
+                        <div className="flex flex-wrap gap-2 md:justify-end">
+                          <Badge variant="purple">{formatCurrency(opportunity.estimatedRevenueCents)}</Badge>
+                          <Badge>{opportunity.estimatedLaborHours} hr</Badge>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+          {openRevenueOpportunities.length === 0 && (
+            <p className="rounded-lg border border-dashed border-zinc-300 p-6 text-sm text-zinc-500">
+              No open revenue opportunities yet.
+            </p>
+          )}
         </CardContent>
       </Card>
 

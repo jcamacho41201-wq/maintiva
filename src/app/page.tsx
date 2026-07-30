@@ -121,6 +121,7 @@ export default function DashboardPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             {opportunities.map((opportunity) => {
+              const canRecommend = opportunity.opportunities.some((item) => item.maintenanceRecordId);
               return (
                 <div
                   key={opportunity.id}
@@ -167,9 +168,10 @@ export default function DashboardPage() {
                       <button
                         onClick={(event) => {
                           event.stopPropagation();
-                          setSelectedVehicleId(opportunity.vehicleId);
+                          if (canRecommend) setSelectedVehicleId(opportunity.vehicleId);
                         }}
-                        className="rounded-lg bg-violet-950 px-3 py-2 text-sm font-semibold text-white"
+                        disabled={!canRecommend}
+                        className="rounded-lg bg-violet-950 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         Generate message
                       </button>
@@ -254,7 +256,7 @@ export default function DashboardPage() {
           customer={state.customers.find((item) => item.id === selectedOpportunity.customerId)!}
           vehicle={state.vehicles.find((item) => item.id === selectedOpportunity.vehicleId)!}
           records={state.maintenanceRecords.filter((record) =>
-            selectedOpportunity.opportunities.some((item) => item.id === `opp-${record.id}`),
+            selectedOpportunity.opportunities.some((item) => item.maintenanceRecordId === record.id),
           )}
           onClose={() => setSelectedVehicleId(null)}
           onSendRecommendation={store.sendRecommendation}
