@@ -16,7 +16,7 @@ import {
 import { getOpenRevenueOpportunitiesForCustomer, type RevenueOpportunity } from "@/lib/revenue-recovery";
 import { useDemoStore } from "@/lib/demo-store";
 import { type Customer, type Vehicle } from "@/lib/demo-data";
-import { currentDateInTimeZone, formatCurrency, formatDate } from "@/lib/utils";
+import { currentDateInTimeZone, formatCurrency, formatDate, formatLaborHours } from "@/lib/utils";
 
 function editableCustomerFields(customer: Customer) {
   return {
@@ -243,7 +243,11 @@ export default function CustomerDetailPage() {
                           <p className="mt-1 text-zinc-500">
                             {opportunity.sourceType === "DeclinedWorkRecord" ? "Declined" : "Due"} {opportunity.dueDate ? formatDate(opportunity.dueDate) : "date not recorded"}
                             {" · "}
-                            {opportunity.outreachStatus === "SNOOZED" ? "Snoozed until" : "Last contact"} {opportunity.lastActivityAt ? formatDate(opportunity.lastActivityAt) : "never"}
+                            {opportunity.outreachStatus === "SNOOZED"
+                              ? `Snoozed until ${formatDate(opportunity.lastActivityAt)}`
+                              : opportunity.lastContactedAt
+                                ? `Last contact ${formatDate(opportunity.lastContactedAt)}`
+                                : "Not contacted yet"}
                           </p>
                           {appointment && (
                             <Link href="/appointments" className="mt-1 inline-block font-semibold text-violet-950">
@@ -253,7 +257,7 @@ export default function CustomerDetailPage() {
                         </div>
                         <div className="flex flex-wrap gap-2 md:justify-end">
                           <Badge variant="purple">{formatCurrency(opportunity.estimatedRevenueCents)}</Badge>
-                          <Badge>{opportunity.estimatedLaborHours} hr</Badge>
+                          <Badge>{formatLaborHours(opportunity.estimatedLaborHours)}</Badge>
                         </div>
                       </div>
                     );

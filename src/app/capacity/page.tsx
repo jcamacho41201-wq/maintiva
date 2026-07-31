@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { useDemoStore } from "@/lib/demo-store";
 import { getCapacitySummary } from "@/lib/revenue-recovery";
-import { formatCurrency } from "@/lib/utils";
+import { formatCurrency, formatLaborHours } from "@/lib/utils";
 
 export default function CapacityPage() {
   const { state } = useDemoStore();
@@ -100,7 +100,7 @@ export default function CapacityPage() {
                   {opportunity.priority}
                 </Badge>
                 <Badge variant="purple">{formatCurrency(opportunity.estimatedRevenueCents)}</Badge>
-                <Badge>{opportunity.estimatedLaborHours} hr</Badge>
+                <Badge>{formatLaborHours(opportunity.estimatedLaborHours)}</Badge>
               </div>
               <Link href="/automation" className="inline-flex items-center justify-end gap-2 text-sm font-semibold text-violet-900">
                 Queue

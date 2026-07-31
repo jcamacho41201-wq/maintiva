@@ -4,11 +4,13 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { ArrowRight, Bot, CalendarClock, Car, DollarSign, FileUp, Users, Wrench } from "lucide-react";
-import { RecommendationModal } from "@/components/recommendation-modal";
+import { ContactCustomerModal } from "@/components/contact-customer-modal";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
+import { canContactCustomerForDraft } from "@/lib/contact-workflow";
 import { useDemoStore } from "@/lib/demo-store";
+import { isCustomerBookingEnabled } from "@/lib/feature-flags";
 import {
   getDashboardMetrics,
 } from "@/lib/demo-calculations";
@@ -19,7 +21,7 @@ import {
   groupRevenueOpportunities,
   buildRevenueOpportunities,
 } from "@/lib/revenue-recovery";
-import { formatCurrency } from "@/lib/utils";
+import { formatCurrency, formatLaborHours } from "@/lib/utils";
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -58,6 +60,17 @@ export default function DashboardPage() {
   const selectedOpportunity = opportunities.find(
     (opportunity) => opportunity.vehicleId === selectedVehicleId,
   );
+  const selectedCustomer = selectedOpportunity
+    ? state.customers.find((item) => item.id === selectedOpportunity.customerId)
+    : undefined;
+  const selectedVehicle = selectedOpportunity
+    ? state.vehicles.find((item) => item.id === selectedOpportunity.vehicleId)
+    : undefined;
+  const selectedRecords = selectedOpportunity
+    ? state.maintenanceRecords.filter((record) =>
+        selectedOpportunity.opportunities.some((item) => item.maintenanceRecordId === record.id),
+      )
+    : [];
 
   const stats = [
     { label: "Recovered revenue this month", value: formatCurrency(metrics.recoveredRevenueThisMonth), icon: DollarSign },
@@ -139,7 +152,10 @@ export default function DashboardPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             {opportunities.map((opportunity) => {
-              const canRecommend = opportunity.opportunities.some((item) => item.maintenanceRecordId);
+              const customer = state.customers.find((item) => item.id === opportunity.customerId);
+              const contactEligibility = customer
+                ? canContactCustomerForDraft(customer)
+                : { enabled: false, reason: "Customer record is not available." };
               return (
                 <div
                   key={opportunity.id}
@@ -161,7 +177,7 @@ export default function DashboardPage() {
                       {opportunity.sources.map((source) => <Badge key={source} variant="purple">{source}</Badge>)}
                       <Badge>{opportunity.outreachStatus}</Badge>
                       <Badge variant="purple">{formatCurrency(opportunity.estimatedRevenueCents)}</Badge>
-                      <Badge>{opportunity.estimatedLaborHours} hr</Badge>
+                      <Badge>{formatLaborHours(opportunity.estimatedLaborHours)}</Badge>
                     </div>
                     <p className="mt-3 text-sm text-zinc-600">{opportunity.explanation}</p>
                     <p className="mt-1 text-xs font-medium text-zinc-500">{opportunity.priorityReason}</p>
@@ -186,12 +202,13 @@ export default function DashboardPage() {
                       <button
                         onClick={(event) => {
                           event.stopPropagation();
-                          if (canRecommend) setSelectedVehicleId(opportunity.vehicleId);
+                          if (contactEligibility.enabled) setSelectedVehicleId(opportunity.vehicleId);
                         }}
-                        disabled={!canRecommend}
+                        disabled={!contactEligibility.enabled}
+                        title={contactEligibility.reason ?? "Contact customer"}
                         className="rounded-lg bg-violet-950 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
                       >
-                        Generate message
+                        Contact
                       </button>
                     )}
                   </div>
@@ -269,16 +286,17 @@ export default function DashboardPage() {
         </Card>
       </div>
 
-      {selectedOpportunity && (
-        <RecommendationModal
-          customer={state.customers.find((item) => item.id === selectedOpportunity.customerId)!}
-          vehicle={state.vehicles.find((item) => item.id === selectedOpportunity.vehicleId)!}
-          records={state.maintenanceRecords.filter((record) =>
-            selectedOpportunity.opportunities.some((item) => item.maintenanceRecordId === record.id),
-          )}
+      {selectedOpportunity && selectedCustomer && selectedVehicle && (
+        <ContactCustomerModal
+          group={selectedOpportunity}
+          customer={selectedCustomer}
+          vehicle={selectedVehicle}
+          records={selectedRecords}
           onClose={() => setSelectedVehicleId(null)}
-          onSendRecommendation={store.sendRecommendation}
-          onBookAppointment={store.bookAppointment}
+          onBook={() => router.push("/automation")}
+          onSave={store.recordOpportunityContact}
+          onCreateBookingLink={store.createBookingLink}
+          customerBookingEnabled={isCustomerBookingEnabled()}
         />
       )}
     </div>
