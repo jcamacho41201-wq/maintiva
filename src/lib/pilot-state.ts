@@ -37,6 +37,9 @@ import { currentDateInTimeZone } from "@/lib/utils";
 import { safeDatabaseError, SafeActionError } from "@/lib/server-diagnostics";
 import { isCustomerBookingEnabled } from "@/lib/feature-flags";
 import {
+  MAINTIVA_IMPORT_ROW_LIMIT,
+  importRowLimitMessage,
+  isImportRowLimitExceeded,
   previewImport,
   summarizeImport,
   type CsvRow,
@@ -3962,6 +3965,18 @@ export async function importPilotCsvRows(
     mapping: Record<string, MaintivaField>;
   },
 ) {
+  const rowCount = input.rows.length;
+  if (isImportRowLimitExceeded(rowCount)) {
+    throw new SafeActionError({
+      code: "IMPORT_ROW_LIMIT_EXCEEDED",
+      message: importRowLimitMessage(rowCount),
+      status: 400,
+      table: "ImportHistoryRecord",
+      operation: "INSERT",
+      details: `rowCount=${rowCount}; limit=${MAINTIVA_IMPORT_ROW_LIMIT}`,
+    });
+  }
+
   const state = await buildPilotState(context);
   const preview = previewImport({
     rows: input.rows,
