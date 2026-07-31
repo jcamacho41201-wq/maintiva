@@ -401,6 +401,7 @@ export default function AutomationPage() {
           onClose={() => setQueueModal(null)}
           onBook={() => setQueueModal({ kind: "book", vehicleId: activeGroup.vehicleId })}
           onSave={store.recordOpportunityContact}
+          onCreateBookingLink={store.createBookingLink}
         />
       )}
       {activeGroup && queueModal?.kind === "book" && (
@@ -494,6 +495,7 @@ function ContactCustomerModal({
   onClose,
   onBook,
   onSave,
+  onCreateBookingLink,
 }: {
   group: RevenueQueueGroup;
   customer: Customer;
@@ -511,7 +513,13 @@ function ContactCustomerModal({
     channel: OutreachChannel;
     responseStatus: CustomerResponseStatus;
     followUpDate?: string;
+    bookingLinkId?: string;
   }) => Promise<{ ok: boolean; message?: string }>;
+  onCreateBookingLink: (input: {
+    customerId: string;
+    vehicleId: string;
+    opportunityIds: string[];
+  }) => Promise<{ ok: boolean; message?: string; bookingLink?: { id: string; url: string; expiresAt: string; message?: string } }>;
 }) {
   const [channel, setChannel] = useState<"TEXT" | "EMAIL" | "CALL">("TEXT");
   const [message, setMessage] = useState(
@@ -524,7 +532,30 @@ function ContactCustomerModal({
   const [copied, setCopied] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [creatingLink, setCreatingLink] = useState(false);
+  const [bookingLink, setBookingLink] = useState<{ id: string; url: string; expiresAt: string } | null>(null);
   const rows = serviceRows(group, records);
+
+  async function createLink() {
+    setCreatingLink(true);
+    setError("");
+    const result = await onCreateBookingLink({
+      customerId: group.customerId,
+      vehicleId: group.vehicleId,
+      opportunityIds: selectedOpportunityIds(group),
+    });
+    setCreatingLink(false);
+    if (!result.ok || !result.bookingLink) {
+      setError(result.message ?? "Booking link could not be created.");
+      return;
+    }
+    setBookingLink(result.bookingLink);
+    if (channel === "CALL") {
+      setChannel("TEXT");
+    }
+    setMessage(result.bookingLink.message ?? `${message.trim()}\n\nSchedule here: ${result.bookingLink.url}`);
+    setCopied(false);
+  }
 
   async function copyText() {
     try {
@@ -558,6 +589,7 @@ function ContactCustomerModal({
       channel,
       responseStatus,
       followUpDate: followUpDate || undefined,
+      bookingLinkId: bookingLink?.id,
     });
     setSaving(false);
     if (!result.ok) {
@@ -573,6 +605,7 @@ function ContactCustomerModal({
       <div className="space-y-5 p-5">
         {error && <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">{error}</p>}
         {copied && !saved && <p className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-medium text-violet-700">Message copied. Copying alone does not mark the customer contacted.</p>}
+        {bookingLink && !saved && <p className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm font-medium text-zinc-700">Booking link ready. It will be tied to this outreach when you mark the message as sent.</p>}
         {saved && <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700">Outreach saved. No appointment was created.</p>}
 
         <div className="rounded-lg border border-zinc-200 p-4">
@@ -611,6 +644,15 @@ function ContactCustomerModal({
             </button>
           ))}
         </div>
+
+        <button
+          onClick={createLink}
+          disabled={creatingLink || saving || Boolean(bookingLink)}
+          className="inline-flex items-center gap-2 rounded-lg border border-violet-200 px-4 py-2 text-sm font-semibold text-violet-950 disabled:opacity-60"
+        >
+          <CalendarCheck className="h-4 w-4" />
+          {creatingLink ? "Creating link..." : bookingLink ? "Booking link created" : "Create booking link"}
+        </button>
 
         {channel === "CALL" ? (
           <label className="block text-sm font-semibold">

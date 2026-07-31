@@ -37,6 +37,10 @@ export type AppointmentStatus =
   | "COMPLETED"
   | "CANCELLED"
   | "NO_SHOW";
+export type BookingMode = "INSTANT" | "REQUEST";
+export type BookingIntakeType = "WAIT" | "DROP_OFF";
+export type ServiceBookingIntakeOption = "WAIT_ONLY" | "DROP_OFF_ONLY" | "EITHER";
+export type CustomerBookingLinkStatus = "ACTIVE" | "REVOKED" | "COMPLETED" | "EXPIRED";
 export type TimeIntervalUnit = "DAYS" | "MONTHS" | "YEARS";
 export type OutreachThresholdType = "MILES_BEFORE_DUE" | "DAYS_BEFORE_DUE" | "PERCENT_REMAINING";
 export type MileageReadingSource =
@@ -138,6 +142,7 @@ export type MaintenanceService = {
   defaultPriceCents: number;
   description: string;
   isActive: boolean;
+  bookingRule?: ServiceBookingRule;
 };
 
 export type VehicleMaintenanceRecord = {
@@ -268,6 +273,7 @@ export type OutreachRecord = {
   responseStatus: CustomerResponseStatus;
   followUpDate?: string;
   appointmentId?: string;
+  bookingLinkId?: string;
   performedByUserId?: string;
   status: OutreachStatus;
 };
@@ -288,10 +294,86 @@ export type Appointment = {
   attributionSource: "MAINTIVA_OUTREACH" | "MANUAL_SHOP_ENTRY" | "IMPORTED_APPOINTMENT" | "OTHER";
   opportunityId?: string;
   outreachRecordId?: string;
+  bookingLinkId?: string;
+  intakeType?: BookingIntakeType;
+  customerNotes?: string;
+  internalNotes?: string;
   completedRevenueCents?: number;
   completedLaborHours?: number;
   completedAt?: string;
+  requestedAt?: string;
+  approvedAt?: string;
+  declinedAt?: string;
+  customerCancelledAt?: string;
+  rescheduledAt?: string;
   notes: string;
+};
+
+export type BookingWindow = {
+  id: string;
+  shopId: string;
+  dayOfWeek: number;
+  startMinute: number;
+  endMinute: number;
+  isActive: boolean;
+};
+
+export type ShopBookingBlackout = {
+  id: string;
+  shopId: string;
+  startsAt: string;
+  endsAt: string;
+  reason?: string;
+  isFullDay: boolean;
+};
+
+export type ShopBookingSettings = {
+  id: string;
+  shopId: string;
+  onlineBookingEnabled: boolean;
+  minimumNoticeMinutes: number;
+  maximumAdvanceDays: number;
+  defaultBufferBeforeMinutes: number;
+  defaultBufferAfterMinutes: number;
+  maximumSimultaneousAppointments: number;
+  cancellationCutoffMinutes: number;
+  reschedulingCutoffMinutes: number;
+};
+
+export type ServiceBookingRule = {
+  id: string;
+  shopId: string;
+  serviceDefinitionId: string;
+  bookingEnabled: boolean;
+  bookingMode: BookingMode;
+  estimatedDurationMinutes: number;
+  bufferBeforeMinutes: number;
+  bufferAfterMinutes: number;
+  allowedIntakeType: ServiceBookingIntakeOption;
+  minimumNoticeMinutes?: number | null;
+  maximumAdvanceDays?: number | null;
+  maximumSimultaneousBookings?: number | null;
+  windows: BookingWindow[];
+};
+
+export type CustomerBookingLink = {
+  id: string;
+  shopId: string;
+  customerId: string;
+  vehicleId: string;
+  opportunityId?: string;
+  maintenanceRecordIds: string[];
+  declinedWorkRecordIds: string[];
+  status: CustomerBookingLinkStatus;
+  url?: string;
+  expiresAt: string;
+  revokedAt?: string;
+  usedAt?: string;
+  lastViewedAt?: string;
+  bookingCompletedAt?: string;
+  outreachRecordId?: string;
+  appointmentId?: string;
+  createdAt: string;
 };
 
 export type RevenueOpportunityRecord = {
@@ -332,6 +414,10 @@ export type DemoState = {
   declinedWorkRecords: DeclinedWorkRecord[];
   outreachRecords: OutreachRecord[];
   appointments: Appointment[];
+  bookingSettings?: ShopBookingSettings;
+  bookingWindows: BookingWindow[];
+  bookingBlackouts: ShopBookingBlackout[];
+  customerBookingLinks: CustomerBookingLink[];
   importHistory: ImportHistoryRecord[];
   seededAt: string;
 };
@@ -411,6 +497,51 @@ export const serviceDefinitions: MaintenanceService[] = serviceSeed.map(
     isActive: true,
   }),
 );
+
+export const defaultBookingSettings: ShopBookingSettings = {
+  id: "booking-settings-demo",
+  shopId: demoShop.id,
+  onlineBookingEnabled: true,
+  minimumNoticeMinutes: 1440,
+  maximumAdvanceDays: 30,
+  defaultBufferBeforeMinutes: 0,
+  defaultBufferAfterMinutes: 15,
+  maximumSimultaneousAppointments: 2,
+  cancellationCutoffMinutes: 1440,
+  reschedulingCutoffMinutes: 1440,
+};
+
+export const defaultBookingWindows: BookingWindow[] = [1, 2, 3, 4, 5].map((dayOfWeek) => ({
+  id: `booking-window-${dayOfWeek}`,
+  shopId: demoShop.id,
+  dayOfWeek,
+  startMinute: 8 * 60,
+  endMinute: 17 * 60,
+  isActive: true,
+}));
+
+export function defaultServiceBookingRule(service: MaintenanceService): ServiceBookingRule {
+  const diagnostics = service.name.toLowerCase().includes("diagnostic");
+  return {
+    id: `booking-rule-${service.id}`,
+    shopId: demoShop.id,
+    serviceDefinitionId: service.id,
+    bookingEnabled: ["Oil Change", "Tire Rotation", "Cabin Air Filter", "Brake Fluid", "A/C Diagnostic"].includes(service.name),
+    bookingMode: diagnostics ? "REQUEST" : "INSTANT",
+    estimatedDurationMinutes: Math.max(30, service.estimatedLaborMinutes),
+    bufferBeforeMinutes: 0,
+    bufferAfterMinutes: 15,
+    allowedIntakeType: diagnostics ? "DROP_OFF_ONLY" : "EITHER",
+    minimumNoticeMinutes: 1440,
+    maximumAdvanceDays: 30,
+    maximumSimultaneousBookings: diagnostics ? 1 : 2,
+    windows: defaultBookingWindows.map((window) => ({
+      ...window,
+      id: `service-${service.id}-${window.dayOfWeek}`,
+      endMinute: diagnostics ? 12 * 60 : 15 * 60,
+    })),
+  };
+}
 
 type CustomerSeed = [
   string,
@@ -882,7 +1013,10 @@ export const initialDemoState: DemoState = {
   users: demoUsers,
   customers,
   vehicles,
-  services: serviceDefinitions,
+  services: serviceDefinitions.map((service) => ({
+    ...service,
+    bookingRule: defaultServiceBookingRule(service),
+  })),
   maintenanceRecords: maintenanceItems,
   revenueOpportunities: [],
   mileageReadings,
@@ -891,6 +1025,10 @@ export const initialDemoState: DemoState = {
   declinedWorkRecords,
   outreachRecords,
   appointments,
+  bookingSettings: defaultBookingSettings,
+  bookingWindows: defaultBookingWindows,
+  bookingBlackouts: [],
+  customerBookingLinks: [],
   importHistory,
   seededAt: asOfDate.toISOString(),
 };

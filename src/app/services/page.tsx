@@ -5,7 +5,7 @@ import { ArchiveRestore, Plus, Power, Search, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { useDemoStore, type ServiceDefinitionInput } from "@/lib/demo-store";
-import { type MaintenanceService, type TimeIntervalUnit } from "@/lib/demo-data";
+import { type BookingMode, type MaintenanceService, type ServiceBookingIntakeOption, type TimeIntervalUnit } from "@/lib/demo-data";
 import { formatInterval } from "@/lib/service-intervals";
 import { formatCurrency, formatHours } from "@/lib/utils";
 
@@ -19,6 +19,17 @@ type ServiceFormState = {
   laborHours: string;
   description: string;
   isActive: boolean;
+  bookingEnabled: boolean;
+  bookingMode: BookingMode;
+  allowedIntakeType: ServiceBookingIntakeOption;
+  bookingDurationMinutes: string;
+  bufferBeforeMinutes: string;
+  bufferAfterMinutes: string;
+  minimumNoticeMinutes: string;
+  maximumSimultaneousBookings: string;
+  bookingWeekdays: number[];
+  bookingStartTime: string;
+  bookingEndTime: string;
 };
 
 const blankForm: ServiceFormState = {
@@ -31,9 +42,33 @@ const blankForm: ServiceFormState = {
   laborHours: "",
   description: "",
   isActive: true,
+  bookingEnabled: false,
+  bookingMode: "REQUEST",
+  allowedIntakeType: "EITHER",
+  bookingDurationMinutes: "60",
+  bufferBeforeMinutes: "0",
+  bufferAfterMinutes: "15",
+  minimumNoticeMinutes: "",
+  maximumSimultaneousBookings: "",
+  bookingWeekdays: [1, 2, 3, 4, 5],
+  bookingStartTime: "08:00",
+  bookingEndTime: "15:00",
 };
 
+const dayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+function minutesToTime(minutes: number) {
+  return `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
+}
+
+function timeToMinutes(value: string) {
+  const [hours, minutes] = value.split(":").map(Number);
+  return Math.min(1440, Math.max(0, hours * 60 + minutes));
+}
+
 function serviceToForm(service: MaintenanceService): ServiceFormState {
+  const rule = service.bookingRule;
+  const firstWindow = rule?.windows.find((window) => window.isActive) ?? rule?.windows[0];
   return {
     name: service.name,
     category: service.category,
@@ -44,6 +79,17 @@ function serviceToForm(service: MaintenanceService): ServiceFormState {
     laborHours: (service.estimatedLaborMinutes / 60).toString(),
     description: service.description,
     isActive: service.isActive,
+    bookingEnabled: rule?.bookingEnabled ?? false,
+    bookingMode: rule?.bookingMode ?? "REQUEST",
+    allowedIntakeType: rule?.allowedIntakeType ?? "EITHER",
+    bookingDurationMinutes: String((rule?.estimatedDurationMinutes ?? service.estimatedLaborMinutes) || 60),
+    bufferBeforeMinutes: String(rule?.bufferBeforeMinutes ?? 0),
+    bufferAfterMinutes: String(rule?.bufferAfterMinutes ?? 15),
+    minimumNoticeMinutes: rule?.minimumNoticeMinutes?.toString() ?? "",
+    maximumSimultaneousBookings: rule?.maximumSimultaneousBookings?.toString() ?? "",
+    bookingWeekdays: rule?.windows.filter((window) => window.isActive).map((window) => window.dayOfWeek) ?? [1, 2, 3, 4, 5],
+    bookingStartTime: minutesToTime(firstWindow?.startMinute ?? 8 * 60),
+    bookingEndTime: minutesToTime(firstWindow?.endMinute ?? 15 * 60),
   };
 }
 
@@ -94,6 +140,27 @@ function ServiceEditor({
     const result = service
       ? await store.updateServiceDefinition(service.id, input)
       : await store.addServiceDefinition(input);
+    if (result.ok && service) {
+      const ruleResult = await store.saveServiceBookingRule(service.id, {
+        bookingEnabled: form.bookingEnabled,
+        bookingMode: form.bookingMode,
+        estimatedDurationMinutes: Number(form.bookingDurationMinutes) || input.estimatedLaborMinutes || 60,
+        bufferBeforeMinutes: Number(form.bufferBeforeMinutes) || 0,
+        bufferAfterMinutes: Number(form.bufferAfterMinutes) || 0,
+        allowedIntakeType: form.allowedIntakeType,
+        minimumNoticeMinutes: form.minimumNoticeMinutes ? Number(form.minimumNoticeMinutes) : null,
+        maximumAdvanceDays: null,
+        maximumSimultaneousBookings: form.maximumSimultaneousBookings ? Number(form.maximumSimultaneousBookings) : null,
+        weekdays: form.bookingWeekdays,
+        startMinute: timeToMinutes(form.bookingStartTime),
+        endMinute: timeToMinutes(form.bookingEndTime),
+      });
+      if (!ruleResult.ok) {
+        setSaving(false);
+        setError(ruleResult.message ?? "Unable to save booking rule.");
+        return;
+      }
+    }
     setSaving(false);
     if (!result.ok) {
       setError(result.message ?? "Unable to save service.");
@@ -192,6 +259,131 @@ function ServiceEditor({
               className="w-full rounded-lg border border-zinc-200 px-3 py-2"
             />
           </label>
+          {service && (
+            <div className="space-y-4 rounded-lg border border-zinc-200 p-4 sm:col-span-2">
+              <label className="flex items-center gap-2 text-sm font-semibold">
+                <input
+                  type="checkbox"
+                  checked={form.bookingEnabled}
+                  onChange={(event) => setForm((current) => ({ ...current, bookingEnabled: event.target.checked }))}
+                  className="h-4 w-4 accent-violet-950"
+                />
+                Available through customer booking links
+              </label>
+              <div className="grid gap-4 sm:grid-cols-3">
+                <label className="space-y-1 text-sm">
+                  <span className="font-medium">Booking mode</span>
+                  <select
+                    value={form.bookingMode}
+                    onChange={(event) => setForm((current) => ({ ...current, bookingMode: event.target.value as BookingMode }))}
+                    className="w-full rounded-lg border border-zinc-200 px-3 py-2"
+                  >
+                    <option value="INSTANT">Book instantly</option>
+                    <option value="REQUEST">Request appointment</option>
+                  </select>
+                </label>
+                <label className="space-y-1 text-sm">
+                  <span className="font-medium">Intake</span>
+                  <select
+                    value={form.allowedIntakeType}
+                    onChange={(event) => setForm((current) => ({ ...current, allowedIntakeType: event.target.value as ServiceBookingIntakeOption }))}
+                    className="w-full rounded-lg border border-zinc-200 px-3 py-2"
+                  >
+                    <option value="EITHER">Wait or drop-off</option>
+                    <option value="WAIT_ONLY">Wait only</option>
+                    <option value="DROP_OFF_ONLY">Drop-off only</option>
+                  </select>
+                </label>
+                <label className="space-y-1 text-sm">
+                  <span className="font-medium">Duration minutes</span>
+                  <input
+                    type="number"
+                    min="15"
+                    value={form.bookingDurationMinutes}
+                    onChange={(event) => setForm((current) => ({ ...current, bookingDurationMinutes: event.target.value }))}
+                    className="w-full rounded-lg border border-zinc-200 px-3 py-2"
+                  />
+                </label>
+                <label className="space-y-1 text-sm">
+                  <span className="font-medium">Buffer before</span>
+                  <input
+                    type="number"
+                    min="0"
+                    value={form.bufferBeforeMinutes}
+                    onChange={(event) => setForm((current) => ({ ...current, bufferBeforeMinutes: event.target.value }))}
+                    className="w-full rounded-lg border border-zinc-200 px-3 py-2"
+                  />
+                </label>
+                <label className="space-y-1 text-sm">
+                  <span className="font-medium">Buffer after</span>
+                  <input
+                    type="number"
+                    min="0"
+                    value={form.bufferAfterMinutes}
+                    onChange={(event) => setForm((current) => ({ ...current, bufferAfterMinutes: event.target.value }))}
+                    className="w-full rounded-lg border border-zinc-200 px-3 py-2"
+                  />
+                </label>
+                <label className="space-y-1 text-sm">
+                  <span className="font-medium">Max simultaneous</span>
+                  <input
+                    type="number"
+                    min="1"
+                    value={form.maximumSimultaneousBookings}
+                    onChange={(event) => setForm((current) => ({ ...current, maximumSimultaneousBookings: event.target.value }))}
+                    placeholder="Shop default"
+                    className="w-full rounded-lg border border-zinc-200 px-3 py-2"
+                  />
+                </label>
+                <label className="space-y-1 text-sm">
+                  <span className="font-medium">Notice minutes</span>
+                  <input
+                    type="number"
+                    min="0"
+                    value={form.minimumNoticeMinutes}
+                    onChange={(event) => setForm((current) => ({ ...current, minimumNoticeMinutes: event.target.value }))}
+                    placeholder="Shop default"
+                    className="w-full rounded-lg border border-zinc-200 px-3 py-2"
+                  />
+                </label>
+                <label className="space-y-1 text-sm">
+                  <span className="font-medium">Starts</span>
+                  <input
+                    type="time"
+                    value={form.bookingStartTime}
+                    onChange={(event) => setForm((current) => ({ ...current, bookingStartTime: event.target.value }))}
+                    className="w-full rounded-lg border border-zinc-200 px-3 py-2"
+                  />
+                </label>
+                <label className="space-y-1 text-sm">
+                  <span className="font-medium">Ends</span>
+                  <input
+                    type="time"
+                    value={form.bookingEndTime}
+                    onChange={(event) => setForm((current) => ({ ...current, bookingEndTime: event.target.value }))}
+                    className="w-full rounded-lg border border-zinc-200 px-3 py-2"
+                  />
+                </label>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {dayLabels.map((label, day) => (
+                  <button
+                    key={label}
+                    type="button"
+                    onClick={() => setForm((current) => ({
+                      ...current,
+                      bookingWeekdays: current.bookingWeekdays.includes(day)
+                        ? current.bookingWeekdays.filter((item) => item !== day)
+                        : [...current.bookingWeekdays, day].sort(),
+                    }))}
+                    className={`h-9 rounded-lg border px-3 text-sm font-semibold ${form.bookingWeekdays.includes(day) ? "border-violet-950 bg-violet-950 text-white" : "border-zinc-200 text-zinc-700"}`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <label className="space-y-1 text-sm sm:col-span-2">
             <span className="font-medium">Description</span>
             <textarea
@@ -309,6 +501,9 @@ export default function ServicesPage() {
                 </div>
                 <Badge variant={service.isActive ? "green" : "neutral"}>
                   {service.isActive ? "Active" : "Inactive"}
+                </Badge>
+                <Badge variant={service.bookingRule?.bookingEnabled ? "purple" : "neutral"}>
+                  {service.bookingRule?.bookingEnabled ? "Bookable" : "Not bookable"}
                 </Badge>
               </div>
               <div className="mt-4 grid grid-cols-2 gap-3 text-sm">

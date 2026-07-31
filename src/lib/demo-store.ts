@@ -4,16 +4,23 @@ import { useEffect, useMemo, useSyncExternalStore } from "react";
 import {
   createInitialDemoState,
   type Appointment,
+  type BookingMode,
   type Customer,
+  type CustomerBookingLink,
   type DemoState,
   type ImportHistoryRecord,
   type MaintenanceService,
+  type ServiceBookingIntakeOption,
+  type ServiceBookingRule,
+  type ShopBookingSettings,
   type VehicleDrivingProfile,
   type VehicleMileageReading,
   type OutreachRecord,
   type TimeIntervalUnit,
   type Vehicle,
   type VehicleMaintenanceRecord,
+  defaultBookingSettings,
+  defaultBookingWindows,
 } from "@/lib/demo-data";
 import { hasActiveVehicleAppointmentAt } from "@/lib/appointment";
 import { createAppointmentFromRecords } from "@/lib/demo-calculations";
@@ -60,7 +67,13 @@ const authenticatedLoadingSnapshot: DemoState = {
   appointments: [],
   seededAt: "",
 };
-export type MutationResult = { ok: boolean; message?: string };
+export type BookingLinkResult = {
+  id: string;
+  url: string;
+  expiresAt: string;
+  message?: string;
+};
+export type MutationResult = { ok: boolean; message?: string; bookingLink?: BookingLinkResult };
 
 export type ServiceDefinitionInput = Omit<MaintenanceService, "id" | "shopId">;
 export type MaintenanceItemInput = {
@@ -83,6 +96,21 @@ export type MaintenanceItemInput = {
   notes?: string;
 };
 
+export type ServiceBookingRuleInput = {
+  bookingEnabled: boolean;
+  bookingMode: BookingMode;
+  estimatedDurationMinutes: number;
+  bufferBeforeMinutes: number;
+  bufferAfterMinutes: number;
+  allowedIntakeType: ServiceBookingIntakeOption;
+  minimumNoticeMinutes?: number | null;
+  maximumAdvanceDays?: number | null;
+  maximumSimultaneousBookings?: number | null;
+  weekdays: number[];
+  startMinute: number;
+  endMinute: number;
+};
+
 function getServerSnapshot() {
   return serverSnapshot;
 }
@@ -98,6 +126,7 @@ function normalizeState(state: DemoState): DemoState {
       service.defaultTimeIntervalValue,
       service.defaultTimeIntervalUnit,
     ),
+    bookingRule: service.bookingRule ?? baseline.services.find((item) => item.name === service.name)?.bookingRule,
   }));
   return {
     ...baseline,
@@ -132,6 +161,10 @@ function normalizeState(state: DemoState): DemoState {
         appointment.source === "AUTOMATION" ? "MAINTIVA_OUTREACH" : "MANUAL_SHOP_ENTRY"
       ),
     })),
+    bookingSettings: state.bookingSettings ?? baseline.bookingSettings ?? defaultBookingSettings,
+    bookingWindows: state.bookingWindows ?? baseline.bookingWindows ?? defaultBookingWindows,
+    bookingBlackouts: state.bookingBlackouts ?? baseline.bookingBlackouts ?? [],
+    customerBookingLinks: state.customerBookingLinks ?? baseline.customerBookingLinks ?? [],
   };
 }
 
@@ -180,7 +213,7 @@ function saveState(state: DemoState) {
 
 async function hydratePilotState() {
   if (shouldUseLocalDemoPersistence()) return;
-  if (["/login", "/password-reset", "/onboarding", "/privacy", "/terms"].includes(window.location.pathname)) {
+  if (["/login", "/password-reset", "/onboarding", "/privacy", "/terms"].includes(window.location.pathname) || window.location.pathname.startsWith("/book/")) {
     return;
   }
   try {
@@ -227,6 +260,7 @@ export async function mutatePilotState(body: unknown): Promise<MutationResult> {
       code?: string;
       state?: DemoState;
       message?: string;
+      bookingLink?: BookingLinkResult;
     };
 
     if (response.status === 409 && data.code === "ONBOARDING_REQUIRED") {
@@ -247,7 +281,7 @@ export async function mutatePilotState(body: unknown): Promise<MutationResult> {
     }
 
     saveState(data.state);
-    return { ok: true };
+    return { ok: true, bookingLink: data.bookingLink };
   } catch {
     return {
       ok: false,
@@ -287,6 +321,22 @@ function monthsFromTime(value?: number | null, unit?: TimeIntervalUnit | null) {
   if (unit === "DAYS") return Math.max(1, Math.round(value / 30.4375));
   if (unit === "YEARS") return value * 12;
   return value;
+}
+
+function bookingMessage(draft: DemoState, link: BookingLinkResult, input: {
+  customerId: string;
+  vehicleId: string;
+  opportunityIds: string[];
+}) {
+  const customer = draft.customers.find((item) => item.id === input.customerId);
+  const vehicle = draft.vehicles.find((item) => item.id === input.vehicleId);
+  const opportunities = draft.revenueOpportunities.filter((item) => input.opportunityIds.includes(item.id));
+  const serviceNames = Array.from(new Set(opportunities.flatMap((item) => {
+    const maintenance = item.maintenanceRecordId ? draft.maintenanceRecords.find((record) => record.id === item.maintenanceRecordId) : undefined;
+    const declined = item.declinedWorkRecordId ? draft.declinedWorkRecords.find((record) => record.id === item.declinedWorkRecordId) : undefined;
+    return [maintenance?.serviceName ?? declined?.serviceName ?? ""].filter(Boolean);
+  })));
+  return `Hi ${customer?.firstName ?? "there"}, this is ${draft.shop.name}. Based on your ${vehicle ? `${vehicle.year} ${vehicle.make} ${vehicle.model}` : "vehicle"} service history, ${serviceNames.join(", ") || "recommended maintenance"} is ready to schedule. You can view available times and schedule here: ${link.url}`;
 }
 
 function upsertLocalDrivingProfile(
@@ -367,6 +417,115 @@ export function useDemoStore() {
       resetDemoData() {
         if (!shouldUseLocalDemoPersistence()) return;
         saveState(createInitialDemoState());
+      },
+      createBookingLink(input: {
+        customerId: string;
+        vehicleId: string;
+        opportunityIds: string[];
+      }) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "createBookingLink", payload: input });
+        }
+
+        let result: BookingLinkResult | undefined;
+        update((draft) => {
+          const opportunities = draft.revenueOpportunities.filter((item) => input.opportunityIds.includes(item.id));
+          const linkId = `booklink-${Date.now()}`;
+          result = {
+            id: linkId,
+            url: `${window.location.origin}/book/demo-${linkId}`,
+            expiresAt: new Date(Date.now() + 14 * 86_400_000).toISOString(),
+          };
+          const link: CustomerBookingLink = {
+            id: linkId,
+            shopId: draft.shop.id,
+            customerId: input.customerId,
+            vehicleId: input.vehicleId,
+            opportunityId: opportunities[0]?.id,
+            maintenanceRecordIds: opportunities
+              .map((opportunity) => opportunity.maintenanceRecordId)
+              .filter((id): id is string => Boolean(id)),
+            declinedWorkRecordIds: opportunities
+              .map((opportunity) => opportunity.declinedWorkRecordId)
+              .filter((id): id is string => Boolean(id)),
+            status: "ACTIVE",
+            url: result!.url,
+            expiresAt: result!.expiresAt,
+            createdAt: new Date().toISOString(),
+          };
+          result!.message = bookingMessage(draft, result!, input);
+          return {
+            ...draft,
+            customerBookingLinks: [...draft.customerBookingLinks, link],
+          };
+        });
+        return Promise.resolve({ ok: true, bookingLink: result, message: undefined });
+      },
+      saveBookingSettings(input: ShopBookingSettings & {
+        windows?: Array<{ dayOfWeek: number; startMinute: number; endMinute: number; isActive: boolean }>;
+      }) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "saveBookingSettings", payload: input });
+        }
+
+        update((draft) => {
+          const { windows, ...settingsInput } = input;
+          return {
+            ...draft,
+            bookingSettings: {
+              ...settingsInput,
+              id: draft.bookingSettings?.id ?? input.id ?? `settings-${draft.shop.id}`,
+              shopId: draft.shop.id,
+            },
+            bookingWindows: windows
+              ? windows.map((window) => ({
+                  id: `booking-window-${draft.shop.id}-${window.dayOfWeek}`,
+                  shopId: draft.shop.id,
+                  dayOfWeek: window.dayOfWeek,
+                  startMinute: window.startMinute,
+                  endMinute: window.endMinute,
+                  isActive: window.isActive,
+                }))
+              : draft.bookingWindows,
+          };
+        });
+        return Promise.resolve({ ok: true, message: undefined });
+      },
+      saveServiceBookingRule(serviceId: string, input: ServiceBookingRuleInput) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "saveServiceBookingRule", id: serviceId, payload: input });
+        }
+
+        update((draft) => ({
+          ...draft,
+          services: draft.services.map((service) => {
+            if (service.id !== serviceId) return service;
+            const rule: ServiceBookingRule = {
+              id: service.bookingRule?.id ?? `booking-rule-${serviceId}`,
+              shopId: draft.shop.id,
+              serviceDefinitionId: serviceId,
+              bookingEnabled: input.bookingEnabled,
+              bookingMode: input.bookingMode,
+              estimatedDurationMinutes: input.estimatedDurationMinutes,
+              bufferBeforeMinutes: input.bufferBeforeMinutes,
+              bufferAfterMinutes: input.bufferAfterMinutes,
+              allowedIntakeType: input.allowedIntakeType,
+              minimumNoticeMinutes: input.minimumNoticeMinutes ?? null,
+              maximumAdvanceDays: input.maximumAdvanceDays ?? null,
+              maximumSimultaneousBookings: input.maximumSimultaneousBookings ?? null,
+              windows: input.weekdays.map((dayOfWeek) => ({
+                id: `booking-window-${serviceId}-${dayOfWeek}`,
+                shopId: draft.shop.id,
+                dayOfWeek,
+                startMinute: input.startMinute,
+                endMinute: input.endMinute,
+                isActive: true,
+              })),
+            };
+            return { ...service, bookingRule: rule };
+          }),
+        }));
+        return Promise.resolve({ ok: true, message: undefined });
       },
       addCustomer(input: Omit<Customer, "id" | "shopId" | "customerScore" | "lifetimeRevenueCents" | "lastVisit">) {
         if (!shouldUseLocalDemoPersistence()) {
@@ -1138,6 +1297,7 @@ export function useDemoStore() {
         channel: OutreachRecord["channel"];
         responseStatus: OutreachRecord["responseStatus"];
         followUpDate?: string;
+        bookingLinkId?: string;
       }) {
         if (!shouldUseLocalDemoPersistence()) {
           return mutatePilotState({ action: "recordOpportunityContact", payload: input });
@@ -1183,6 +1343,7 @@ export function useDemoStore() {
                 manuallySentAt: new Date().toISOString(),
                 responseStatus: input.responseStatus,
                 followUpDate: input.followUpDate ? new Date(`${input.followUpDate}T12:00:00`).toISOString() : undefined,
+                bookingLinkId: input.bookingLinkId,
                 performedByUserId: actorUserId(draft),
                 status: "MANUALLY_SENT",
               },
@@ -1209,6 +1370,9 @@ export function useDemoStore() {
                     lastActivityAt: new Date().toISOString(),
                   }
                 : opportunity,
+            ),
+            customerBookingLinks: draft.customerBookingLinks.map((link) =>
+              link.id === input.bookingLinkId ? { ...link, outreachRecordId: outreachId } : link,
             ),
           };
         });
@@ -1767,8 +1931,71 @@ export function useDemoStore() {
                   notes: input.notes ?? appointment.notes,
                 }
               : appointment,
-          ),
+            ),
         }));
+      },
+      approveAppointmentRequest(appointmentId: string) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "approveAppointmentRequest", id: appointmentId });
+        }
+
+        update((draft) => {
+          const appointment = draft.appointments.find((item) => item.id === appointmentId);
+          if (!appointment) return draft;
+          return {
+            ...draft,
+            appointments: draft.appointments.map((item) =>
+              item.id === appointmentId
+                ? { ...item, status: "CONFIRMED", approvedAt: new Date().toISOString() }
+                : item,
+            ),
+            maintenanceRecords: draft.maintenanceRecords.map((record) =>
+              appointment.maintenanceRecordIds.includes(record.id)
+                ? { ...record, outreachStatus: "SCHEDULED", appointmentId }
+                : record,
+            ),
+            revenueOpportunities: draft.revenueOpportunities.map((opportunity) =>
+              opportunity.id === appointment.opportunityId
+                ? { ...opportunity, stage: "BOOKED", lastActivityAt: new Date().toISOString() }
+                : opportunity,
+            ),
+            customerBookingLinks: draft.customerBookingLinks.map((link) =>
+              link.id === appointment.bookingLinkId
+                ? { ...link, status: "COMPLETED", bookingCompletedAt: new Date().toISOString(), appointmentId }
+                : link,
+            ),
+          };
+        });
+        return Promise.resolve({ ok: true, message: undefined });
+      },
+      declineAppointmentRequest(appointmentId: string, reason?: string) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "declineAppointmentRequest", id: appointmentId, payload: { reason } });
+        }
+
+        update((draft) => {
+          const appointment = draft.appointments.find((item) => item.id === appointmentId);
+          if (!appointment) return draft;
+          return {
+            ...draft,
+            appointments: draft.appointments.map((item) =>
+              item.id === appointmentId
+                ? {
+                    ...item,
+                    status: "CANCELLED",
+                    declinedAt: new Date().toISOString(),
+                    internalNotes: reason ?? item.internalNotes,
+                  }
+                : item,
+            ),
+            revenueOpportunities: draft.revenueOpportunities.map((opportunity) =>
+              opportunity.id === appointment.opportunityId
+                ? { ...opportunity, stage: "RESPONDED", lastActivityAt: new Date().toISOString() }
+                : opportunity,
+            ),
+          };
+        });
+        return Promise.resolve({ ok: true, message: undefined });
       },
     };
   }, [state]);

@@ -27,6 +27,10 @@ import { cn } from "@/lib/utils";
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { state, resetDemoData, ready } = useDemoStore();
+  if (pathname.startsWith("/book/")) {
+    return <div className="min-h-screen bg-zinc-50 text-zinc-950">{children}</div>;
+  }
+
   const showDemoReset = process.env.NEXT_PUBLIC_MAINTIVA_ENABLE_DEMO_RESET === "true";
   const authConfigured = isBrowserSupabaseConfigured();
   const canResetLocalDemo = state.shop.isDemo && !authConfigured && showDemoReset;

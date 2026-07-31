@@ -96,6 +96,29 @@ enum AppointmentAttributionSource {
   OTHER
 }
 
+enum BookingMode {
+  INSTANT
+  REQUEST
+}
+
+enum BookingIntakeType {
+  WAIT
+  DROP_OFF
+}
+
+enum ServiceBookingIntakeOption {
+  WAIT_ONLY
+  DROP_OFF_ONLY
+  EITHER
+}
+
+enum CustomerBookingLinkStatus {
+  ACTIVE
+  REVOKED
+  COMPLETED
+  EXPIRED
+}
+
 enum OpportunitySource {
   DUE_MAINTENANCE
   OVERDUE_MAINTENANCE
@@ -209,6 +232,7 @@ model User {
   mileageReadingsRecorded VehicleMileageReading[] @relation("MileageReadingRecordedBy")
   drivingProfilesCustomerReported VehicleDrivingProfile[] @relation("DrivingProfileCustomerReportedBy")
   drivingProfilesManualOverride VehicleDrivingProfile[] @relation("DrivingProfileManualOverrideSetBy")
+  bookingLinksCreated CustomerBookingLink[] @relation("BookingLinkCreatedBy")
 }
 
 model Shop {
@@ -242,6 +266,13 @@ model Shop {
   auditLogs            AuditLog[]
   mileageReadings      VehicleMileageReading[]
   drivingProfiles      VehicleDrivingProfile[]
+  bookingSettings      ShopBookingSettings?
+  bookingWindows       ShopBookingWindow[]
+  bookingBlackouts     ShopBookingBlackout[]
+  serviceBookingRules  ServiceBookingRule[]
+  serviceBookingWindows ServiceBookingWindow[]
+  customerBookingLinks CustomerBookingLink[]
+  appointmentChanges   AppointmentChangeRecord[]
 
   @@index([status])
 }
@@ -289,6 +320,7 @@ model Customer {
   revenueOpportunities MaintenanceRevenueOpportunity[]
   outreachRecords      OutreachRecord[]
   appointments         Appointment[]
+  customerBookingLinks CustomerBookingLink[]
 
   @@index([shopId, status])
   @@index([shopId, archivedAt])
@@ -324,6 +356,7 @@ model Vehicle {
   appointments          Appointment[]
   mileageReadings       VehicleMileageReading[]
   drivingProfile        VehicleDrivingProfile?
+  customerBookingLinks  CustomerBookingLink[]
 
   @@index([shopId, customerId])
   @@index([shopId, archivedAt])
@@ -350,6 +383,7 @@ model ServiceDefinition {
   maintenanceRecords           VehicleMaintenanceRecord[]
   serviceHistoryRecords        ServiceHistoryRecord[]
   appointmentServices          AppointmentService[]
+  bookingRule                  ServiceBookingRule?
 
   @@unique([shopId, name])
   @@index([shopId, isActive])
@@ -556,6 +590,7 @@ model OutreachRecord {
   responseStatus        CustomerResponseStatus @default(NO_RESPONSE)
   followUpDate          DateTime?
   appointmentId         String?
+  bookingLinkId         String?
   performedByUserId     String?
   providerExternalId    String?
   providerPayload       Json?
@@ -565,8 +600,10 @@ model OutreachRecord {
   customer              Customer                   @relation(fields: [customerId], references: [id], onDelete: Cascade)
   vehicle               Vehicle                    @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
   appointment           Appointment?               @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  bookingLink           CustomerBookingLink?        @relation("OutreachBookingLink", fields: [bookingLinkId], references: [id], onDelete: SetNull)
   performedBy           User?                      @relation(fields: [performedByUserId], references: [id], onDelete: SetNull)
   maintenanceRecords    VehicleMaintenanceRecord[]
+  customerBookingLinks  CustomerBookingLink[]       @relation("BookingLinkOutreachRecord")
 
   @@index([shopId, status, createdAt])
   @@index([shopId, customerId, createdAt])
@@ -587,10 +624,19 @@ model Appointment {
   attributionSource     AppointmentAttributionSource @default(MANUAL_SHOP_ENTRY)
   opportunityId         String?
   outreachRecordId      String?
+  bookingLinkId         String?
+  intakeType            BookingIntakeType?
+  customerNotes         String?
+  internalNotes         String?
   completedRevenueCents Int?
   completedLaborMinutes Int?
   notes                 String?
   cancelledAt           DateTime?
+  requestedAt           DateTime?
+  approvedAt            DateTime?
+  declinedAt            DateTime?
+  customerCancelledAt   DateTime?
+  rescheduledAt         DateTime?
   completedAt           DateTime?
   createdAt             DateTime                   @default(now())
   updatedAt             DateTime                   @updatedAt
@@ -601,8 +647,12 @@ model Appointment {
   maintenanceRecords    VehicleMaintenanceRecord[]
   declinedWorkRecords   DeclinedWorkRecord[]
   outreachRecords       OutreachRecord[]
+  bookingLink           CustomerBookingLink?        @relation("AppointmentBookingLink", fields: [bookingLinkId], references: [id], onDelete: SetNull)
+  customerBookingLinks  CustomerBookingLink[]       @relation("BookingLinkAppointment")
+  changes               AppointmentChangeRecord[]
 
   @@index([shopId, scheduledStart, status])
+  @@index([shopId, bookingLinkId])
   @@unique([shopId, vehicleId, scheduledStart])
 }
 
@@ -638,6 +688,144 @@ model AuditLog {
   actor       User?    @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
 
   @@index([shopId, createdAt])
+}
+
+model ShopBookingSettings {
+  id                                String   @id @default(cuid())
+  shopId                            String   @unique
+  onlineBookingEnabled              Boolean  @default(true)
+  minimumNoticeMinutes              Int      @default(1440)
+  maximumAdvanceDays                Int      @default(30)
+  defaultBufferBeforeMinutes        Int      @default(0)
+  defaultBufferAfterMinutes         Int      @default(15)
+  maximumSimultaneousAppointments   Int      @default(2)
+  cancellationCutoffMinutes         Int      @default(1440)
+  reschedulingCutoffMinutes         Int      @default(1440)
+  createdAt                         DateTime @default(now())
+  updatedAt                         DateTime @updatedAt
+  shop                              Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+}
+
+model ShopBookingWindow {
+  id          String   @id @default(cuid())
+  shopId      String
+  dayOfWeek   Int
+  startMinute Int
+  endMinute   Int
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  shop        Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@index([shopId, dayOfWeek, isActive])
+}
+
+model ShopBookingBlackout {
+  id          String   @id @default(cuid())
+  shopId      String
+  startsAt    DateTime
+  endsAt      DateTime
+  reason      String?
+  isFullDay   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  shop        Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@index([shopId, startsAt, endsAt])
+}
+
+model ServiceBookingRule {
+  id                          String                     @id @default(cuid())
+  shopId                      String
+  serviceDefinitionId         String                     @unique
+  bookingEnabled              Boolean                    @default(false)
+  bookingMode                 BookingMode                @default(REQUEST)
+  estimatedDurationMinutes    Int
+  bufferBeforeMinutes         Int                        @default(0)
+  bufferAfterMinutes          Int                        @default(15)
+  allowedIntakeType           ServiceBookingIntakeOption @default(EITHER)
+  minimumNoticeMinutes        Int?
+  maximumAdvanceDays          Int?
+  maximumSimultaneousBookings Int?
+  createdAt                   DateTime                   @default(now())
+  updatedAt                   DateTime                   @updatedAt
+  shop                        Shop                       @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  serviceDefinition           ServiceDefinition          @relation(fields: [serviceDefinitionId], references: [id], onDelete: Cascade)
+  windows                     ServiceBookingWindow[]
+
+  @@index([shopId, bookingEnabled])
+}
+
+model ServiceBookingWindow {
+  id                   String             @id @default(cuid())
+  shopId               String
+  serviceBookingRuleId String
+  dayOfWeek            Int
+  startMinute          Int
+  endMinute            Int
+  isActive             Boolean            @default(true)
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+  shop                 Shop               @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  serviceBookingRule   ServiceBookingRule @relation(fields: [serviceBookingRuleId], references: [id], onDelete: Cascade)
+
+  @@index([shopId, dayOfWeek, isActive])
+  @@index([serviceBookingRuleId])
+}
+
+model CustomerBookingLink {
+  id                    String                    @id @default(cuid())
+  shopId                String
+  tokenHash             String                    @unique
+  customerId            String
+  vehicleId             String
+  opportunityId         String?
+  maintenanceRecordIds  String[]                  @default([])
+  declinedWorkRecordIds String[]                  @default([])
+  status                CustomerBookingLinkStatus @default(ACTIVE)
+  expiresAt             DateTime
+  revokedAt             DateTime?
+  usedAt                DateTime?
+  lastViewedAt          DateTime?
+  bookingCompletedAt    DateTime?
+  createdByUserId       String?
+  outreachRecordId      String?
+  appointmentId         String?
+  createdAt             DateTime                  @default(now())
+  updatedAt             DateTime                  @updatedAt
+  shop                  Shop                      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  customer              Customer                  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  vehicle               Vehicle                   @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  createdBy             User?                     @relation("BookingLinkCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  outreachRecord        OutreachRecord?           @relation("BookingLinkOutreachRecord", fields: [outreachRecordId], references: [id], onDelete: SetNull)
+  appointment           Appointment?              @relation("BookingLinkAppointment", fields: [appointmentId], references: [id], onDelete: SetNull)
+  outreachRecords       OutreachRecord[]          @relation("OutreachBookingLink")
+  appointments          Appointment[]             @relation("AppointmentBookingLink")
+  appointmentChanges    AppointmentChangeRecord[]
+
+  @@index([shopId, customerId])
+  @@index([shopId, vehicleId])
+  @@index([shopId, opportunityId])
+  @@index([shopId, status, expiresAt])
+}
+
+model AppointmentChangeRecord {
+  id              String               @id @default(cuid())
+  shopId          String
+  appointmentId   String
+  bookingLinkId   String?
+  action          String
+  previousStart   DateTime?
+  previousEnd     DateTime?
+  newStart        DateTime?
+  newEnd          DateTime?
+  reason          String?
+  createdAt       DateTime             @default(now())
+  shop            Shop                 @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  appointment     Appointment          @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  bookingLink     CustomerBookingLink? @relation(fields: [bookingLinkId], references: [id], onDelete: SetNull)
+
+  @@index([shopId, appointmentId, createdAt])
 }
 
 model ImportHistoryRecord {
