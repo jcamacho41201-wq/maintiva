@@ -368,6 +368,7 @@ function upsertLocalDrivingProfile(
       ...existing,
       ...patch,
     },
+    asOf: currentDateInTimeZone(draft.shop.timezone),
   });
   const profile: VehicleDrivingProfile = {
     id: existing?.id ?? `profile-${vehicleId}`,

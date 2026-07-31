@@ -1784,6 +1784,7 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
             manualOverrideSetByUserId: persisted.manualOverrideSetByUserId,
           }
         : null,
+      asOf: currentDateInTimeZone(context.shopTimezone),
     });
     return {
       id: persisted?.id ?? `profile-${vehicle.id}`,
@@ -2642,6 +2643,7 @@ async function recalculatePersistedDrivingProfile({
   });
   const customerReported = customerReportedAnnualMileage ?? existing?.customerReportedAnnualMileage ?? null;
   const now = new Date();
+  const asOf = currentDateInTimeZone(context.shopTimezone);
   const manualOverride = clearManualOverride
     ? null
     : manualAnnualMileageOverride ?? existing?.manualAnnualMileageOverride ?? null;
@@ -2670,7 +2672,7 @@ async function recalculatePersistedDrivingProfile({
       manualOverrideSetAt: manualAnnualMileageOverride !== undefined ? now.toISOString() : clearManualOverride ? null : iso(existing?.manualOverrideSetAt) || null,
       manualOverrideSetByUserId: manualAnnualMileageOverride !== undefined ? context.userId : clearManualOverride ? null : existing?.manualOverrideSetByUserId ?? null,
     },
-    asOf: now,
+    asOf,
   });
 
   await tx.vehicleDrivingProfile.upsert({
