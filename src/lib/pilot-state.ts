@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import {
-  calculateAppointmentTotals,
   serviceDefinitions as defaultServices,
   type Appointment,
   type Customer,
@@ -255,6 +254,7 @@ function stageFromOutreach(input: {
       ? ("LOST" as const)
       : ("RESPONDED" as const);
   }
+  if (input.outreachStatus === "SNOOZED") return "CONTACTED" as const;
   if (input.outreachStatus === "MANUALLY_SENT" || input.outreachStatus === "RESPONDED") return "CONTACTED" as const;
   if (input.outreachStatus === "DECLINED" || input.outreachStatus === "STOPPED") return "LOST" as const;
   return "IDENTIFIED" as const;
@@ -762,6 +762,170 @@ function assertProductionEntityId(id: string, entityName: string) {
   }
 }
 
+function queueActionError({
+  code,
+  message,
+  status = 400,
+  operation = "UPDATE",
+}: {
+  code: string;
+  message: string;
+  status?: number;
+  operation?: "SELECT" | "INSERT" | "UPDATE" | "DELETE";
+}) {
+  return new SafeActionError({
+    code,
+    message,
+    status,
+    table: "MaintenanceRevenueOpportunity",
+    operation,
+  });
+}
+
+function responseOutreachStatus(responseStatus?: OutreachRecord["responseStatus"]) {
+  if (responseStatus === "DECLINED" || responseStatus === "DO_NOT_CONTACT") return "DECLINED" as const;
+  if (responseStatus && responseStatus !== "NO_RESPONSE") return "RESPONDED" as const;
+  return "MANUALLY_SENT" as const;
+}
+
+function responseOpportunityStage(responseStatus?: OutreachRecord["responseStatus"]) {
+  if (responseStatus === "DECLINED" || responseStatus === "DO_NOT_CONTACT") return "LOST" as const;
+  if (responseStatus && responseStatus !== "NO_RESPONSE") return "RESPONDED" as const;
+  return "CONTACTED" as const;
+}
+
+function startOfLocalDate(value: string) {
+  return new Date(`${value}T00:00:00`);
+}
+
+function requireFutureDate(value: string) {
+  const parsed = startOfLocalDate(value);
+  const today = startOfLocalDate(new Date().toISOString().slice(0, 10));
+  if (Number.isNaN(parsed.getTime()) || parsed <= today) {
+    throw queueActionError({
+      code: "SNOOZE_DATE_NOT_FUTURE",
+      message: "Choose a future snooze date.",
+      status: 400,
+    });
+  }
+  return parsed;
+}
+
+async function loadOpenQueueTargets(
+  context: AuthenticatedShopContext,
+  input: {
+    customerId: string;
+    vehicleId: string;
+    opportunityIds: string[];
+  },
+) {
+  const opportunityIds = Array.from(new Set(input.opportunityIds));
+  if (opportunityIds.length === 0) {
+    throw queueActionError({
+      code: "OPPORTUNITY_REQUIRED",
+      message: "Select at least one open opportunity.",
+      status: 400,
+      operation: "SELECT",
+    });
+  }
+  opportunityIds.forEach((id) => assertProductionEntityId(id, "The selected opportunity"));
+
+  const [customer, vehicle, opportunities] = await Promise.all([
+    prisma.customer.findUnique({ where: { id: input.customerId } }),
+    prisma.vehicle.findUnique({ where: { id: input.vehicleId } }),
+    prisma.maintenanceRevenueOpportunity.findMany({
+      where: {
+        id: { in: opportunityIds },
+        shopId: context.shopId,
+      },
+    }),
+  ]);
+
+  assertSameShop(context, customer?.shopId);
+  assertSameShop(context, vehicle?.shopId);
+  if (!vehicle || vehicle.customerId !== input.customerId) {
+    throw queueActionError({
+      code: "VEHICLE_CUSTOMER_MISMATCH",
+      message: "Vehicle does not belong to the selected customer.",
+      status: 403,
+      operation: "SELECT",
+    });
+  }
+  if (opportunities.length !== opportunityIds.length) {
+    throw queueActionError({
+      code: "OPPORTUNITY_NOT_IN_ACTIVE_SHOP",
+      message: "You do not have permission to update this opportunity.",
+      status: 403,
+      operation: "SELECT",
+    });
+  }
+  if (opportunities.some((opportunity) => opportunity.customerId !== input.customerId || opportunity.vehicleId !== input.vehicleId)) {
+    throw queueActionError({
+      code: "OPPORTUNITY_TARGET_MISMATCH",
+      message: "This opportunity is no longer open.",
+      status: 409,
+      operation: "SELECT",
+    });
+  }
+  if (opportunities.some((opportunity) => ["BOOKED", "COMPLETED", "LOST"].includes(opportunity.stage))) {
+    throw queueActionError({
+      code: "OPPORTUNITY_NOT_OPEN",
+      message: "This opportunity is no longer open.",
+      status: 409,
+      operation: "SELECT",
+    });
+  }
+
+  const maintenanceRecordIds = opportunities
+    .map((opportunity) => opportunity.maintenanceRecordId)
+    .filter((id): id is string => Boolean(id));
+  const declinedWorkRecordIds = opportunities
+    .map((opportunity) => opportunity.declinedWorkRecordId)
+    .filter((id): id is string => Boolean(id));
+
+  const [maintenanceRecords, declinedWorkRecords] = await Promise.all([
+    maintenanceRecordIds.length
+      ? prisma.vehicleMaintenanceRecord.findMany({
+          where: { id: { in: maintenanceRecordIds }, shopId: context.shopId },
+        })
+      : Promise.resolve([]),
+    declinedWorkRecordIds.length
+      ? prisma.declinedWorkRecord.findMany({
+          where: { id: { in: declinedWorkRecordIds }, shopId: context.shopId },
+        })
+      : Promise.resolve([]),
+  ]);
+
+  if (maintenanceRecords.length !== maintenanceRecordIds.length || declinedWorkRecords.length !== declinedWorkRecordIds.length) {
+    throw queueActionError({
+      code: "OPPORTUNITY_SOURCE_MISSING",
+      message: "This opportunity is no longer open.",
+      status: 409,
+      operation: "SELECT",
+    });
+  }
+  if (
+    maintenanceRecords.some((record) => record.vehicleId !== input.vehicleId) ||
+    declinedWorkRecords.some((record) => record.vehicleId !== input.vehicleId || record.customerId !== input.customerId)
+  ) {
+    throw queueActionError({
+      code: "OPPORTUNITY_SOURCE_MISMATCH",
+      message: "This opportunity is no longer open.",
+      status: 409,
+      operation: "SELECT",
+    });
+  }
+
+  return {
+    opportunityIds,
+    opportunities,
+    maintenanceRecords,
+    declinedWorkRecords,
+    maintenanceRecordIds,
+    declinedWorkRecordIds,
+  };
+}
+
 export function canManageDrivingEstimates(role: AuthenticatedShopContext["role"]) {
   return role === "OWNER" || role === "MANAGER";
 }
@@ -1064,7 +1228,94 @@ export async function createPilotShopForUser({
   return shop;
 }
 
+async function expirePastQueueSnoozes(context: AuthenticatedShopContext) {
+  const now = new Date();
+  const expired = await prisma.outreachRecord.findMany({
+    where: {
+      shopId: context.shopId,
+      status: "SNOOZED",
+      followUpDate: { lte: now },
+    },
+    select: {
+      id: true,
+      customerId: true,
+      vehicleId: true,
+    },
+  });
+  if (expired.length === 0) return;
+
+  const outreachIds = expired.map((record) => record.id);
+  const vehicleIds = Array.from(new Set(expired.map((record) => record.vehicleId)));
+  const customerIds = Array.from(new Set(expired.map((record) => record.customerId)));
+
+  await prisma.$transaction(async (tx) => {
+    const maintenance = await tx.vehicleMaintenanceRecord.findMany({
+      where: {
+        shopId: context.shopId,
+        outreachRecordId: { in: outreachIds },
+        outreachStatus: "SNOOZED",
+      },
+      select: { id: true },
+    });
+    const declined = await tx.declinedWorkRecord.findMany({
+      where: {
+        shopId: context.shopId,
+        customerId: { in: customerIds },
+        vehicleId: { in: vehicleIds },
+        outreachStatus: "SNOOZED",
+      },
+      select: { id: true },
+    });
+    const maintenanceRecordIds = maintenance.map((record) => record.id);
+    const declinedWorkRecordIds = declined.map((record) => record.id);
+
+    if (maintenanceRecordIds.length > 0) {
+      await tx.vehicleMaintenanceRecord.updateMany({
+        where: { id: { in: maintenanceRecordIds }, shopId: context.shopId },
+        data: {
+          outreachStatus: "NEEDS_OUTREACH",
+          updatedByUserId: context.userId,
+        },
+      });
+      await tx.maintenanceRevenueOpportunity.updateMany({
+        where: {
+          shopId: context.shopId,
+          maintenanceRecordId: { in: maintenanceRecordIds },
+          stage: "CONTACTED",
+        },
+        data: {
+          stage: "IDENTIFIED",
+          lastActivityAt: now,
+        },
+      });
+    }
+
+    if (declinedWorkRecordIds.length > 0) {
+      await tx.declinedWorkRecord.updateMany({
+        where: { id: { in: declinedWorkRecordIds }, shopId: context.shopId },
+        data: {
+          status: "OPEN",
+          outreachStatus: "NEEDS_OUTREACH",
+        },
+      });
+      await tx.maintenanceRevenueOpportunity.updateMany({
+        where: {
+          shopId: context.shopId,
+          declinedWorkRecordId: { in: declinedWorkRecordIds },
+          stage: "CONTACTED",
+        },
+        data: {
+          stage: "IDENTIFIED",
+          lastActivityAt: now,
+        },
+      });
+    }
+  });
+}
+
 export async function buildPilotState(context: AuthenticatedShopContext): Promise<DemoState> {
+  await expirePastQueueSnoozes(context);
+
   const shop = await prisma.shop.findUniqueOrThrow({
     where: { id: context.shopId },
     select: {
@@ -2704,22 +2955,215 @@ export async function markPilotOutreachManuallySent(
   });
 }
 
+export async function recordPilotOpportunityContact(
+  context: AuthenticatedShopContext,
+  input: {
+    customerId: string;
+    vehicleId: string;
+    opportunityIds: string[];
+    message: string;
+    channel: OutreachRecord["channel"];
+    responseStatus: OutreachRecord["responseStatus"];
+    followUpDate?: string;
+  },
+) {
+  const targets = await loadOpenQueueTargets(context, input);
+  const sourceStatus = responseOutreachStatus(input.responseStatus);
+  const stage = responseOpportunityStage(input.responseStatus);
+  const followUpDate = input.followUpDate ? dateFromDateOnly(input.followUpDate) : null;
+
+  await prisma.$transaction(async (tx) => {
+    const outreach = await tx.outreachRecord.create({
+      data: {
+        shopId: context.shopId,
+        customerId: input.customerId,
+        vehicleId: input.vehicleId,
+        message: input.message,
+        channel: input.channel,
+        status: "MANUALLY_SENT",
+        responseStatus: input.responseStatus,
+        followUpDate,
+        copiedAt: input.channel === "TEXT" || input.channel === "EMAIL" ? new Date() : null,
+        manuallySentAt: new Date(),
+        performedByUserId: context.userId,
+      },
+    });
+
+    if (targets.maintenanceRecordIds.length > 0) {
+      await tx.vehicleMaintenanceRecord.updateMany({
+        where: { id: { in: targets.maintenanceRecordIds }, shopId: context.shopId },
+        data: {
+          outreachStatus: sourceStatus,
+          outreachRecordId: outreach.id,
+          updatedByUserId: context.userId,
+        },
+      });
+    }
+    if (targets.declinedWorkRecordIds.length > 0) {
+      await tx.declinedWorkRecord.updateMany({
+        where: { id: { in: targets.declinedWorkRecordIds }, shopId: context.shopId },
+        data: { outreachStatus: sourceStatus },
+      });
+    }
+    await tx.maintenanceRevenueOpportunity.updateMany({
+      where: { id: { in: targets.opportunityIds }, shopId: context.shopId },
+      data: {
+        stage,
+        lastActivityAt: new Date(),
+      },
+    });
+  });
+}
+
+export async function snoozePilotOpportunity(
+  context: AuthenticatedShopContext,
+  input: {
+    customerId: string;
+    vehicleId: string;
+    opportunityIds: string[];
+    snoozedUntil: string;
+    reason: string;
+    notes?: string;
+  },
+) {
+  const snoozedUntil = requireFutureDate(input.snoozedUntil);
+  const reason = input.reason.trim();
+  if (!reason) {
+    throw queueActionError({
+      code: "SNOOZE_REASON_REQUIRED",
+      message: "Choose a snooze reason.",
+      status: 400,
+    });
+  }
+  const targets = await loadOpenQueueTargets(context, input);
+  const message = [
+    `Snoozed until ${input.snoozedUntil}.`,
+    `Reason: ${reason}.`,
+    input.notes?.trim() ? `Notes: ${input.notes.trim()}` : "",
+  ].filter(Boolean).join("\n");
+
+  await prisma.$transaction(async (tx) => {
+    const outreach = await tx.outreachRecord.create({
+      data: {
+        shopId: context.shopId,
+        customerId: input.customerId,
+        vehicleId: input.vehicleId,
+        message,
+        channel: "OTHER",
+        status: "SNOOZED",
+        responseStatus: "NOT_NOW",
+        followUpDate: snoozedUntil,
+        performedByUserId: context.userId,
+      },
+    });
+
+    if (targets.maintenanceRecordIds.length > 0) {
+      await tx.vehicleMaintenanceRecord.updateMany({
+        where: { id: { in: targets.maintenanceRecordIds }, shopId: context.shopId },
+        data: {
+          outreachStatus: "SNOOZED",
+          outreachRecordId: outreach.id,
+          updatedByUserId: context.userId,
+        },
+      });
+    }
+    if (targets.declinedWorkRecordIds.length > 0) {
+      await tx.declinedWorkRecord.updateMany({
+        where: { id: { in: targets.declinedWorkRecordIds }, shopId: context.shopId },
+        data: {
+          status: "SNOOZED",
+          outreachStatus: "SNOOZED",
+        },
+      });
+    }
+    await tx.maintenanceRevenueOpportunity.updateMany({
+      where: { id: { in: targets.opportunityIds }, shopId: context.shopId },
+      data: {
+        stage: "CONTACTED",
+        lastActivityAt: new Date(),
+      },
+    });
+  });
+}
+
+export async function endPilotOpportunitySnooze(
+  context: AuthenticatedShopContext,
+  input: {
+    customerId: string;
+    vehicleId: string;
+    opportunityIds: string[];
+  },
+) {
+  const targets = await loadOpenQueueTargets(context, input);
+
+  await prisma.$transaction(async (tx) => {
+    const outreach = await tx.outreachRecord.create({
+      data: {
+        shopId: context.shopId,
+        customerId: input.customerId,
+        vehicleId: input.vehicleId,
+        message: "Snooze ended now. Opportunity returned to Needs Attention.",
+        channel: "OTHER",
+        status: "NEEDS_OUTREACH",
+        responseStatus: "NO_RESPONSE",
+        performedByUserId: context.userId,
+      },
+    });
+
+    if (targets.maintenanceRecordIds.length > 0) {
+      await tx.vehicleMaintenanceRecord.updateMany({
+        where: { id: { in: targets.maintenanceRecordIds }, shopId: context.shopId },
+        data: {
+          outreachStatus: "NEEDS_OUTREACH",
+          outreachRecordId: outreach.id,
+          updatedByUserId: context.userId,
+        },
+      });
+    }
+    if (targets.declinedWorkRecordIds.length > 0) {
+      await tx.declinedWorkRecord.updateMany({
+        where: { id: { in: targets.declinedWorkRecordIds }, shopId: context.shopId },
+        data: {
+          status: "OPEN",
+          outreachStatus: "NEEDS_OUTREACH",
+        },
+      });
+    }
+    await tx.maintenanceRevenueOpportunity.updateMany({
+      where: { id: { in: targets.opportunityIds }, shopId: context.shopId },
+      data: {
+        stage: "IDENTIFIED",
+        lastActivityAt: new Date(),
+      },
+    });
+  });
+}
+
 export async function bookPilotAppointment(
   context: AuthenticatedShopContext,
   input: {
     customerId: string;
     vehicleId: string;
     maintenanceRecordIds: string[];
+    opportunityIds?: string[];
     date: string;
     time: string;
     status: Appointment["status"];
     notes?: string;
   },
 ) {
-  const records = await prisma.vehicleMaintenanceRecord.findMany({
+  const targets = input.opportunityIds?.length
+    ? await loadOpenQueueTargets(context, {
+        customerId: input.customerId,
+        vehicleId: input.vehicleId,
+        opportunityIds: input.opportunityIds,
+      })
+    : undefined;
+  const records = targets?.maintenanceRecords ?? await prisma.vehicleMaintenanceRecord.findMany({
     where: { id: { in: input.maintenanceRecordIds }, shopId: context.shopId },
   });
-  if (records.length !== input.maintenanceRecordIds.length) {
+  const declinedWorkRecords = targets?.declinedWorkRecords ?? [];
+  if (!targets && records.length !== input.maintenanceRecordIds.length) {
     throw new Error("One or more selected services are unavailable.");
   }
   const customer = await prisma.customer.findUnique({ where: { id: input.customerId } });
@@ -2732,25 +3176,32 @@ export async function bookPilotAppointment(
   if (records.some((record) => record.vehicleId !== input.vehicleId)) {
     throw new Error("Selected services do not belong to the selected vehicle.");
   }
-  const totals = calculateAppointmentTotals(
-    records.map((record) => ({
-      id: record.id,
-      shopId: record.shopId,
-      vehicleId: record.vehicleId,
-      serviceId: record.serviceDefinitionId,
+  if (declinedWorkRecords.some((record) => record.vehicleId !== input.vehicleId || record.customerId !== input.customerId)) {
+    throw new Error("Selected declined work does not belong to the selected vehicle.");
+  }
+  const serviceItems = [
+    ...records.map((record) => ({
+      serviceDefinitionId: record.serviceDefinitionId,
+      maintenanceRecordId: record.id,
       serviceName: record.serviceName,
-      lastCompletedDate: dateOnly(record.lastCompletedDate || record.createdAt),
-      lastCompletedMileage: record.lastCompletedMileage ?? 0,
-      recommendedMileageInterval: record.recommendedMileageInterval,
-      recommendedTimeIntervalMonths: record.recommendedTimeIntervalMonths,
+      laborMinutes: record.laborMinutes,
       priceCents: record.priceCents,
-      laborHours: record.laborMinutes / 60,
-      notificationThreshold: record.notificationThreshold,
-      outreachStatus: record.outreachStatus,
     })),
-  );
+    ...declinedWorkRecords.map((record) => ({
+      serviceDefinitionId: null,
+      maintenanceRecordId: null,
+      serviceName: record.serviceName,
+      laborMinutes: record.laborMinutes,
+      priceCents: record.recommendedPriceCents,
+    })),
+  ];
+  if (serviceItems.length === 0) {
+    throw new Error("Select at least one service before booking.");
+  }
+  const totalLaborMinutes = serviceItems.reduce((sum, item) => sum + item.laborMinutes, 0);
+  const totalPriceCents = serviceItems.reduce((sum, item) => sum + item.priceCents, 0);
   const scheduledStart = new Date(`${input.date}T${input.time}:00`);
-  const scheduledEnd = new Date(scheduledStart.getTime() + totals.recommendedHours * 60 * 60 * 1000);
+  const scheduledEnd = new Date(scheduledStart.getTime() + Math.max(totalLaborMinutes, 30) * 60 * 1000);
   const duplicateAppointment = await prisma.appointment.findFirst({
     where: {
       shopId: context.shopId,
@@ -2767,7 +3218,8 @@ export async function bookPilotAppointment(
   }
 
   await prisma.$transaction(async (tx) => {
-    const synced = await syncMaintenanceRevenueOpportunities(tx, context, input.maintenanceRecordIds);
+    const maintenanceRecordIds = targets?.maintenanceRecordIds ?? input.maintenanceRecordIds;
+    const synced = targets ? [] : await syncMaintenanceRevenueOpportunities(tx, context, maintenanceRecordIds);
     const appointment = await tx.appointment.create({
       data: {
         shopId: context.shopId,
@@ -2776,17 +3228,17 @@ export async function bookPilotAppointment(
         scheduledStart,
         scheduledEnd,
         status: input.status,
-        totalLaborMinutes: Math.round(totals.recommendedHours * 60),
-        totalPriceCents: totals.totalPriceCents,
+        totalLaborMinutes,
+        totalPriceCents,
         source: "AUTOMATION",
         attributionSource: "MAINTIVA_OUTREACH",
-        opportunityId: synced[0]?.id,
+        opportunityId: targets?.opportunityIds[0] ?? synced[0]?.id,
         notes: input.notes,
         services: {
-          create: records.map((record) => ({
+          create: serviceItems.map((record) => ({
             shopId: context.shopId,
             serviceDefinitionId: record.serviceDefinitionId,
-            maintenanceRecordId: record.id,
+            maintenanceRecordId: record.maintenanceRecordId,
             serviceName: record.serviceName,
             laborMinutes: record.laborMinutes,
             priceCents: record.priceCents,
@@ -2794,14 +3246,37 @@ export async function bookPilotAppointment(
         },
       },
     });
-    await tx.vehicleMaintenanceRecord.updateMany({
-      where: { id: { in: input.maintenanceRecordIds }, shopId: context.shopId },
-      data: {
-        outreachStatus: "SCHEDULED",
-        appointmentId: appointment.id,
-      },
-    });
-    await syncMaintenanceRevenueOpportunities(tx, context, input.maintenanceRecordIds);
+    if (maintenanceRecordIds.length > 0) {
+      await tx.vehicleMaintenanceRecord.updateMany({
+        where: { id: { in: maintenanceRecordIds }, shopId: context.shopId },
+        data: {
+          outreachStatus: "SCHEDULED",
+          appointmentId: appointment.id,
+          updatedByUserId: context.userId,
+        },
+      });
+    }
+    if (targets?.declinedWorkRecordIds.length) {
+      await tx.declinedWorkRecord.updateMany({
+        where: { id: { in: targets.declinedWorkRecordIds }, shopId: context.shopId },
+        data: {
+          status: "BOOKED",
+          outreachStatus: "SCHEDULED",
+          appointmentId: appointment.id,
+        },
+      });
+    }
+    if (targets) {
+      await tx.maintenanceRevenueOpportunity.updateMany({
+        where: { id: { in: targets.opportunityIds }, shopId: context.shopId },
+        data: {
+          stage: "BOOKED",
+          lastActivityAt: new Date(),
+        },
+      });
+    } else {
+      await syncMaintenanceRevenueOpportunities(tx, context, input.maintenanceRecordIds);
+    }
   });
 }
 

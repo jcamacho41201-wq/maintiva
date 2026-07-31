@@ -16,14 +16,17 @@ import {
   buildPilotState,
   completePilotAppointment,
   deactivatePilotMaintenanceItem,
+  endPilotOpportunitySnooze,
   importPilotCsvRows,
   markPilotMaintenanceServiceComplete,
   markPilotOutreachManuallySent,
   recordPilotInspection,
+  recordPilotOpportunityContact,
   resetPilotManualMileageOverride,
   reviewPilotMileageReading,
   setPilotCustomerReportedMileage,
   setPilotManualMileageOverride,
+  snoozePilotOpportunity,
   updatePilotMaintenanceItem,
   updatePilotCustomer,
   updatePilotServiceDefinition,
@@ -94,11 +97,33 @@ const mutationSchema = z.discriminatedUnion("action", [
     }),
   }),
   z.object({
+    action: z.literal("recordOpportunityContact"),
+    payload: z.object({
+      customerId: z.string().min(1),
+      vehicleId: z.string().min(1),
+      opportunityIds: z.array(z.string().min(1)).min(1),
+      message: z.string().min(3),
+      channel: z.enum(["PHONE", "TEXT", "EMAIL", "CALL", "IN_PERSON", "OTHER"]),
+      responseStatus: z.enum([
+        "NO_RESPONSE",
+        "INTERESTED",
+        "WANTS_CALLBACK",
+        "BOOKED",
+        "DECLINED",
+        "NOT_NOW",
+        "WRONG_CONTACT",
+        "DO_NOT_CONTACT",
+      ]),
+      followUpDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().or(z.literal("")),
+    }),
+  }),
+  z.object({
     action: z.literal("bookAppointment"),
     payload: z.object({
       customerId: z.string().min(1),
       vehicleId: z.string().min(1),
-      maintenanceRecordIds: z.array(z.string().min(1)).min(1),
+      maintenanceRecordIds: z.array(z.string().min(1)),
+      opportunityIds: z.array(z.string().min(1)).optional(),
       date: z.string().min(8),
       time: z.string().min(4),
       status: z.enum([
@@ -110,6 +135,25 @@ const mutationSchema = z.discriminatedUnion("action", [
         "NO_SHOW",
       ]),
       notes: z.string().optional(),
+    }),
+  }),
+  z.object({
+    action: z.literal("snoozeOpportunity"),
+    payload: z.object({
+      customerId: z.string().min(1),
+      vehicleId: z.string().min(1),
+      opportunityIds: z.array(z.string().min(1)).min(1),
+      snoozedUntil: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      reason: z.string().min(1),
+      notes: z.string().optional(),
+    }),
+  }),
+  z.object({
+    action: z.literal("endOpportunitySnooze"),
+    payload: z.object({
+      customerId: z.string().min(1),
+      vehicleId: z.string().min(1),
+      opportunityIds: z.array(z.string().min(1)).min(1),
     }),
   }),
   z.object({
@@ -233,8 +277,17 @@ export async function POST(request: Request) {
       case "markOutreachManuallySent":
         await markPilotOutreachManuallySent(context, body.payload);
         break;
+      case "recordOpportunityContact":
+        await recordPilotOpportunityContact(context, body.payload);
+        break;
       case "bookAppointment":
         await bookPilotAppointment(context, body.payload);
+        break;
+      case "snoozeOpportunity":
+        await snoozePilotOpportunity(context, body.payload);
+        break;
+      case "endOpportunitySnooze":
+        await endPilotOpportunitySnooze(context, body.payload);
         break;
       case "completeAppointment":
         await completePilotAppointment(context, body.payload);

@@ -243,7 +243,7 @@ export default function CustomerDetailPage() {
                           <p className="mt-1 text-zinc-500">
                             {opportunity.sourceType === "DeclinedWorkRecord" ? "Declined" : "Due"} {opportunity.dueDate ? formatDate(opportunity.dueDate) : "date not recorded"}
                             {" · "}
-                            Last contact {opportunity.lastActivityAt ? formatDate(opportunity.lastActivityAt) : "never"}
+                            {opportunity.outreachStatus === "SNOOZED" ? "Snoozed until" : "Last contact"} {opportunity.lastActivityAt ? formatDate(opportunity.lastActivityAt) : "never"}
                           </p>
                           {appointment && (
                             <Link href="/appointments" className="mt-1 inline-block font-semibold text-violet-950">
