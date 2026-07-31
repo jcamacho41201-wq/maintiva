@@ -10,7 +10,7 @@ import { useDemoStore } from "@/lib/demo-store";
 import { formatCurrency } from "@/lib/utils";
 
 export default function AppointmentsPage() {
-  const { state, completeAppointment } = useDemoStore();
+  const { state, completeAppointment, approveAppointmentRequest, declineAppointmentRequest } = useDemoStore();
   const [completion, setCompletion] = useState<{
     appointmentId: string;
     revenue: string;
@@ -20,6 +20,14 @@ export default function AppointmentsPage() {
   } | null>(null);
   const metrics = getDashboardMetrics(state);
   const committedHours = state.shop.dailyBayHours - metrics.openBayCapacityHours;
+
+  function sourceLabel(appointment: (typeof state.appointments)[number]) {
+    if (appointment.source === "CUSTOMER_BOOKING" && appointment.status === "REQUESTED") return "Customer requested";
+    if (appointment.source === "CUSTOMER_BOOKING") return "Customer self-booked";
+    if (appointment.source === "IMPORTED") return "Imported";
+    if (appointment.source === "AUTOMATION") return "Queue booked";
+    return "Staff booked";
+  }
 
   function submitCompletion() {
     if (!completion) return;
@@ -103,12 +111,35 @@ export default function AppointmentsPage() {
                     </div>
                     <div>
                       <p className="text-zinc-500">Source</p>
-                      <p className="font-semibold">{appointment.attributionSource.replaceAll("_", " ")}</p>
+                      <p className="font-semibold">{sourceLabel(appointment)}</p>
                     </div>
                   </div>
+                  {(appointment.intakeType || appointment.customerNotes) && (
+                    <div className="mt-4 rounded-lg border border-zinc-200 bg-zinc-50 p-3 text-sm">
+                      <p className="font-semibold">
+                        {appointment.intakeType === "WAIT" ? "Wait appointment" : appointment.intakeType === "DROP_OFF" ? "Drop-off" : "Customer booking"}
+                      </p>
+                      {appointment.customerNotes && <p className="mt-1 text-zinc-600">{appointment.customerNotes}</p>}
+                    </div>
+                  )}
                   {appointment.status === "COMPLETED" ? (
                     <div className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
                       Completed revenue: {formatCurrency(appointment.completedRevenueCents ?? appointment.totalPriceCents)}
+                    </div>
+                  ) : appointment.status === "REQUESTED" && appointment.source === "CUSTOMER_BOOKING" ? (
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <button
+                        onClick={() => void approveAppointmentRequest(appointment.id)}
+                        className="rounded-lg bg-violet-950 px-3 py-2 text-sm font-semibold text-white"
+                      >
+                        Approve request
+                      </button>
+                      <button
+                        onClick={() => void declineAppointmentRequest(appointment.id, "Declined from appointments page.")}
+                        className="rounded-lg border border-zinc-200 px-3 py-2 text-sm font-semibold text-zinc-800"
+                      >
+                        Decline
+                      </button>
                     </div>
                   ) : (
                     <button

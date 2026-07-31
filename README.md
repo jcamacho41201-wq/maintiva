@@ -31,6 +31,28 @@ Maintiva is a maintenance revenue recovery add-on for auto repair shops. It help
 - Dashboard metrics computed from the active shop state and Maintiva-attributed appointments
 - Public privacy and terms pages
 
+## Adaptive Mileage Foundation
+
+Phase 1 adds mileage history and driving-profile foundations without changing the revenue opportunity architecture. Maintiva now stores authoritative `VehicleMileageReading` rows, keeps legacy `Vehicle.currentMileage` synchronized from valid shop readings, and resolves every current-mileage display through a canonical server-side path.
+
+Driving profiles use this source hierarchy:
+
+1. Multiple verified shop readings
+2. Multiple usable imported readings
+3. Customer's Driving Estimate
+4. One verified reading plus the shop default
+5. Shop default annual mileage
+
+The default shop annual-mileage estimate is `12,500`, equivalent to about `1,042` miles monthly or `34.25` miles daily. Temporary Driving Estimates can be set by owners/managers, require a reason and review condition, and can be reset with Use Maintiva Calculation. The primary vehicle-page workflow is Add Odometer Reading; Customer's Driving Estimate stays separate from odometer readings. The vehicle page includes a Driving Profile panel, Mileage History review, and read-only service due-date preview; it does not automatically create, close, suppress, or mutate revenue opportunities.
+
+The version-controlled Supabase migration for this foundation is:
+
+```text
+supabase/migrations/20260729170000_adaptive_mileage_foundation.sql
+```
+
+Do not apply it to the linked production Supabase project until a schema backup, data backup, migration list, and dry-run have been reviewed and approved.
+
 ## Tenant Security
 
 All production API routes derive `shopId` from the authenticated Supabase user’s active `ShopMembership`. Browser payloads that include `shopId` are rejected before validation. Server mutations re-check that fetched customers, vehicles, maintenance records, outreach records, and appointments belong to the active shop.
@@ -147,6 +169,13 @@ npx supabase login
 npx supabase link --project-ref YOUR_PROJECT_REF
 npx supabase db push --dry-run
 npx supabase db push
+```
+
+For the adaptive mileage catch-up migration, use the linked project and review the dry-run before approval:
+
+```bash
+npx supabase migration list
+npx supabase db push --dry-run
 ```
 
 ## Deferred Until After First Pilot

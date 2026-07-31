@@ -3,12 +3,14 @@ import {
   type Appointment,
   type DeclinedWorkRecord,
   type DemoState,
+  type RevenueOpportunityRecord,
   type VehicleMaintenanceRecord,
 } from "@/lib/demo-data";
 import {
   getRecommendedRecords,
   vehicleLabel,
 } from "@/lib/demo-calculations";
+import { formatInterval, resolveMaintenanceInterval } from "@/lib/service-intervals";
 
 const dayMs = 86_400_000;
 
@@ -32,6 +34,11 @@ export type RevenueOpportunity = {
   source: OpportunitySource;
   sourceLabel: string;
   serviceNames: string[];
+  maintenanceRecordId?: string;
+  declinedWorkRecordId?: string;
+  serviceDefinitionId?: string;
+  sourceRecordId: string;
+  sourceType: "VehicleMaintenanceRecord" | "DeclinedWorkRecord";
   explanation: string;
   priority: OpportunityPriority;
   priorityReason: string;
@@ -71,6 +78,16 @@ export type RevenueQueueGroup = {
   nextAction: string;
 };
 
+export function isOpenRevenueStage(stage: RevenueStage) {
+  return ["IDENTIFIED", "CONTACTED", "RESPONDED", "BOOKED"].includes(stage);
+}
+
+export function getOpenRevenueOpportunitiesForCustomer(state: DemoState, customerId: string) {
+  return buildRevenueOpportunities(state).filter((opportunity) =>
+    opportunity.customerId === customerId && isOpenRevenueStage(opportunity.stage),
+  );
+}
+
 function daysBetween(start: string, end: Date = asOfDate) {
   return Math.floor((end.getTime() - new Date(start).getTime()) / dayMs);
 }
@@ -101,8 +118,7 @@ function priorityFor(input: {
   if (
     input.source === "DECLINED_WORK" ||
     input.daysOverdue >= 30 ||
-    input.milesOverdue >= 1000 ||
-    input.estimatedRevenueCents >= 30000
+    input.milesOverdue >= 1000
   ) {
     return {
       priority: "HIGH" as const,
@@ -138,6 +154,7 @@ function stageFor(input: {
       ? ("LOST" as const)
       : ("RESPONDED" as const);
   }
+  if (input.outreachStatus === "SNOOZED") return "CONTACTED" as const;
   if (["MANUALLY_SENT", "RESPONDED", "SCHEDULED"].includes(input.outreachStatus)) {
     return "CONTACTED" as const;
   }
@@ -158,12 +175,200 @@ function appointmentForRecord(state: DemoState, record: VehicleMaintenanceRecord
   );
 }
 
-export function buildRevenueOpportunities(state: DemoState): RevenueOpportunity[] {
+function appointmentForOpportunity(state: DemoState, opportunity: RevenueOpportunity) {
+  return state.appointments.find((appointment) =>
+    appointment.opportunityId === opportunity.id ||
+    (
+      opportunity.maintenanceRecordId &&
+      appointment.maintenanceRecordIds.includes(opportunity.maintenanceRecordId)
+    ) ||
+    (
+      opportunity.declinedWorkRecordId &&
+      state.declinedWorkRecords.some((record) =>
+        record.id === opportunity.declinedWorkRecordId &&
+        record.appointmentId === appointment.id
+      )
+    ),
+  );
+}
+
+function lastOutreachForOpportunity(state: DemoState, opportunity: RevenueOpportunity) {
+  return state.outreachRecords
+    .filter((record) =>
+      record.shopId === opportunity.shopId &&
+      record.customerId === opportunity.customerId &&
+      record.vehicleId === opportunity.vehicleId &&
+      (
+        opportunity.maintenanceRecordId
+          ? record.maintenanceRecordIds.includes(opportunity.maintenanceRecordId)
+          : true
+      ),
+    )
+    .sort((a, b) => (a.manuallySentAt ?? a.sentAt).localeCompare(b.manuallySentAt ?? b.sentAt))
+    .at(-1);
+}
+
+function isActiveSnooze(record: ReturnType<typeof lastOutreachForOpportunity>) {
+  if (!record || record.status !== "SNOOZED" || !record.followUpDate) return false;
+  return new Date(record.followUpDate).getTime() > Date.now();
+}
+
+function effectiveOutreachStatus({
+  lastOutreach,
+  sourceStatus,
+}: {
+  lastOutreach: ReturnType<typeof lastOutreachForOpportunity>;
+  sourceStatus?: string;
+}) {
+  if (isActiveSnooze(lastOutreach)) return "SNOOZED";
+  if (lastOutreach?.status === "SNOOZED") return sourceStatus === "SNOOZED" ? "NEEDS_OUTREACH" : sourceStatus ?? "NEEDS_OUTREACH";
+  return lastOutreach?.status ?? sourceStatus ?? "NEEDS_OUTREACH";
+}
+
+function effectiveStage({
+  stage,
+  lastOutreach,
+}: {
+  stage: RevenueStage;
+  lastOutreach: ReturnType<typeof lastOutreachForOpportunity>;
+}) {
+  if (isActiveSnooze(lastOutreach)) return "CONTACTED" as const;
+  if (lastOutreach?.status === "SNOOZED" && stage === "CONTACTED") return "IDENTIFIED" as const;
+  return stage;
+}
+
+function opportunityServiceName(
+  state: DemoState,
+  opportunity: RevenueOpportunityRecord,
+  maintenanceRecord?: VehicleMaintenanceRecord,
+  declinedWorkRecord?: DeclinedWorkRecord,
+) {
+  if (maintenanceRecord) {
+    const service = state.services.find((item) => item.id === maintenanceRecord.serviceId);
+    return service?.name ?? maintenanceRecord.serviceName;
+  }
+  return declinedWorkRecord?.serviceName ?? "Unknown service";
+}
+
+function buildPersistedRevenueOpportunities(state: DemoState): RevenueOpportunity[] {
+  return (state.revenueOpportunities ?? [])
+    .map((opportunity): RevenueOpportunity | null => {
+      if (opportunity.shopId !== state.shop.id) return null;
+      const customer = state.customers.find((item) => item.id === opportunity.customerId && item.shopId === state.shop.id);
+      const vehicle = state.vehicles.find((item) =>
+        item.id === opportunity.vehicleId &&
+        item.shopId === state.shop.id &&
+        item.customerId === opportunity.customerId,
+      );
+      if (!customer || !vehicle) return null;
+
+      const maintenanceRecord = opportunity.maintenanceRecordId
+        ? state.maintenanceRecords.find((item) =>
+            item.id === opportunity.maintenanceRecordId &&
+            item.shopId === state.shop.id &&
+            item.vehicleId === vehicle.id,
+          )
+        : undefined;
+      const declinedWorkRecord = opportunity.declinedWorkRecordId
+        ? state.declinedWorkRecords.find((item) =>
+            item.id === opportunity.declinedWorkRecordId &&
+            item.shopId === state.shop.id &&
+            item.customerId === customer.id &&
+            item.vehicleId === vehicle.id,
+          )
+        : undefined;
+
+      if (opportunity.maintenanceRecordId && !maintenanceRecord) return null;
+      if (opportunity.declinedWorkRecordId && !declinedWorkRecord) return null;
+
+      const sourceRecordId = opportunity.declinedWorkRecordId ?? opportunity.maintenanceRecordId;
+      if (!sourceRecordId) return null;
+
+      const serviceName = opportunityServiceName(state, opportunity, maintenanceRecord, declinedWorkRecord);
+      const lastOutreach = lastOutreachForOpportunity(state, {
+        ...opportunity,
+        customerName: `${customer.firstName} ${customer.lastName}`,
+        vehicleLabel: vehicleLabel(vehicle),
+        sourceLabel: sourceLabel(opportunity.source),
+        serviceNames: [serviceName],
+        sourceRecordId,
+        sourceType: opportunity.declinedWorkRecordId ? "DeclinedWorkRecord" : "VehicleMaintenanceRecord",
+        currentMileage: vehicle.currentMileage,
+        estimatedLaborHours: opportunity.estimatedLaborHours,
+        appointmentStatus: "UNSCHEDULED",
+      } as RevenueOpportunity);
+      const sourceOutreachStatus = declinedWorkRecord?.outreachStatus ?? maintenanceRecord?.outreachStatus ?? "NEEDS_OUTREACH";
+      const displayStage = effectiveStage({ stage: opportunity.stage, lastOutreach });
+
+      return {
+        id: opportunity.id,
+        shopId: opportunity.shopId,
+        customerId: opportunity.customerId,
+        vehicleId: opportunity.vehicleId,
+        customerName: `${customer.firstName} ${customer.lastName}`,
+        vehicleLabel: vehicleLabel(vehicle),
+        source: opportunity.source,
+        sourceLabel: sourceLabel(opportunity.source),
+        serviceNames: [serviceName],
+        maintenanceRecordId: opportunity.maintenanceRecordId,
+        declinedWorkRecordId: opportunity.declinedWorkRecordId,
+        serviceDefinitionId: maintenanceRecord?.serviceId ?? undefined,
+        sourceRecordId,
+        sourceType: opportunity.declinedWorkRecordId ? "DeclinedWorkRecord" : "VehicleMaintenanceRecord",
+        explanation: opportunity.explanation,
+        priority: opportunity.priority,
+        priorityReason: opportunity.priorityReason,
+        lastServiceDate: declinedWorkRecord?.declinedAt ?? maintenanceRecord?.lastCompletedDate ?? undefined,
+        lastServiceMileage: maintenanceRecord?.lastCompletedMileage ?? undefined,
+        currentMileage: vehicle.currentMileage,
+        dueDate: opportunity.dueDate,
+        dueMileage: opportunity.dueMileage,
+        daysOverdue: opportunity.daysOverdue,
+        milesOverdue: opportunity.milesOverdue,
+        estimatedRevenueCents: opportunity.estimatedRevenueCents,
+        estimatedLaborHours: opportunity.estimatedLaborHours,
+        outreachStatus: effectiveOutreachStatus({
+          lastOutreach,
+          sourceStatus: sourceOutreachStatus,
+        }),
+        appointmentStatus: appointmentForOpportunity(state, {
+          ...opportunity,
+          customerName: "",
+          vehicleLabel: "",
+          sourceLabel: "",
+          serviceNames: [],
+          sourceRecordId,
+          sourceType: opportunity.declinedWorkRecordId ? "DeclinedWorkRecord" : "VehicleMaintenanceRecord",
+          currentMileage: vehicle.currentMileage,
+          estimatedLaborHours: opportunity.estimatedLaborHours,
+          outreachStatus: "",
+          appointmentStatus: "",
+          lastActivityAt: opportunity.lastActivityAt ?? opportunity.createdAt,
+        } as RevenueOpportunity)?.status ?? "UNSCHEDULED",
+        stage: displayStage,
+        createdAt: opportunity.createdAt,
+        lastActivityAt: lastOutreach?.followUpDate ?? lastOutreach?.manuallySentAt ?? lastOutreach?.sentAt ?? opportunity.lastActivityAt ?? opportunity.createdAt,
+      };
+    })
+    .filter((item): item is RevenueOpportunity => item !== null)
+    .sort((a, b) => {
+      const rank = { HIGH: 0, MEDIUM: 1, LOW: 2 };
+      return (
+        rank[a.priority] - rank[b.priority] ||
+        b.estimatedRevenueCents - a.estimatedRevenueCents ||
+        b.daysOverdue - a.daysOverdue
+      );
+    });
+}
+
+function buildDerivedDemoRevenueOpportunities(state: DemoState): RevenueOpportunity[] {
   const maintenance = getRecommendedRecords(state).map(({ record, calculation }): RevenueOpportunity | null => {
     const vehicle = state.vehicles.find((item) => item.id === record.vehicleId);
     if (!vehicle) return null;
     const appointment = appointmentForRecord(state, record);
     const outreach = state.outreachRecords.find((item) => item.id === record.outreachRecordId);
+    const service = state.services.find((item) => item.id === record.serviceId);
+    const effective = resolveMaintenanceInterval({ record, service, vehicle });
     const source: OpportunitySource =
       calculation.status === "OVERDUE" ? "OVERDUE_MAINTENANCE" : "DUE_MAINTENANCE";
     const daysOverdue = Math.max(0, -calculation.daysUntilDue);
@@ -172,7 +377,7 @@ export function buildRevenueOpportunities(state: DemoState): RevenueOpportunity[
       source,
       daysOverdue,
       milesOverdue,
-      estimatedRevenueCents: record.priceCents,
+      estimatedRevenueCents: effective.priceCents,
       outreachStatus: record.outreachStatus,
     });
 
@@ -186,19 +391,25 @@ export function buildRevenueOpportunities(state: DemoState): RevenueOpportunity[
       source,
       sourceLabel: sourceLabel(source),
       serviceNames: [record.serviceName],
-      explanation:
-        calculation.status === "OVERDUE"
-          ? `${record.serviceName} ${calculation.dueText.toLowerCase()} based on ${record.recommendedMileageInterval.toLocaleString()}-mile or ${record.recommendedTimeIntervalMonths}-month interval.`
-          : `${record.serviceName} due now based on ${record.recommendedMileageInterval.toLocaleString()}-mile interval.`,
+      maintenanceRecordId: record.id,
+      serviceDefinitionId: record.serviceId ?? undefined,
+      sourceRecordId: record.id,
+      sourceType: "VehicleMaintenanceRecord",
+      explanation: `${effective.serviceName} ${effective.dueText.toLowerCase()} based on ${formatInterval(
+        effective.mileageInterval,
+        effective.timeIntervalValue,
+        effective.timeIntervalUnit,
+      )}.`,
       ...priority,
-      lastServiceDate: record.lastCompletedDate,
-      lastServiceMileage: record.lastCompletedMileage,
+      lastServiceDate: record.lastCompletedDate ?? undefined,
+      lastServiceMileage: record.lastCompletedMileage ?? undefined,
       currentMileage: vehicle.currentMileage,
-      dueMileage: record.lastCompletedMileage + record.recommendedMileageInterval,
+      dueDate: effective.nextDueDate ?? undefined,
+      dueMileage: effective.nextDueMileage ?? undefined,
       daysOverdue,
       milesOverdue,
-      estimatedRevenueCents: record.priceCents,
-      estimatedLaborHours: record.laborHours,
+      estimatedRevenueCents: effective.priceCents,
+      estimatedLaborHours: effective.laborMinutes / 60,
       outreachStatus: record.outreachStatus,
       appointmentStatus: appointment?.status ?? "UNSCHEDULED",
       stage: stageFor({
@@ -206,8 +417,8 @@ export function buildRevenueOpportunities(state: DemoState): RevenueOpportunity[
         appointment,
         responseStatus: outreach?.responseStatus,
       }),
-      createdAt: record.lastCompletedDate,
-      lastActivityAt: outreach?.sentAt ?? appointment?.scheduledStart ?? record.lastCompletedDate,
+      createdAt: record.lastCompletedDate ?? asOfDate.toISOString(),
+      lastActivityAt: outreach?.sentAt ?? appointment?.scheduledStart ?? record.lastCompletedDate ?? asOfDate.toISOString(),
     };
   });
 
@@ -234,6 +445,9 @@ export function buildRevenueOpportunities(state: DemoState): RevenueOpportunity[
       source: "DECLINED_WORK" as const,
       sourceLabel: "Declined work",
       serviceNames: [record.serviceName],
+      declinedWorkRecordId: record.id,
+      sourceRecordId: record.id,
+      sourceType: "DeclinedWorkRecord",
       explanation: `${record.serviceName} declined on ${new Intl.DateTimeFormat("en-US", {
         month: "long",
         day: "numeric",
@@ -276,6 +490,14 @@ export function buildRevenueOpportunities(state: DemoState): RevenueOpportunity[
   );
 }
 
+export function buildRevenueOpportunities(state: DemoState): RevenueOpportunity[] {
+  const persisted = buildPersistedRevenueOpportunities(state);
+  if (persisted.length > 0 || !state.shop.isDemo) {
+    return persisted;
+  }
+  return buildDerivedDemoRevenueOpportunities(state);
+}
+
 export function groupRevenueOpportunities(opportunities: RevenueOpportunity[]): RevenueQueueGroup[] {
   const byVehicle = new Map<string, RevenueOpportunity[]>();
   for (const opportunity of opportunities) {
@@ -312,7 +534,7 @@ export function groupRevenueOpportunities(opportunities: RevenueOpportunity[]): 
         .map((item) => item.lastActivityAt)
         .sort()
         .at(-1),
-      nextAction: booked ? "Complete appointment" : contacted ? "Record response" : "Generate message",
+      nextAction: booked ? "Complete appointment" : contacted ? "Record response" : "Contact customer",
     };
   });
 }
@@ -323,7 +545,7 @@ function maintivaAppointments(state: DemoState) {
 
 export function getRevenueRecoveryMetrics(state: DemoState) {
   const opportunities = buildRevenueOpportunities(state);
-  const open = opportunities.filter((item) => !["BOOKED", "COMPLETED", "LOST"].includes(item.stage));
+  const open = opportunities.filter((item) => isOpenRevenueStage(item.stage));
   const appointments = maintivaAppointments(state);
   const bookedAppointments = appointments.filter(
     (appointment) => !["CANCELLED", "NO_SHOW", "COMPLETED"].includes(appointment.status),

@@ -33,11 +33,11 @@ describe("pilot tenant security", () => {
   it("allows payloads that only carry stable entity ids", () => {
     expect(() =>
       rejectBrowserShopId({
-        action: "bookAppointment",
+        action: "addMaintenanceItem",
         payload: {
-          customerId: "cust-1",
           vehicleId: "veh-1",
-          maintenanceRecordIds: ["item-1"],
+          serviceDefinitionId: "svc-1",
+          useShopDefaults: true,
         },
       }),
     ).not.toThrow();

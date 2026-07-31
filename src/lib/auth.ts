@@ -9,6 +9,7 @@ export type AuthenticatedShopContext = {
   email: string;
   shopId: string;
   shopName: string;
+  shopTimezone: string;
   role: "OWNER" | "MANAGER" | "SERVICE_ADVISOR" | "TECHNICIAN";
   isDemo: boolean;
 };
@@ -86,9 +87,9 @@ export async function getAuthenticatedShopContext(): Promise<AuthenticatedShopCo
     throw new AuthRequiredError();
   }
 
-  let membership;
+  let memberships;
   try {
-    membership = await prisma.shopMembership.findFirst({
+    memberships = await prisma.shopMembership.findMany({
       where: {
         userId: authUser.id,
         isActive: true,
@@ -99,7 +100,14 @@ export async function getAuthenticatedShopContext(): Promise<AuthenticatedShopCo
         },
       },
       include: {
-        shop: true,
+        shop: {
+          select: {
+            id: true,
+            name: true,
+            timezone: true,
+            isDemo: true,
+          },
+        },
         user: true,
       },
       orderBy: {
@@ -117,7 +125,13 @@ export async function getAuthenticatedShopContext(): Promise<AuthenticatedShopCo
     throw error;
   }
 
+  const membership = memberships[0];
   if (!membership) {
+    console.error("Maintiva active shop membership missing", {
+      operation: "resolveActiveShop",
+      userId: authUser.id,
+      membershipCount: memberships.length,
+    });
     throw new OnboardingRequiredError(authUser.id, authUser.email);
   }
 
@@ -126,9 +140,14 @@ export async function getAuthenticatedShopContext(): Promise<AuthenticatedShopCo
     email: authUser.email,
     shopId: membership.shopId,
     shopName: membership.shop.name,
+    shopTimezone: membership.shop.timezone,
     role: membership.role,
     isDemo: membership.shop.isDemo,
   };
+}
+
+export async function requireActiveShopMembership() {
+  return getAuthenticatedShopContext();
 }
 
 export async function requirePageShopContext() {

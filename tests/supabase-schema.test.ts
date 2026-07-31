@@ -7,6 +7,21 @@ const migrationPath = path.join(
   "supabase/migrations/20260728173000_initial_maintiva_schema.sql",
 );
 const migrationSql = fs.readFileSync(migrationPath, "utf8");
+const intervalMigrationPath = path.join(
+  process.cwd(),
+  "supabase/migrations/20260728223000_vehicle_service_intervals.sql",
+);
+const intervalMigrationSql = fs.readFileSync(intervalMigrationPath, "utf8");
+const intervalCatchupMigrationPath = path.join(
+  process.cwd(),
+  "supabase/migrations/20260729143000_service_interval_schema_catchup.sql",
+);
+const intervalCatchupMigrationSql = fs.readFileSync(intervalCatchupMigrationPath, "utf8");
+const customerSchedulingMigrationPath = path.join(
+  process.cwd(),
+  "supabase/migrations/20260731101500_customer_self_scheduling_foundation.sql",
+);
+const customerSchedulingMigrationSql = fs.readFileSync(customerSchedulingMigrationPath, "utf8");
 
 describe("Supabase production schema migration", () => {
   it("creates the app tables used for shop creation, membership, customers, vehicles, imports, and customer queries", () => {
@@ -80,5 +95,85 @@ describe("Supabase production schema migration", () => {
     expect(migrationSql).toContain("maintiva_handle_new_auth_user");
     expect(migrationSql).toContain("AFTER INSERT ON auth.users");
     expect(migrationSql).toContain("maintiva_set_updated_at");
+  });
+
+  it("adds editable service defaults and vehicle-specific interval overrides without loosening RLS", () => {
+    [
+      'CREATE TYPE "TimeIntervalUnit"',
+      'CREATE TYPE "OutreachThresholdType"',
+      'ALTER COLUMN "serviceDefinitionId" DROP NOT NULL',
+      'ADD COLUMN "customServiceName" TEXT',
+      'ADD COLUMN "mileageIntervalOverride" INTEGER',
+      'ADD COLUMN "timeIntervalValueOverride" INTEGER',
+      'ADD COLUMN "outreachThresholdType" "OutreachThresholdType" NOT NULL DEFAULT \'MILES_BEFORE_DUE\'',
+      'ADD COLUMN "isActive" BOOLEAN NOT NULL DEFAULT true',
+      'VehicleMaintenanceRecord_active_service_definition_key',
+      'ON DELETE SET NULL',
+    ].forEach((identifier) => {
+      expect(intervalMigrationSql).toContain(identifier);
+    });
+
+    expect(intervalMigrationSql).not.toContain("DISABLE ROW LEVEL SECURITY");
+    expect(intervalMigrationSql).not.toContain("WITH CHECK (true)");
+    expect(intervalMigrationSql).not.toContain("USING (true)");
+  });
+
+  it("adds an idempotent Supabase catch-up migration for deployed service interval schema drift", () => {
+    [
+      'ADD COLUMN IF NOT EXISTS "defaultTimeIntervalValue" INTEGER',
+      'ADD COLUMN IF NOT EXISTS "defaultTimeIntervalUnit" public."TimeIntervalUnit"',
+      'ADD COLUMN IF NOT EXISTS "customServiceName" TEXT',
+      'ADD COLUMN IF NOT EXISTS "customCategory" TEXT',
+      'ADD COLUMN IF NOT EXISTS "mileageIntervalOverride" INTEGER',
+      'ADD COLUMN IF NOT EXISTS "timeIntervalValueOverride" INTEGER',
+      'ADD COLUMN IF NOT EXISTS "timeIntervalUnitOverride" public."TimeIntervalUnit"',
+      'ADD COLUMN IF NOT EXISTS "outreachThresholdType" public."OutreachThresholdType"',
+      'ADD COLUMN IF NOT EXISTS "outreachThresholdValue" INTEGER',
+      'ADD COLUMN IF NOT EXISTS "priceOverrideCents" INTEGER',
+      'ADD COLUMN IF NOT EXISTS "laborMinutesOverride" INTEGER',
+      'ADD COLUMN IF NOT EXISTS "isActive" BOOLEAN',
+      'ADD COLUMN IF NOT EXISTS "createdByUserId" TEXT',
+      'ADD COLUMN IF NOT EXISTS "updatedByUserId" TEXT',
+      'CREATE UNIQUE INDEX IF NOT EXISTS "VehicleMaintenanceRecord_active_service_definition_key"',
+      'ServiceHistoryRecord_maintenanceRecordId_fkey',
+      'AppointmentService_maintenanceRecordId_fkey',
+      'MaintenanceRevenueOpportunity_maintenanceRecordId_fkey',
+      'DROP POLICY IF EXISTS "Members can insert maintenance records"',
+      'WITH CHECK (public.maintiva_is_shop_member("shopId"))',
+      'GRANT USAGE ON TYPE public."TimeIntervalUnit" TO authenticated',
+    ].forEach((identifier) => {
+      expect(intervalCatchupMigrationSql).toContain(identifier);
+    });
+
+    expect(intervalCatchupMigrationSql).not.toContain("DISABLE ROW LEVEL SECURITY");
+    expect(intervalCatchupMigrationSql).not.toContain("WITH CHECK (true)");
+    expect(intervalCatchupMigrationSql).not.toContain("USING (true)");
+  });
+
+  it("adds customer self-scheduling tables and guarded tenant policies without loosening RLS", () => {
+    [
+      'CREATE TYPE public."BookingMode"',
+      'CREATE TYPE public."BookingIntakeType"',
+      'CREATE TYPE public."ServiceBookingIntakeOption"',
+      'CREATE TYPE public."CustomerBookingLinkStatus"',
+      'CREATE TABLE IF NOT EXISTS public."ShopBookingSettings"',
+      'CREATE TABLE IF NOT EXISTS public."ShopBookingWindow"',
+      'CREATE TABLE IF NOT EXISTS public."ShopBookingBlackout"',
+      'CREATE TABLE IF NOT EXISTS public."ServiceBookingRule"',
+      'CREATE TABLE IF NOT EXISTS public."ServiceBookingWindow"',
+      'CREATE TABLE IF NOT EXISTS public."CustomerBookingLink"',
+      'CREATE TABLE IF NOT EXISTS public."AppointmentChangeRecord"',
+      'ADD COLUMN IF NOT EXISTS "bookingLinkId"',
+      'ADD COLUMN IF NOT EXISTS "intakeType"',
+      'ALTER TABLE public."CustomerBookingLink" ENABLE ROW LEVEL SECURITY',
+      'WITH CHECK (public.maintiva_is_shop_member("shopId"))',
+      'GRANT USAGE ON TYPE public."BookingMode" TO authenticated',
+    ].forEach((identifier) => {
+      expect(customerSchedulingMigrationSql).toContain(identifier);
+    });
+
+    expect(customerSchedulingMigrationSql).not.toContain("DISABLE ROW LEVEL SECURITY");
+    expect(customerSchedulingMigrationSql).not.toContain("WITH CHECK (true)");
+    expect(customerSchedulingMigrationSql).not.toContain("USING (true)");
   });
 });

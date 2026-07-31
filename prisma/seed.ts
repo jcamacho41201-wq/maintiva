@@ -11,7 +11,12 @@ import {
   vehicles,
   outreachRecords,
   declinedWorkRecords,
+  drivingProfiles,
   importHistory,
+  mileageReadings,
+  defaultBookingSettings,
+  defaultBookingWindows,
+  defaultServiceBookingRule,
 } from "../src/lib/demo-data";
 import { getRecordStatus } from "../src/lib/demo-calculations";
 
@@ -22,8 +27,17 @@ const prisma = new PrismaClient({ adapter });
 
 async function main() {
   await prisma.auditLog.deleteMany();
+  await prisma.appointmentChangeRecord.deleteMany();
   await prisma.appointmentService.deleteMany();
   await prisma.appointment.deleteMany();
+  await prisma.customerBookingLink.deleteMany();
+  await prisma.serviceBookingWindow.deleteMany();
+  await prisma.serviceBookingRule.deleteMany();
+  await prisma.shopBookingBlackout.deleteMany();
+  await prisma.shopBookingWindow.deleteMany();
+  await prisma.shopBookingSettings.deleteMany();
+  await prisma.vehicleDrivingProfile.deleteMany();
+  await prisma.vehicleMileageReading.deleteMany();
   await prisma.importHistoryRecord.deleteMany();
   await prisma.declinedWorkRecord.deleteMany();
   await prisma.vehicleMaintenanceRecord.deleteMany();
@@ -46,6 +60,7 @@ async function main() {
       address: demoShop.address,
       timezone: demoShop.timezone,
       dailyBayHours: demoShop.dailyBayHours,
+      defaultAnnualMileage: demoShop.defaultAnnualMileage,
       isDemo: true,
       status: "ACTIVE",
       onboardingCompletedAt: new Date(demoShop.onboardingCompletedAt ?? new Date()),
@@ -76,6 +91,8 @@ async function main() {
       category: service.category,
       defaultMileageInterval: service.defaultMileageInterval,
       defaultTimeIntervalMonths: service.defaultTimeIntervalMonths,
+      defaultTimeIntervalValue: service.defaultTimeIntervalValue,
+      defaultTimeIntervalUnit: service.defaultTimeIntervalUnit,
       defaultNotificationThreshold: service.defaultNotificationThreshold,
       estimatedLaborMinutes: service.estimatedLaborMinutes,
       defaultPriceCents: service.defaultPriceCents,
@@ -83,6 +100,53 @@ async function main() {
       isActive: service.isActive,
     })),
   });
+
+  await prisma.shopBookingSettings.create({
+    data: {
+      ...defaultBookingSettings,
+      id: "booking-settings-demo",
+      shopId: demoShop.id,
+    },
+  });
+
+  await prisma.shopBookingWindow.createMany({
+    data: defaultBookingWindows.map((window) => ({
+      ...window,
+      id: `booking-window-demo-${window.dayOfWeek}`,
+      shopId: demoShop.id,
+    })),
+  });
+
+  for (const service of serviceDefinitions) {
+    const bookingRule = defaultServiceBookingRule(service);
+    const rule = await prisma.serviceBookingRule.create({
+      data: {
+        id: bookingRule.id,
+        shopId: bookingRule.shopId,
+        serviceDefinitionId: service.id,
+        bookingEnabled: bookingRule.bookingEnabled,
+        bookingMode: bookingRule.bookingMode,
+        estimatedDurationMinutes: bookingRule.estimatedDurationMinutes,
+        bufferBeforeMinutes: bookingRule.bufferBeforeMinutes,
+        bufferAfterMinutes: bookingRule.bufferAfterMinutes,
+        allowedIntakeType: bookingRule.allowedIntakeType,
+        minimumNoticeMinutes: bookingRule.minimumNoticeMinutes,
+        maximumAdvanceDays: bookingRule.maximumAdvanceDays,
+        maximumSimultaneousBookings: bookingRule.maximumSimultaneousBookings,
+      },
+    });
+    await prisma.serviceBookingWindow.createMany({
+      data: bookingRule.windows.map((window) => ({
+        id: window.id,
+        shopId: window.shopId,
+        serviceBookingRuleId: rule.id,
+        dayOfWeek: window.dayOfWeek,
+        startMinute: window.startMinute,
+        endMinute: window.endMinute,
+        isActive: window.isActive,
+      })),
+    });
+  }
 
   await prisma.customer.createMany({
     data: customers.map((customer) => ({
@@ -173,10 +237,17 @@ async function main() {
           vehicles,
           services: serviceDefinitions,
           maintenanceRecords: maintenanceItems,
+          revenueOpportunities: [],
+          mileageReadings,
+          drivingProfiles,
           serviceRecords,
           outreachRecords,
           appointments,
           declinedWorkRecords,
+          bookingSettings: defaultBookingSettings,
+          bookingWindows: defaultBookingWindows,
+          bookingBlackouts: [],
+          customerBookingLinks: [],
           importHistory,
           seededAt: new Date().toISOString(),
         },
@@ -189,18 +260,68 @@ async function main() {
         vehicleId: item.vehicleId,
         serviceDefinitionId: item.serviceId,
         serviceName: item.serviceName,
-        lastCompletedDate: new Date(item.lastCompletedDate),
+        lastCompletedDate: item.lastCompletedDate ? new Date(item.lastCompletedDate) : null,
         lastCompletedMileage: item.lastCompletedMileage,
         recommendedMileageInterval: item.recommendedMileageInterval,
         recommendedTimeIntervalMonths: item.recommendedTimeIntervalMonths,
+        mileageIntervalOverride: item.mileageIntervalOverride,
+        timeIntervalValueOverride: item.timeIntervalValueOverride,
+        timeIntervalUnitOverride: item.timeIntervalUnitOverride,
         notificationThreshold: item.notificationThreshold,
+        outreachThresholdType: item.outreachThresholdType,
+        outreachThresholdValue: item.outreachThresholdValue,
         laborMinutes: Math.round(item.laborHours * 60),
         priceCents: item.priceCents,
+        priceOverrideCents: item.priceOverrideCents,
+        laborMinutesOverride: item.laborMinutesOverride,
         status,
         outreachStatus: item.outreachStatus,
         outreachRecordId: item.outreachRecordId,
+        isActive: item.isActive,
+        createdByUserId: demoUsers[0]?.id,
+        updatedByUserId: demoUsers[0]?.id,
       };
     }),
+  });
+
+  await prisma.vehicleMileageReading.createMany({
+    data: mileageReadings.map((reading) => ({
+      id: reading.id,
+      shopId: reading.shopId,
+      vehicleId: reading.vehicleId,
+      readingMileage: reading.readingMileage,
+      readingDate: new Date(reading.readingDate),
+      source: reading.source,
+      verificationStatus: reading.verificationStatus,
+      anomalyStatus: reading.anomalyStatus,
+      includedInForecast: reading.includedInForecast,
+      correctionReason: reading.correctionReason ?? null,
+      reviewNotes: reading.reviewNotes ?? null,
+      sourceReferenceType: reading.sourceReferenceType ?? null,
+      sourceReferenceId: reading.sourceReferenceId ?? null,
+      recordedByUserId: reading.recordedByUserId ?? null,
+    })),
+  });
+
+  await prisma.vehicleDrivingProfile.createMany({
+    data: drivingProfiles.map((profile) => ({
+      id: profile.id,
+      shopId: profile.shopId,
+      vehicleId: profile.vehicleId,
+      customerReportedAnnualMileage: profile.customerReportedAnnualMileage,
+      customerReportedAt: profile.customerReportedAt ? new Date(profile.customerReportedAt) : null,
+      customerReportedByUserId: profile.customerReportedByUserId,
+      calculatedAnnualMileage: profile.calculatedAnnualMileage,
+      estimateSource: profile.estimateSource,
+      confidence: profile.confidence,
+      confidenceReason: profile.confidenceReason,
+      manualAnnualMileageOverride: profile.manualAnnualMileageOverride,
+      manualOverrideReason: profile.manualOverrideReason,
+      manualOverrideNotes: profile.manualOverrideNotes,
+      manualOverrideSetAt: profile.manualOverrideSetAt ? new Date(profile.manualOverrideSetAt) : null,
+      manualOverrideSetByUserId: profile.manualOverrideSetByUserId,
+      lastCalculatedAt: new Date(profile.lastCalculatedAt),
+    })),
   });
 
   await prisma.declinedWorkRecord.createMany({

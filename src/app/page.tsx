@@ -24,8 +24,26 @@ import { formatCurrency } from "@/lib/utils";
 export default function DashboardPage() {
   const router = useRouter();
   const store = useDemoStore();
-  const { state } = store;
+  const { state, ready, loadError } = store;
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
+
+  if (!ready) {
+    return (
+      <div className="rounded-lg border border-zinc-200 bg-white p-6 text-sm font-medium text-zinc-600">
+        Loading shop…
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="rounded-lg border border-red-200 bg-red-50 p-6 text-sm text-red-800">
+        <p className="font-semibold">We could not load your shop.</p>
+        <p className="mt-1">Refresh the page or sign in again.</p>
+      </div>
+    );
+  }
+
   const legacyMetrics = getDashboardMetrics(state);
   const metrics = getRevenueRecoveryMetrics(state);
   const opportunities = groupRevenueOpportunities(buildRevenueOpportunities(state));
@@ -121,6 +139,7 @@ export default function DashboardPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             {opportunities.map((opportunity) => {
+              const canRecommend = opportunity.opportunities.some((item) => item.maintenanceRecordId);
               return (
                 <div
                   key={opportunity.id}
@@ -167,9 +186,10 @@ export default function DashboardPage() {
                       <button
                         onClick={(event) => {
                           event.stopPropagation();
-                          setSelectedVehicleId(opportunity.vehicleId);
+                          if (canRecommend) setSelectedVehicleId(opportunity.vehicleId);
                         }}
-                        className="rounded-lg bg-violet-950 px-3 py-2 text-sm font-semibold text-white"
+                        disabled={!canRecommend}
+                        className="rounded-lg bg-violet-950 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         Generate message
                       </button>
@@ -254,7 +274,7 @@ export default function DashboardPage() {
           customer={state.customers.find((item) => item.id === selectedOpportunity.customerId)!}
           vehicle={state.vehicles.find((item) => item.id === selectedOpportunity.vehicleId)!}
           records={state.maintenanceRecords.filter((record) =>
-            selectedOpportunity.opportunities.some((item) => item.id === `opp-${record.id}`),
+            selectedOpportunity.opportunities.some((item) => item.maintenanceRecordId === record.id),
           )}
           onClose={() => setSelectedVehicleId(null)}
           onSendRecommendation={store.sendRecommendation}

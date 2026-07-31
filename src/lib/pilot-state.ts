@@ -1,20 +1,40 @@
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import {
-  calculateAppointmentTotals,
   serviceDefinitions as defaultServices,
   type Appointment,
+  type BookingMode,
   type Customer,
+  type CustomerBookingLink,
   type DeclinedWorkRecord,
   type DemoState,
   type ImportHistoryRecord,
   type MaintenanceService,
+  type VehicleDrivingProfile,
+  type VehicleMileageReading,
   type OutreachRecord,
+  type ServiceBookingIntakeOption,
+  type ShopBookingBlackout,
+  type ShopBookingSettings,
+  type RevenueOpportunityRecord,
+  type TimeIntervalUnit,
   type Vehicle,
   type VehicleMaintenanceRecord,
+  defaultBookingSettings,
+  defaultBookingWindows,
 } from "@/lib/demo-data";
 import { assertSameShop, type AuthenticatedShopContext } from "@/lib/auth";
 import { customerSchema, vehicleSchema } from "@/lib/validation";
+import { resolveMaintenanceInterval, timeIntervalToMonths } from "@/lib/service-intervals";
+import {
+  DEFAULT_ANNUAL_MILEAGE,
+  calculateDrivingProfile,
+  resolveCurrentMileage,
+  validateMileageReading,
+} from "@/lib/adaptive-mileage";
+import { currentDateInTimeZone } from "@/lib/utils";
+import { safeDatabaseError, SafeActionError } from "@/lib/server-diagnostics";
+import { isCustomerBookingEnabled } from "@/lib/feature-flags";
 import {
   previewImport,
   summarizeImport,
@@ -24,6 +44,7 @@ import {
   type ImportType,
   type MaintivaField,
 } from "@/lib/csv-import";
+import { createCustomerBookingLink } from "@/lib/customer-booking";
 
 const onboardingSchema = z.object({
   shopName: z.string().min(2),
@@ -32,6 +53,158 @@ const onboardingSchema = z.object({
   address: z.string().optional(),
   timezone: z.string().min(3).default("America/New_York"),
   dailyBayHours: z.number().int().min(1).max(200).default(64),
+});
+const timeIntervalUnitSchema = z.enum(["DAYS", "MONTHS", "YEARS"]);
+const thresholdTypeSchema = z.enum(["MILES_BEFORE_DUE", "DAYS_BEFORE_DUE", "PERCENT_REMAINING"]);
+const bookingModeSchema = z.enum(["INSTANT", "REQUEST"]);
+const bookingIntakeOptionSchema = z.enum(["WAIT_ONLY", "DROP_OFF_ONLY", "EITHER"]);
+
+const nullableNonnegativeInt = z.number().int().nonnegative().nullable().optional();
+const nullablePositiveInt = z.number().int().positive().nullable().optional();
+
+const shopBookingSettingsSchema = z.object({
+  onlineBookingEnabled: z.boolean(),
+  minimumNoticeMinutes: z.number().int().min(0).max(43_200),
+  maximumAdvanceDays: z.number().int().min(1).max(180),
+  defaultBufferBeforeMinutes: z.number().int().min(0).max(240),
+  defaultBufferAfterMinutes: z.number().int().min(0).max(240),
+  maximumSimultaneousAppointments: z.number().int().min(1).max(20),
+  cancellationCutoffMinutes: z.number().int().min(0).max(43_200),
+  reschedulingCutoffMinutes: z.number().int().min(0).max(43_200),
+  windows: z.array(z.object({
+    dayOfWeek: z.number().int().min(0).max(6),
+    startMinute: z.number().int().min(0).max(1439),
+    endMinute: z.number().int().min(1).max(1440),
+    isActive: z.boolean(),
+  }).refine((value) => value.endMinute > value.startMinute, {
+    message: "Booking window must end after it starts.",
+    path: ["endMinute"],
+  })).min(1).max(7).optional(),
+});
+
+const serviceBookingRuleSchema = z.object({
+  bookingEnabled: z.boolean(),
+  bookingMode: bookingModeSchema,
+  estimatedDurationMinutes: z.number().int().min(15).max(1440),
+  bufferBeforeMinutes: z.number().int().min(0).max(240),
+  bufferAfterMinutes: z.number().int().min(0).max(240),
+  allowedIntakeType: bookingIntakeOptionSchema,
+  minimumNoticeMinutes: z.number().int().min(0).max(43_200).nullable().optional(),
+  maximumAdvanceDays: z.number().int().min(1).max(180).nullable().optional(),
+  maximumSimultaneousBookings: z.number().int().min(1).max(20).nullable().optional(),
+  weekdays: z.array(z.number().int().min(0).max(6)).min(1).max(7),
+  startMinute: z.number().int().min(0).max(1439),
+  endMinute: z.number().int().min(1).max(1440),
+}).refine((value) => value.endMinute > value.startMinute, {
+  message: "Service booking window must end after it starts.",
+  path: ["endMinute"],
+});
+
+const serviceDefinitionSchema = z.object({
+  name: z.string().min(1),
+  category: z.string().min(1),
+  defaultMileageInterval: nullablePositiveInt,
+  defaultTimeIntervalValue: nullablePositiveInt,
+  defaultTimeIntervalUnit: timeIntervalUnitSchema.default("MONTHS"),
+  defaultNotificationThreshold: z.number().int().min(0).max(100).default(10),
+  estimatedLaborMinutes: z.number().int().nonnegative(),
+  defaultPriceCents: z.number().int().nonnegative(),
+  description: z.string().optional(),
+  isActive: z.boolean().default(true),
+});
+
+const maintenanceItemSchema = z.object({
+  vehicleId: z.string().min(1),
+  serviceDefinitionId: z.string().optional().nullable(),
+  customServiceName: z.string().optional(),
+  customCategory: z.string().optional(),
+  addToLibrary: z.boolean().optional(),
+  useShopDefaults: z.boolean().default(true),
+  allowDuplicate: z.boolean().optional(),
+  mileageIntervalOverride: nullablePositiveInt,
+  timeIntervalValueOverride: nullablePositiveInt,
+  timeIntervalUnitOverride: timeIntervalUnitSchema.nullable().optional(),
+  priceOverrideCents: nullableNonnegativeInt,
+  laborMinutesOverride: nullableNonnegativeInt,
+  lastCompletedDate: z.string().optional(),
+  lastCompletedMileage: nullableNonnegativeInt,
+  outreachThresholdType: thresholdTypeSchema.default("MILES_BEFORE_DUE"),
+  outreachThresholdValue: z.number().int().nonnegative().default(500),
+  notes: z.string().optional(),
+});
+
+const maintenanceItemUpdateSchema = maintenanceItemSchema
+  .omit({ vehicleId: true, serviceDefinitionId: true, customServiceName: true, customCategory: true, addToLibrary: true, allowDuplicate: true })
+  .extend({ useShopDefaults: z.boolean().optional() })
+  .partial();
+
+const serviceCompletionSchema = z.object({
+  maintenanceRecordId: z.string().min(1),
+  completedAt: z.string().min(8),
+  completedMileage: z.number().int().nonnegative(),
+  finalPriceCents: z.number().int().nonnegative(),
+  finalLaborMinutes: z.number().int().nonnegative(),
+  notes: z.string().optional(),
+});
+
+const mileageUpdateSchema = z.object({
+  vehicleId: z.string().min(1),
+  currentMileage: z.number().int().nonnegative(),
+  readingDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Reading Date is required."),
+  source: z.enum([
+    "SHOP_REPAIR_ORDER",
+    "SHOP_MANUAL_ENTRY",
+    "SERVICE_HISTORY_IMPORT",
+    "CUSTOMER_REPORTED",
+    "APPOINTMENT_INTAKE",
+    "CORRECTION",
+    "OTHER",
+  ]).default("SHOP_MANUAL_ENTRY"),
+  verificationStatus: z.enum(["VERIFIED", "CUSTOMER_REPORTED", "IMPORTED", "UNVERIFIED", "EXCLUDED"]).default("VERIFIED"),
+  notes: z.string().optional(),
+  allowLowerCorrection: z.boolean().optional(),
+  correctionReason: z.string().optional(),
+});
+
+const inspectionRecommendationSchema = z.object({
+  serviceName: z.string().optional(),
+  result: z.enum(["ACCEPTED", "DECLINED", "UNDECIDED"]).default("UNDECIDED"),
+  urgency: z.enum(["LOW", "MEDIUM", "HIGH"]).default("MEDIUM"),
+  priceCents: z.number().int().nonnegative().default(0),
+  laborMinutes: z.number().int().nonnegative().default(0),
+  notes: z.string().optional(),
+});
+
+const inspectionSchema = z.object({
+  vehicleId: z.string().min(1),
+  inspectionDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Inspection date is required."),
+  mileage: z.number().int().nonnegative().optional().nullable(),
+  technician: z.string().optional(),
+  condition: z.enum(["PASS", "MONITOR", "REQUIRES_ATTENTION", "FAIL"]).default("MONITOR"),
+  componentsInspected: z.string().optional(),
+  notes: z.string().optional(),
+  recommendations: z.array(inspectionRecommendationSchema).max(10).default([]),
+});
+
+const customerReportedMileageSchema = z.object({
+  vehicleId: z.string().min(1),
+  annualMileage: z.number().int().positive(),
+});
+
+const manualMileageOverrideSchema = z.object({
+  vehicleId: z.string().min(1),
+  annualMileage: z.number().int().positive(),
+  reason: z.string().min(3),
+  notes: z.string().optional(),
+  reviewCondition: z.enum(["AFTER_2_VERIFIED_READINGS", "NEXT_SERVICE_VISIT", "ON_REVIEW_DATE"]).default("AFTER_2_VERIFIED_READINGS"),
+  reviewDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().or(z.literal("")),
+});
+
+const mileageReadingReviewSchema = z.object({
+  readingId: z.string().min(1),
+  includedInForecast: z.boolean(),
+  anomalyStatus: z.enum(["NONE", "NEEDS_REVIEW", "RESOLVED"]),
+  reviewNotes: z.string().optional(),
 });
 
 export type OnboardingInput = z.input<typeof onboardingSchema>;
@@ -54,6 +227,10 @@ function dateOnly(date: Date | string | null | undefined) {
   return iso(date).slice(0, 10);
 }
 
+function dateFromDateOnly(value: string) {
+  return new Date(`${value}T12:00:00Z`);
+}
+
 function stringValue(record: Record<string, string | number>, key: string) {
   return String(record[key] ?? "").trim();
 }
@@ -69,6 +246,1187 @@ function appointmentDateTime(date: string, time: string) {
   return Number.isNaN(parsed.getTime()) ? undefined : parsed;
 }
 
+function daysBetween(start: Date, end = new Date()) {
+  return Math.max(0, Math.floor((end.getTime() - start.getTime()) / 86_400_000));
+}
+
+function priorityForOpportunity(input: {
+  source: "DUE_MAINTENANCE" | "OVERDUE_MAINTENANCE" | "DECLINED_WORK";
+  daysOverdue: number;
+  milesOverdue: number;
+  estimatedRevenueCents: number;
+  booked: boolean;
+}) {
+  if (input.booked) {
+    return {
+      priority: "LOW" as const,
+      priorityReason: "Appointment already booked.",
+    };
+  }
+  if (
+    input.source === "DECLINED_WORK" ||
+    input.daysOverdue >= 30 ||
+    input.milesOverdue >= 1000
+  ) {
+    return {
+      priority: "HIGH" as const,
+      priorityReason:
+        input.source === "DECLINED_WORK"
+          ? "Previously declined work is recoverable and ready for advisor follow-up."
+          : "High urgency or value based on overdue severity and estimated revenue.",
+    };
+  }
+  if (input.daysOverdue > 0 || input.milesOverdue > 0 || input.estimatedRevenueCents >= 10000) {
+    return {
+      priority: "MEDIUM" as const,
+      priorityReason: "Due service has meaningful value and should fill future capacity.",
+    };
+  }
+  return {
+    priority: "LOW" as const,
+    priorityReason: "Lower urgency; keep available for capacity gaps.",
+  };
+}
+
+function stageFromOutreach(input: {
+  outreachStatus?: string | null;
+  responseStatus?: string | null;
+  appointmentId?: string | null;
+  completed?: boolean;
+  lost?: boolean;
+}) {
+  if (input.completed) return "COMPLETED" as const;
+  if (input.lost) return "LOST" as const;
+  if (input.appointmentId || input.outreachStatus === "SCHEDULED") return "BOOKED" as const;
+  if (input.responseStatus && input.responseStatus !== "NO_RESPONSE") {
+    return input.responseStatus === "DECLINED" || input.responseStatus === "DO_NOT_CONTACT"
+      ? ("LOST" as const)
+      : ("RESPONDED" as const);
+  }
+  if (input.outreachStatus === "SNOOZED") return "CONTACTED" as const;
+  if (input.outreachStatus === "MANUALLY_SENT" || input.outreachStatus === "RESPONDED") return "CONTACTED" as const;
+  if (input.outreachStatus === "DECLINED" || input.outreachStatus === "STOPPED") return "LOST" as const;
+  return "IDENTIFIED" as const;
+}
+
+type OpportunitySyncClient = Pick<
+  typeof prisma,
+  "$executeRaw" | "maintenanceRevenueOpportunity" | "vehicleMaintenanceRecord" | "declinedWorkRecord"
+>;
+
+function toStateVehicle(vehicle: {
+  id: string;
+  shopId: string;
+  customerId: string;
+  year: number;
+  make: string;
+  model: string;
+  vin: string | null;
+  licensePlate: string | null;
+  engine: string | null;
+  trim: string | null;
+  vehicleType: string | null;
+  currentMileage: number;
+  estimatedAnnualMileage: number | null;
+  overallHealth: number;
+  lastServiceDate: Date | null;
+  updatedAt?: Date;
+}): Vehicle {
+  return {
+    id: vehicle.id,
+    shopId: vehicle.shopId,
+    customerId: vehicle.customerId,
+    year: vehicle.year,
+    make: vehicle.make,
+    model: vehicle.model,
+    vin: vehicle.vin ?? "",
+    licensePlate: vehicle.licensePlate ?? "",
+    engine: vehicle.engine ?? "",
+    trim: vehicle.trim ?? "",
+    vehicleType: vehicle.vehicleType ?? "Passenger vehicle",
+    currentMileage: vehicle.currentMileage,
+    estimatedAnnualMileage: vehicle.estimatedAnnualMileage ?? DEFAULT_ANNUAL_MILEAGE,
+    overallHealth: vehicle.overallHealth,
+    lastServiceDate: dateOnly(vehicle.lastServiceDate || vehicle.updatedAt),
+  };
+}
+
+function toStateServiceDefinition(service: {
+  id: string;
+  shopId: string;
+  name: string;
+  category: string;
+  defaultMileageInterval: number | null;
+  defaultTimeIntervalMonths: number | null;
+  defaultTimeIntervalValue?: number | null;
+  defaultTimeIntervalUnit?: TimeIntervalUnit | null;
+  defaultNotificationThreshold: number;
+  estimatedLaborMinutes: number;
+  defaultPriceCents: number;
+  description: string | null;
+  isActive: boolean;
+  bookingRule?: StateServiceDefinition["bookingRule"];
+}): MaintenanceService {
+  return {
+    id: service.id,
+    shopId: service.shopId,
+    name: service.name,
+    category: service.category,
+    defaultMileageInterval: service.defaultMileageInterval,
+    defaultTimeIntervalMonths: service.defaultTimeIntervalMonths,
+    defaultTimeIntervalValue: service.defaultTimeIntervalValue ?? service.defaultTimeIntervalMonths,
+    defaultTimeIntervalUnit: service.defaultTimeIntervalUnit ?? "MONTHS",
+    defaultNotificationThreshold: service.defaultNotificationThreshold,
+    estimatedLaborMinutes: service.estimatedLaborMinutes,
+    defaultPriceCents: service.defaultPriceCents,
+    description: service.description ?? "",
+    isActive: service.isActive,
+    bookingRule: service.bookingRule ? {
+      id: service.bookingRule.id,
+      shopId: service.bookingRule.shopId,
+      serviceDefinitionId: service.bookingRule.serviceDefinitionId,
+      bookingEnabled: service.bookingRule.bookingEnabled,
+      bookingMode: service.bookingRule.bookingMode,
+      estimatedDurationMinutes: service.bookingRule.estimatedDurationMinutes,
+      bufferBeforeMinutes: service.bookingRule.bufferBeforeMinutes,
+      bufferAfterMinutes: service.bookingRule.bufferAfterMinutes,
+      allowedIntakeType: service.bookingRule.allowedIntakeType,
+      minimumNoticeMinutes: service.bookingRule.minimumNoticeMinutes,
+      maximumAdvanceDays: service.bookingRule.maximumAdvanceDays,
+      maximumSimultaneousBookings: service.bookingRule.maximumSimultaneousBookings,
+      windows: service.bookingRule.windows.map((window) => ({
+        id: window.id,
+        shopId: window.shopId,
+        dayOfWeek: window.dayOfWeek,
+        startMinute: window.startMinute,
+        endMinute: window.endMinute,
+        isActive: window.isActive,
+      })),
+    } : undefined,
+  };
+}
+
+function toStateMaintenanceRecord(record: {
+  id: string;
+  shopId: string;
+  vehicleId: string;
+  serviceDefinitionId: string | null;
+  serviceName: string;
+  customServiceName: string | null;
+  customCategory: string | null;
+  lastCompletedDate: Date | null;
+  lastCompletedMileage: number | null;
+  recommendedMileageInterval: number | null;
+  recommendedTimeIntervalMonths: number | null;
+  mileageIntervalOverride: number | null;
+  timeIntervalValueOverride: number | null;
+  timeIntervalUnitOverride: TimeIntervalUnit | null;
+  notificationThreshold: number;
+  outreachThresholdType: VehicleMaintenanceRecord["outreachThresholdType"];
+  outreachThresholdValue: number;
+  priceCents: number;
+  laborMinutes: number;
+  priceOverrideCents: number | null;
+  laborMinutesOverride: number | null;
+  outreachStatus: VehicleMaintenanceRecord["outreachStatus"];
+  outreachRecordId: string | null;
+  appointmentId: string | null;
+  isActive: boolean | null;
+  notes: string | null;
+  createdByUserId: string | null;
+  updatedByUserId: string | null;
+}): VehicleMaintenanceRecord {
+  return {
+    id: record.id,
+    shopId: record.shopId,
+    vehicleId: record.vehicleId,
+    serviceId: record.serviceDefinitionId,
+    serviceName: record.serviceName,
+    customServiceName: record.customServiceName ?? undefined,
+    customCategory: record.customCategory ?? undefined,
+    lastCompletedDate: dateOnly(record.lastCompletedDate) || null,
+    lastCompletedMileage: record.lastCompletedMileage,
+    recommendedMileageInterval: record.recommendedMileageInterval,
+    recommendedTimeIntervalMonths: record.recommendedTimeIntervalMonths,
+    mileageIntervalOverride: record.mileageIntervalOverride,
+    timeIntervalValueOverride: record.timeIntervalValueOverride,
+    timeIntervalUnitOverride: record.timeIntervalUnitOverride,
+    priceCents: record.priceCents,
+    laborHours: record.laborMinutes / 60,
+    priceOverrideCents: record.priceOverrideCents,
+    laborMinutesOverride: record.laborMinutesOverride,
+    notificationThreshold: record.notificationThreshold,
+    outreachThresholdType: record.outreachThresholdType,
+    outreachThresholdValue: record.outreachThresholdValue,
+    outreachStatus: record.outreachStatus,
+    outreachRecordId: record.outreachRecordId ?? undefined,
+    appointmentId: record.appointmentId ?? undefined,
+    isActive: record.isActive ?? true,
+    notes: record.notes ?? undefined,
+    createdByUserId: record.createdByUserId ?? undefined,
+    updatedByUserId: record.updatedByUserId ?? undefined,
+  };
+}
+
+function maintenanceStatusForDatabase(status: ReturnType<typeof resolveMaintenanceInterval>["status"]) {
+  return status === "NOT_ENOUGH_HISTORY" ? "HEALTHY" : status;
+}
+
+function isMaintenanceOpportunityEligible(status: ReturnType<typeof resolveMaintenanceInterval>["status"]) {
+  return ["DUE_SOON", "DUE", "OVERDUE"].includes(status);
+}
+
+function preserveRevenueStage({
+  existingStage,
+  recalculatedStage,
+  closingStage,
+}: {
+  existingStage?: "IDENTIFIED" | "CONTACTED" | "RESPONDED" | "BOOKED" | "COMPLETED" | "LOST";
+  recalculatedStage: "IDENTIFIED" | "CONTACTED" | "RESPONDED" | "BOOKED" | "COMPLETED" | "LOST";
+  closingStage?: "COMPLETED" | "LOST";
+}) {
+  if (closingStage) return closingStage;
+  if (!existingStage || ["COMPLETED", "LOST"].includes(existingStage)) return recalculatedStage;
+  if (["BOOKED", "COMPLETED", "LOST"].includes(recalculatedStage)) return recalculatedStage;
+  if (existingStage === "BOOKED") return "BOOKED";
+  if (existingStage === "RESPONDED") return "RESPONDED";
+  if (existingStage === "CONTACTED" && recalculatedStage === "IDENTIFIED") return "CONTACTED";
+  return recalculatedStage;
+}
+
+async function syncMaintenanceRevenueOpportunities(
+  tx: OpportunitySyncClient,
+  context: AuthenticatedShopContext,
+  maintenanceRecordIds: string[],
+) {
+  const uniqueIds = Array.from(new Set(maintenanceRecordIds));
+  if (uniqueIds.length === 0) return [];
+
+  const records = await tx.vehicleMaintenanceRecord.findMany({
+    where: { id: { in: uniqueIds }, shopId: context.shopId },
+    include: { vehicle: true, serviceDefinition: true },
+  });
+  const synced = [];
+
+  for (const record of records) {
+    assertSameShop(context, record.shopId);
+    assertSameShop(context, record.vehicle.shopId);
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${context.shopId}:maintenance:${record.id}`}))`;
+    const effective = resolveMaintenanceInterval({
+      record: toStateMaintenanceRecord(record),
+      service: record.serviceDefinition ? toStateServiceDefinition(record.serviceDefinition) : undefined,
+      vehicle: toStateVehicle(record.vehicle),
+      asOf: new Date(),
+    });
+    const computedStatus = maintenanceStatusForDatabase(effective.status);
+    if (record.status !== computedStatus) {
+      await tx.vehicleMaintenanceRecord.update({
+        where: { id: record.id },
+        data: { status: computedStatus, updatedByUserId: context.userId },
+      });
+    }
+    const existing = await tx.maintenanceRevenueOpportunity.findFirst({
+      where: {
+        shopId: context.shopId,
+        maintenanceRecordId: record.id,
+        declinedWorkRecordId: null,
+      },
+    });
+
+    const eligible = isMaintenanceOpportunityEligible(effective.status);
+    if (!eligible || record.archivedAt || record.isActive === false) {
+      if (existing && !["COMPLETED", "LOST"].includes(existing.stage)) {
+        synced.push(await tx.maintenanceRevenueOpportunity.update({
+          where: { id: existing.id },
+          data: {
+            stage: preserveRevenueStage({
+              existingStage: existing.stage,
+              recalculatedStage: "COMPLETED",
+              closingStage: record.archivedAt || record.isActive === false ? "LOST" : "COMPLETED",
+            }),
+            explanation: record.archivedAt || record.isActive === false
+              ? "Maintenance item was archived and no longer appears in the open queue."
+              : "Maintenance item is no longer due.",
+            lastActivityAt: new Date(),
+          },
+        }));
+      }
+      continue;
+    }
+
+    if (existing && ["COMPLETED", "LOST"].includes(existing.stage)) {
+      continue;
+    }
+
+    const dueMileage = effective.nextDueMileage;
+    const dueDate = effective.nextDueDate ? dateFromDateOnly(effective.nextDueDate) : null;
+    const milesOverdue = effective.milesUntilDue !== null ? Math.max(0, -effective.milesUntilDue) : 0;
+    const daysLate = effective.daysUntilDue !== null ? Math.max(0, -effective.daysUntilDue) : 0;
+    const source = effective.status === "OVERDUE" || milesOverdue > 0 || daysLate > 0
+      ? "OVERDUE_MAINTENANCE" as const
+      : "DUE_MAINTENANCE" as const;
+    const recalculatedStage = stageFromOutreach({
+      outreachStatus: record.outreachStatus,
+      appointmentId: record.appointmentId,
+    });
+    const stage = preserveRevenueStage({ existingStage: existing?.stage, recalculatedStage });
+    const priority = priorityForOpportunity({
+      source,
+      daysOverdue: daysLate,
+      milesOverdue,
+      estimatedRevenueCents: effective.priceCents,
+      booked: stage === "BOOKED" || stage === "COMPLETED",
+    });
+    const explanation = source === "OVERDUE_MAINTENANCE"
+      ? `${effective.serviceName} is overdue for this vehicle.`
+      : `${effective.serviceName} ${effective.dueText.toLowerCase()}.`;
+    const data = {
+      shopId: context.shopId,
+      customerId: record.vehicle.customerId,
+      vehicleId: record.vehicleId,
+      maintenanceRecordId: record.id,
+      declinedWorkRecordId: null,
+      source,
+      stage,
+      priority: priority.priority,
+      explanation,
+      priorityReason: priority.priorityReason,
+      estimatedRevenueCents: effective.priceCents,
+      estimatedLaborMinutes: effective.laborMinutes,
+      dueDate,
+      dueMileage,
+      daysOverdue: daysLate,
+      milesOverdue,
+      lastActivityAt: new Date(),
+    };
+
+    synced.push(existing
+      ? await tx.maintenanceRevenueOpportunity.update({
+          where: { id: existing.id },
+          data,
+        })
+      : await tx.maintenanceRevenueOpportunity.create({ data }));
+  }
+
+  return synced;
+}
+
+async function syncDeclinedWorkRevenueOpportunities(
+  tx: OpportunitySyncClient,
+  context: AuthenticatedShopContext,
+  declinedWorkRecordIds: string[],
+) {
+  const uniqueIds = Array.from(new Set(declinedWorkRecordIds));
+  if (uniqueIds.length === 0) return [];
+
+  const records = await tx.declinedWorkRecord.findMany({
+    where: { id: { in: uniqueIds }, shopId: context.shopId },
+    include: { vehicle: true },
+  });
+  const synced = [];
+
+  for (const record of records) {
+    assertSameShop(context, record.shopId);
+    assertSameShop(context, record.vehicle.shopId);
+    if (record.vehicle.customerId !== record.customerId) continue;
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${context.shopId}:declined-work:${record.id}`}))`;
+
+    const existing = await tx.maintenanceRevenueOpportunity.findFirst({
+      where: {
+        shopId: context.shopId,
+        declinedWorkRecordId: record.id,
+        maintenanceRecordId: null,
+      },
+    });
+    const stage = stageFromOutreach({
+      outreachStatus: record.outreachStatus,
+      appointmentId: record.appointmentId,
+      completed: record.status === "COMPLETED",
+      lost: record.status === "DECLINED",
+    });
+    const priority = priorityForOpportunity({
+      source: "DECLINED_WORK",
+      daysOverdue: daysBetween(record.declinedAt),
+      milesOverdue: 0,
+      estimatedRevenueCents: record.recommendedPriceCents,
+      booked: stage === "BOOKED" || stage === "COMPLETED",
+    });
+    const data = {
+      shopId: context.shopId,
+      customerId: record.customerId,
+      vehicleId: record.vehicleId,
+      maintenanceRecordId: null,
+      declinedWorkRecordId: record.id,
+      source: "DECLINED_WORK" as const,
+      stage,
+      priority: priority.priority,
+      explanation: `${record.serviceName} was declined on ${record.declinedAt.toISOString().slice(0, 10)}.`,
+      priorityReason: priority.priorityReason,
+      estimatedRevenueCents: record.recommendedPriceCents,
+      estimatedLaborMinutes: record.laborMinutes,
+      dueDate: record.declinedAt,
+      dueMileage: null,
+      daysOverdue: daysBetween(record.declinedAt),
+      milesOverdue: 0,
+      lastActivityAt: new Date(),
+    };
+
+    synced.push(existing
+      ? await tx.maintenanceRevenueOpportunity.update({
+          where: { id: existing.id },
+          data,
+        })
+      : await tx.maintenanceRevenueOpportunity.create({ data }));
+  }
+
+  return synced;
+}
+
+function monthsFromTime(value: number | null | undefined, unit: TimeIntervalUnit | null | undefined) {
+  const months = timeIntervalToMonths(value, unit);
+  return months === null ? null : Math.max(1, Math.round(months));
+}
+
+type StateServiceDefinition = {
+  id: string;
+  shopId: string;
+  name: string;
+  category: string;
+  defaultMileageInterval: number | null;
+  defaultTimeIntervalMonths: number | null;
+  defaultTimeIntervalValue?: number | null;
+  defaultTimeIntervalUnit?: TimeIntervalUnit | null;
+  defaultNotificationThreshold: number;
+  estimatedLaborMinutes: number;
+  defaultPriceCents: number;
+  description: string | null;
+  isActive: boolean;
+  bookingRule?: {
+    id: string;
+    shopId: string;
+    serviceDefinitionId: string;
+    bookingEnabled: boolean;
+    bookingMode: BookingMode;
+    estimatedDurationMinutes: number;
+    bufferBeforeMinutes: number;
+    bufferAfterMinutes: number;
+    allowedIntakeType: ServiceBookingIntakeOption;
+    minimumNoticeMinutes: number | null;
+    maximumAdvanceDays: number | null;
+    maximumSimultaneousBookings: number | null;
+    windows: Array<{
+      id: string;
+      shopId: string;
+      dayOfWeek: number;
+      startMinute: number;
+      endMinute: number;
+      isActive: boolean;
+    }>;
+  } | null;
+};
+
+type StateMaintenanceRecord = {
+  id: string;
+  shopId: string;
+  vehicleId: string;
+  serviceDefinitionId: string | null;
+  serviceName: string;
+  customServiceName?: string | null;
+  customCategory?: string | null;
+  lastCompletedDate: Date | null;
+  lastCompletedMileage: number | null;
+  recommendedMileageInterval: number | null;
+  recommendedTimeIntervalMonths: number | null;
+  mileageIntervalOverride?: number | null;
+  timeIntervalValueOverride?: number | null;
+  timeIntervalUnitOverride?: TimeIntervalUnit | null;
+  notificationThreshold: number;
+  outreachThresholdType?: VehicleMaintenanceRecord["outreachThresholdType"] | null;
+  outreachThresholdValue?: number | null;
+  priceCents: number;
+  laborMinutes: number;
+  priceOverrideCents?: number | null;
+  laborMinutesOverride?: number | null;
+  outreachStatus: VehicleMaintenanceRecord["outreachStatus"];
+  outreachRecordId: string | null;
+  appointmentId: string | null;
+  isActive?: boolean | null;
+  notes?: string | null;
+  createdByUserId?: string | null;
+  updatedByUserId?: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+type StateMileageReading = {
+  id: string;
+  shopId: string;
+  vehicleId: string;
+  readingMileage: number;
+  readingDate: Date;
+  source: VehicleMileageReading["source"];
+  verificationStatus: VehicleMileageReading["verificationStatus"];
+  anomalyStatus: VehicleMileageReading["anomalyStatus"];
+  includedInForecast: boolean;
+  correctionReason: string | null;
+  reviewNotes: string | null;
+  sourceReferenceType: string | null;
+  sourceReferenceId: string | null;
+  recordedByUserId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+type StateDrivingProfile = {
+  id: string;
+  shopId: string;
+  vehicleId: string;
+  customerReportedAnnualMileage: number | null;
+  customerReportedAt: Date | null;
+  customerReportedByUserId: string | null;
+  calculatedAnnualMileage: number;
+  estimateSource: VehicleDrivingProfile["estimateSource"];
+  confidence: VehicleDrivingProfile["confidence"];
+  confidenceReason: string;
+  manualAnnualMileageOverride: number | null;
+  manualOverrideReason: string | null;
+  manualOverrideNotes: string | null;
+  manualOverrideSetAt: Date | null;
+  manualOverrideSetByUserId: string | null;
+  lastCalculatedAt: Date;
+};
+
+type MileageTransactionClient = Pick<
+  typeof prisma,
+  "vehicleDrivingProfile" | "vehicleMileageReading" | "$queryRaw"
+>;
+
+export function isMissingServiceIntervalSchema(error: unknown) {
+  const database = safeDatabaseError(error);
+  if (database.code !== "P2022") return false;
+
+  const missingIntervalColumns = [
+    "defaultTimeIntervalValue",
+    "defaultTimeIntervalUnit",
+    "customServiceName",
+    "customCategory",
+    "mileageIntervalOverride",
+    "timeIntervalValueOverride",
+    "timeIntervalUnitOverride",
+    "outreachThresholdType",
+    "outreachThresholdValue",
+    "priceOverrideCents",
+    "laborMinutesOverride",
+    "isActive",
+    "createdByUserId",
+    "updatedByUserId",
+  ];
+
+  return missingIntervalColumns.some((column) => database.message?.includes(column));
+}
+
+export function isMissingAdaptiveMileageSchema(error: unknown) {
+  const database = safeDatabaseError(error);
+  if (!["P2010", "P2021", "P2022", "42P01", "42703", "42704"].includes(database.code ?? "")) return false;
+  return [
+    "VehicleMileageReading",
+    "VehicleDrivingProfile",
+    "defaultAnnualMileage",
+    "MileageReadingSource",
+    "DrivingProfileEstimateSource",
+  ].some((needle) => database.message?.includes(needle) || database.details?.includes(needle));
+}
+
+export function isMissingCustomerBookingSchema(error: unknown) {
+  const database = safeDatabaseError(error);
+  if (!["P2010", "P2021", "P2022", "42P01", "42703", "42704"].includes(database.code ?? "")) return false;
+  return [
+    "ShopBookingSettings",
+    "ShopBookingWindow",
+    "ShopBookingBlackout",
+    "ServiceBookingRule",
+    "ServiceBookingWindow",
+    "CustomerBookingLink",
+    "AppointmentChangeRecord",
+    "bookingLinkId",
+    "intakeType",
+  ].some((needle) => database.message?.includes(needle) || database.details?.includes(needle));
+}
+
+function isDemoEntityId(id: string) {
+  return /^(cust|veh|svc|item|appt|hist|service|outreach|declined|import)-/.test(id);
+}
+
+function shortId(id: string | null | undefined) {
+  if (!id) return undefined;
+  return id.length <= 14 ? id : `${id.slice(0, 8)}...${id.slice(-4)}`;
+}
+
+function assertProductionEntityId(id: string, entityName: string) {
+  if (isDemoEntityId(id)) {
+    throw new SafeActionError({
+      code: "DEMO_ID_NOT_PERSISTED",
+      message: `${entityName} is not a persisted production record. Refresh the page and try again.`,
+      status: 400,
+    });
+  }
+}
+
+function queueActionError({
+  code,
+  message,
+  status = 400,
+  operation = "UPDATE",
+}: {
+  code: string;
+  message: string;
+  status?: number;
+  operation?: "SELECT" | "INSERT" | "UPDATE" | "DELETE";
+}) {
+  return new SafeActionError({
+    code,
+    message,
+    status,
+    table: "MaintenanceRevenueOpportunity",
+    operation,
+  });
+}
+
+function assertCustomerBookingFeatureEnabled() {
+  if (!isCustomerBookingEnabled()) {
+    throw new SafeActionError({
+      code: "CUSTOMER_BOOKING_DISABLED",
+      message: "Customer booking is not available.",
+      status: 404,
+    });
+  }
+}
+
+function responseOutreachStatus(responseStatus?: OutreachRecord["responseStatus"]) {
+  if (responseStatus === "DECLINED" || responseStatus === "DO_NOT_CONTACT") return "DECLINED" as const;
+  if (responseStatus && responseStatus !== "NO_RESPONSE") return "RESPONDED" as const;
+  return "MANUALLY_SENT" as const;
+}
+
+function responseOpportunityStage(responseStatus?: OutreachRecord["responseStatus"]) {
+  if (responseStatus === "DECLINED" || responseStatus === "DO_NOT_CONTACT") return "LOST" as const;
+  if (responseStatus && responseStatus !== "NO_RESPONSE") return "RESPONDED" as const;
+  return "CONTACTED" as const;
+}
+
+function startOfLocalDate(value: string) {
+  return new Date(`${value}T00:00:00`);
+}
+
+function requireFutureDate(value: string) {
+  const parsed = startOfLocalDate(value);
+  const today = startOfLocalDate(new Date().toISOString().slice(0, 10));
+  if (Number.isNaN(parsed.getTime()) || parsed <= today) {
+    throw queueActionError({
+      code: "SNOOZE_DATE_NOT_FUTURE",
+      message: "Choose a future snooze date.",
+      status: 400,
+    });
+  }
+  return parsed;
+}
+
+async function loadOpenQueueTargets(
+  context: AuthenticatedShopContext,
+  input: {
+    customerId: string;
+    vehicleId: string;
+    opportunityIds: string[];
+  },
+) {
+  const opportunityIds = Array.from(new Set(input.opportunityIds));
+  if (opportunityIds.length === 0) {
+    throw queueActionError({
+      code: "OPPORTUNITY_REQUIRED",
+      message: "Select at least one open opportunity.",
+      status: 400,
+      operation: "SELECT",
+    });
+  }
+  opportunityIds.forEach((id) => assertProductionEntityId(id, "The selected opportunity"));
+
+  const [customer, vehicle, opportunities] = await Promise.all([
+    prisma.customer.findUnique({ where: { id: input.customerId } }),
+    prisma.vehicle.findUnique({ where: { id: input.vehicleId } }),
+    prisma.maintenanceRevenueOpportunity.findMany({
+      where: {
+        id: { in: opportunityIds },
+        shopId: context.shopId,
+      },
+    }),
+  ]);
+
+  assertSameShop(context, customer?.shopId);
+  assertSameShop(context, vehicle?.shopId);
+  if (!vehicle || vehicle.customerId !== input.customerId) {
+    throw queueActionError({
+      code: "VEHICLE_CUSTOMER_MISMATCH",
+      message: "Vehicle does not belong to the selected customer.",
+      status: 403,
+      operation: "SELECT",
+    });
+  }
+  if (opportunities.length !== opportunityIds.length) {
+    throw queueActionError({
+      code: "OPPORTUNITY_NOT_IN_ACTIVE_SHOP",
+      message: "You do not have permission to update this opportunity.",
+      status: 403,
+      operation: "SELECT",
+    });
+  }
+  if (opportunities.some((opportunity) => opportunity.customerId !== input.customerId || opportunity.vehicleId !== input.vehicleId)) {
+    throw queueActionError({
+      code: "OPPORTUNITY_TARGET_MISMATCH",
+      message: "This opportunity is no longer open.",
+      status: 409,
+      operation: "SELECT",
+    });
+  }
+  if (opportunities.some((opportunity) => ["BOOKED", "COMPLETED", "LOST"].includes(opportunity.stage))) {
+    throw queueActionError({
+      code: "OPPORTUNITY_NOT_OPEN",
+      message: "This opportunity is no longer open.",
+      status: 409,
+      operation: "SELECT",
+    });
+  }
+
+  const maintenanceRecordIds = opportunities
+    .map((opportunity) => opportunity.maintenanceRecordId)
+    .filter((id): id is string => Boolean(id));
+  const declinedWorkRecordIds = opportunities
+    .map((opportunity) => opportunity.declinedWorkRecordId)
+    .filter((id): id is string => Boolean(id));
+
+  const [maintenanceRecords, declinedWorkRecords] = await Promise.all([
+    maintenanceRecordIds.length
+      ? prisma.vehicleMaintenanceRecord.findMany({
+          where: { id: { in: maintenanceRecordIds }, shopId: context.shopId },
+        })
+      : Promise.resolve([]),
+    declinedWorkRecordIds.length
+      ? prisma.declinedWorkRecord.findMany({
+          where: { id: { in: declinedWorkRecordIds }, shopId: context.shopId },
+        })
+      : Promise.resolve([]),
+  ]);
+
+  if (maintenanceRecords.length !== maintenanceRecordIds.length || declinedWorkRecords.length !== declinedWorkRecordIds.length) {
+    throw queueActionError({
+      code: "OPPORTUNITY_SOURCE_MISSING",
+      message: "This opportunity is no longer open.",
+      status: 409,
+      operation: "SELECT",
+    });
+  }
+  if (
+    maintenanceRecords.some((record) => record.vehicleId !== input.vehicleId) ||
+    declinedWorkRecords.some((record) => record.vehicleId !== input.vehicleId || record.customerId !== input.customerId)
+  ) {
+    throw queueActionError({
+      code: "OPPORTUNITY_SOURCE_MISMATCH",
+      message: "This opportunity is no longer open.",
+      status: 409,
+      operation: "SELECT",
+    });
+  }
+
+  return {
+    opportunityIds,
+    opportunities,
+    maintenanceRecords,
+    declinedWorkRecords,
+    maintenanceRecordIds,
+    declinedWorkRecordIds,
+  };
+}
+
+export function canManageDrivingEstimates(role: AuthenticatedShopContext["role"]) {
+  return role === "OWNER" || role === "MANAGER";
+}
+
+function requireDrivingEstimateManager(context: AuthenticatedShopContext) {
+  if (canManageDrivingEstimates(context.role)) return;
+  throw new SafeActionError({
+    code: "DRIVING_ESTIMATE_MANAGER_REQUIRED",
+    message: "Only owners and managers can edit driving estimates.",
+    status: 403,
+    table: "VehicleDrivingProfile",
+    operation: "UPDATE",
+  });
+}
+
+async function requireVehicleInActiveShop(context: AuthenticatedShopContext, vehicleId: string) {
+  assertProductionEntityId(vehicleId, "The selected vehicle");
+  const vehicle = await prisma.vehicle.findFirst({
+    where: {
+      id: vehicleId,
+      shopId: context.shopId,
+      archivedAt: null,
+    },
+  });
+
+  if (vehicle) return vehicle;
+
+  const target = await prisma.vehicle.findUnique({
+    where: { id: vehicleId },
+    select: { shopId: true },
+  });
+
+  throw new SafeActionError({
+    code: "VEHICLE_NOT_IN_ACTIVE_SHOP",
+    message: "The selected vehicle does not belong to your active shop.",
+    status: target ? 403 : 404,
+    table: "Vehicle",
+    operation: "SELECT",
+    details: target?.shopId
+      ? `Vehicle exists in a different shop: ${shortId(target.shopId)}.`
+      : "Vehicle was not found.",
+  });
+}
+
+async function requireServiceDefinitionInActiveShop(
+  context: AuthenticatedShopContext,
+  serviceDefinitionId: string,
+) {
+  assertProductionEntityId(serviceDefinitionId, "The selected service");
+  const service = await prisma.serviceDefinition.findFirst({
+    where: {
+      id: serviceDefinitionId,
+      shopId: context.shopId,
+    },
+  });
+
+  if (service) return service;
+
+  const target = await prisma.serviceDefinition.findUnique({
+    where: { id: serviceDefinitionId },
+    select: { shopId: true },
+  });
+
+  throw new SafeActionError({
+    code: "SERVICE_NOT_IN_ACTIVE_SHOP",
+    message: "The selected service does not belong to your active shop.",
+    status: target ? 403 : 404,
+    table: "ServiceDefinition",
+    operation: "SELECT",
+    details: target?.shopId
+      ? `Service exists in a different shop: ${shortId(target.shopId)}.`
+      : "Service was not found.",
+  });
+}
+
+async function requireMaintenanceRecordInActiveShop(
+  context: AuthenticatedShopContext,
+  maintenanceRecordId: string,
+) {
+  assertProductionEntityId(maintenanceRecordId, "The selected maintenance item");
+  const record = await prisma.vehicleMaintenanceRecord.findFirst({
+    where: {
+      id: maintenanceRecordId,
+      shopId: context.shopId,
+      archivedAt: null,
+    },
+  });
+
+  if (record) return record;
+
+  const target = await prisma.vehicleMaintenanceRecord.findUnique({
+    where: { id: maintenanceRecordId },
+    select: { shopId: true },
+  });
+
+  throw new SafeActionError({
+    code: "MAINTENANCE_ITEM_NOT_IN_ACTIVE_SHOP",
+    message: "The selected maintenance item does not belong to your active shop.",
+    status: target ? 403 : 404,
+    table: "VehicleMaintenanceRecord",
+    operation: "SELECT",
+    details: target?.shopId
+      ? `Maintenance item exists in a different shop: ${shortId(target.shopId)}.`
+      : "Maintenance item was not found.",
+  });
+}
+
+async function loadStateServiceDefinitions(shopId: string): Promise<StateServiceDefinition[]> {
+  if (!isCustomerBookingEnabled()) {
+    return prisma.serviceDefinition.findMany({
+      where: { shopId },
+      orderBy: { name: "asc" },
+    });
+  }
+
+  try {
+    return await prisma.serviceDefinition.findMany({
+      where: { shopId },
+      orderBy: { name: "asc" },
+      include: { bookingRule: { include: { windows: true } } },
+    });
+  } catch (error) {
+    if (!isMissingServiceIntervalSchema(error) && !isMissingCustomerBookingSchema(error)) throw error;
+
+    console.warn("Maintiva service or booking migration missing during state load; using legacy service definition columns.", {
+      database: safeDatabaseError(error),
+    });
+    return prisma.serviceDefinition.findMany({
+      where: { shopId },
+      orderBy: { name: "asc" },
+      select: {
+        id: true,
+        shopId: true,
+        name: true,
+        category: true,
+        defaultMileageInterval: true,
+        defaultTimeIntervalMonths: true,
+        defaultNotificationThreshold: true,
+        estimatedLaborMinutes: true,
+        defaultPriceCents: true,
+        description: true,
+        isActive: true,
+      },
+    });
+  }
+}
+
+async function loadStateMaintenanceRecords(shopId: string): Promise<StateMaintenanceRecord[]> {
+  try {
+    return await prisma.vehicleMaintenanceRecord.findMany({
+      where: { shopId, archivedAt: null },
+      orderBy: { updatedAt: "desc" },
+    });
+  } catch (error) {
+    if (!isMissingServiceIntervalSchema(error)) throw error;
+
+    console.warn("Maintiva service interval migration missing during state load; using legacy maintenance record columns.", {
+      database: safeDatabaseError(error),
+    });
+    return prisma.vehicleMaintenanceRecord.findMany({
+      where: { shopId, archivedAt: null },
+      orderBy: { updatedAt: "desc" },
+      select: {
+        id: true,
+        shopId: true,
+        vehicleId: true,
+        serviceDefinitionId: true,
+        serviceName: true,
+        lastCompletedDate: true,
+        lastCompletedMileage: true,
+        recommendedMileageInterval: true,
+        recommendedTimeIntervalMonths: true,
+        notificationThreshold: true,
+        priceCents: true,
+        laborMinutes: true,
+        outreachStatus: true,
+        outreachRecordId: true,
+        appointmentId: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+  }
+}
+
+async function loadShopDefaultAnnualMileage(shopId: string) {
+  try {
+    const rows = await prisma.$queryRaw<{ defaultAnnualMileage: number | null }[]>`
+      SELECT "defaultAnnualMileage" FROM public."Shop" WHERE "id" = ${shopId} LIMIT 1
+    `;
+    return rows[0]?.defaultAnnualMileage ?? DEFAULT_ANNUAL_MILEAGE;
+  } catch (error) {
+    if (!isMissingAdaptiveMileageSchema(error)) throw error;
+    return DEFAULT_ANNUAL_MILEAGE;
+  }
+}
+
+async function loadStateMileageReadings(shopId: string): Promise<StateMileageReading[]> {
+  try {
+    return await prisma.vehicleMileageReading.findMany({
+      where: { shopId },
+      orderBy: [{ readingDate: "desc" }, { createdAt: "desc" }],
+    });
+  } catch (error) {
+    if (!isMissingAdaptiveMileageSchema(error)) throw error;
+    return [];
+  }
+}
+
+async function loadStateDrivingProfiles(shopId: string): Promise<StateDrivingProfile[]> {
+  try {
+    return await prisma.vehicleDrivingProfile.findMany({
+      where: { shopId },
+      orderBy: { updatedAt: "desc" },
+    });
+  } catch (error) {
+    if (!isMissingAdaptiveMileageSchema(error)) throw error;
+    return [];
+  }
+}
+
+async function loadStateBookingSettings(shopId: string): Promise<ShopBookingSettings> {
+  if (!isCustomerBookingEnabled()) {
+    return { ...defaultBookingSettings, shopId, id: `default-${shopId}` };
+  }
+
+  try {
+    const settings = await prisma.shopBookingSettings.findUnique({ where: { shopId } });
+    return settings ? {
+      id: settings.id,
+      shopId: settings.shopId,
+      onlineBookingEnabled: settings.onlineBookingEnabled,
+      minimumNoticeMinutes: settings.minimumNoticeMinutes,
+      maximumAdvanceDays: settings.maximumAdvanceDays,
+      defaultBufferBeforeMinutes: settings.defaultBufferBeforeMinutes,
+      defaultBufferAfterMinutes: settings.defaultBufferAfterMinutes,
+      maximumSimultaneousAppointments: settings.maximumSimultaneousAppointments,
+      cancellationCutoffMinutes: settings.cancellationCutoffMinutes,
+      reschedulingCutoffMinutes: settings.reschedulingCutoffMinutes,
+    } : { ...defaultBookingSettings, shopId, id: `default-${shopId}` };
+  } catch (error) {
+    if (!isMissingCustomerBookingSchema(error)) throw error;
+    return { ...defaultBookingSettings, shopId, id: `default-${shopId}` };
+  }
+}
+
+async function loadStateBookingWindows(shopId: string) {
+  if (!isCustomerBookingEnabled()) {
+    return defaultBookingWindows.map((window) => ({ ...window, shopId, id: `default-${shopId}-${window.dayOfWeek}` }));
+  }
+
+  try {
+    const windows = await prisma.shopBookingWindow.findMany({
+      where: { shopId },
+      orderBy: [{ dayOfWeek: "asc" }, { startMinute: "asc" }],
+    });
+    return windows.length > 0 ? windows.map((window) => ({
+      id: window.id,
+      shopId: window.shopId,
+      dayOfWeek: window.dayOfWeek,
+      startMinute: window.startMinute,
+      endMinute: window.endMinute,
+      isActive: window.isActive,
+    })) : defaultBookingWindows.map((window) => ({ ...window, shopId, id: `default-${shopId}-${window.dayOfWeek}` }));
+  } catch (error) {
+    if (!isMissingCustomerBookingSchema(error)) throw error;
+    return defaultBookingWindows.map((window) => ({ ...window, shopId, id: `default-${shopId}-${window.dayOfWeek}` }));
+  }
+}
+
+async function loadStateBookingBlackouts(shopId: string): Promise<ShopBookingBlackout[]> {
+  if (!isCustomerBookingEnabled()) {
+    return [];
+  }
+
+  try {
+    const blackouts = await prisma.shopBookingBlackout.findMany({
+      where: { shopId },
+      orderBy: { startsAt: "asc" },
+    });
+    return blackouts.map((blackout) => ({
+      id: blackout.id,
+      shopId: blackout.shopId,
+      startsAt: iso(blackout.startsAt),
+      endsAt: iso(blackout.endsAt),
+      reason: blackout.reason ?? undefined,
+      isFullDay: blackout.isFullDay,
+    }));
+  } catch (error) {
+    if (!isMissingCustomerBookingSchema(error)) throw error;
+    return [];
+  }
+}
+
+async function loadStateCustomerBookingLinks(shopId: string): Promise<CustomerBookingLink[]> {
+  if (!isCustomerBookingEnabled()) {
+    return [];
+  }
+
+  try {
+    const links = await prisma.customerBookingLink.findMany({
+      where: { shopId },
+      orderBy: { createdAt: "desc" },
+      take: 100,
+    });
+    return links.map((link) => ({
+      id: link.id,
+      shopId: link.shopId,
+      customerId: link.customerId,
+      vehicleId: link.vehicleId,
+      opportunityId: link.opportunityId ?? undefined,
+      maintenanceRecordIds: link.maintenanceRecordIds,
+      declinedWorkRecordIds: link.declinedWorkRecordIds,
+      status: link.status,
+      expiresAt: iso(link.expiresAt),
+      revokedAt: iso(link.revokedAt) || undefined,
+      usedAt: iso(link.usedAt) || undefined,
+      lastViewedAt: iso(link.lastViewedAt) || undefined,
+      bookingCompletedAt: iso(link.bookingCompletedAt) || undefined,
+      outreachRecordId: link.outreachRecordId ?? undefined,
+      appointmentId: link.appointmentId ?? undefined,
+      createdAt: iso(link.createdAt),
+    }));
+  } catch (error) {
+    if (!isMissingCustomerBookingSchema(error)) throw error;
+    return [];
+  }
+}
+
+async function loadStateOutreachBookingLinkIds(shopId: string) {
+  if (!isCustomerBookingEnabled()) {
+    return [];
+  }
+
+  try {
+    return await prisma.outreachRecord.findMany({
+      where: { shopId },
+      select: {
+        id: true,
+        bookingLinkId: true,
+      },
+    });
+  } catch (error) {
+    if (!isMissingCustomerBookingSchema(error)) throw error;
+    console.warn("Maintiva customer scheduling migration missing during outreach state load; omitting booking link references.", {
+      database: safeDatabaseError(error),
+    });
+    return [];
+  }
+}
+
+async function loadStateAppointmentBookingMetadata(shopId: string) {
+  if (!isCustomerBookingEnabled()) {
+    return [];
+  }
+
+  try {
+    return await prisma.appointment.findMany({
+      where: { shopId },
+      select: {
+        id: true,
+        bookingLinkId: true,
+        intakeType: true,
+        customerNotes: true,
+        internalNotes: true,
+        requestedAt: true,
+        approvedAt: true,
+        declinedAt: true,
+        customerCancelledAt: true,
+        rescheduledAt: true,
+      },
+    });
+  } catch (error) {
+    if (!isMissingCustomerBookingSchema(error)) throw error;
+    console.warn("Maintiva customer scheduling migration missing during appointment state load; omitting booking metadata.", {
+      database: safeDatabaseError(error),
+    });
+    return [];
+  }
+}
+
 export async function seedDefaultServicesForShop(shopId: string) {
   await prisma.serviceDefinition.createMany({
     data: defaultServices.map((service) => ({
@@ -77,6 +1435,8 @@ export async function seedDefaultServicesForShop(shopId: string) {
       category: service.category,
       defaultMileageInterval: service.defaultMileageInterval,
       defaultTimeIntervalMonths: service.defaultTimeIntervalMonths,
+      defaultTimeIntervalValue: service.defaultTimeIntervalValue,
+      defaultTimeIntervalUnit: service.defaultTimeIntervalUnit,
       defaultNotificationThreshold: service.defaultNotificationThreshold,
       estimatedLaborMinutes: service.estimatedLaborMinutes,
       defaultPriceCents: service.defaultPriceCents,
@@ -156,40 +1516,294 @@ export async function createPilotShopForUser({
   return shop;
 }
 
+async function expirePastQueueSnoozes(context: AuthenticatedShopContext) {
+  const now = new Date();
+  const expired = await prisma.outreachRecord.findMany({
+    where: {
+      shopId: context.shopId,
+      status: "SNOOZED",
+      followUpDate: { lte: now },
+    },
+    select: {
+      id: true,
+      customerId: true,
+      vehicleId: true,
+    },
+  });
+  if (expired.length === 0) return;
+
+  const outreachIds = expired.map((record) => record.id);
+  const vehicleIds = Array.from(new Set(expired.map((record) => record.vehicleId)));
+  const customerIds = Array.from(new Set(expired.map((record) => record.customerId)));
+
+  await prisma.$transaction(async (tx) => {
+    const maintenance = await tx.vehicleMaintenanceRecord.findMany({
+      where: {
+        shopId: context.shopId,
+        outreachRecordId: { in: outreachIds },
+        outreachStatus: "SNOOZED",
+      },
+      select: { id: true },
+    });
+    const declined = await tx.declinedWorkRecord.findMany({
+      where: {
+        shopId: context.shopId,
+        customerId: { in: customerIds },
+        vehicleId: { in: vehicleIds },
+        outreachStatus: "SNOOZED",
+      },
+      select: { id: true },
+    });
+    const maintenanceRecordIds = maintenance.map((record) => record.id);
+    const declinedWorkRecordIds = declined.map((record) => record.id);
+
+    if (maintenanceRecordIds.length > 0) {
+      await tx.vehicleMaintenanceRecord.updateMany({
+        where: { id: { in: maintenanceRecordIds }, shopId: context.shopId },
+        data: {
+          outreachStatus: "NEEDS_OUTREACH",
+          updatedByUserId: context.userId,
+        },
+      });
+      await tx.maintenanceRevenueOpportunity.updateMany({
+        where: {
+          shopId: context.shopId,
+          maintenanceRecordId: { in: maintenanceRecordIds },
+          stage: "CONTACTED",
+        },
+        data: {
+          stage: "IDENTIFIED",
+          lastActivityAt: now,
+        },
+      });
+    }
+
+    if (declinedWorkRecordIds.length > 0) {
+      await tx.declinedWorkRecord.updateMany({
+        where: { id: { in: declinedWorkRecordIds }, shopId: context.shopId },
+        data: {
+          status: "OPEN",
+          outreachStatus: "NEEDS_OUTREACH",
+        },
+      });
+      await tx.maintenanceRevenueOpportunity.updateMany({
+        where: {
+          shopId: context.shopId,
+          declinedWorkRecordId: { in: declinedWorkRecordIds },
+          stage: "CONTACTED",
+        },
+        data: {
+          stage: "IDENTIFIED",
+          lastActivityAt: now,
+        },
+      });
+    }
+  });
+}
+
 export async function buildPilotState(context: AuthenticatedShopContext): Promise<DemoState> {
+  await expirePastQueueSnoozes(context);
+
   const shop = await prisma.shop.findUniqueOrThrow({
     where: { id: context.shopId },
-    include: {
+    select: {
+      id: true,
+      name: true,
+      slug: true,
+      phone: true,
+      email: true,
+      address: true,
+      timezone: true,
+      dailyBayHours: true,
+      isDemo: true,
+      onboardingCompletedAt: true,
+      updatedAt: true,
       memberships: { include: { user: true }, where: { isActive: true } },
       customers: { where: { archivedAt: null }, orderBy: [{ lastName: "asc" }, { firstName: "asc" }] },
       vehicles: { where: { archivedAt: null }, orderBy: [{ make: "asc" }, { model: "asc" }] },
-      serviceDefinitions: { orderBy: { name: "asc" } },
-      maintenanceRecords: { where: { archivedAt: null }, orderBy: { updatedAt: "desc" } },
       serviceHistoryRecords: { orderBy: { completedAt: "desc" } },
       declinedWorkRecords: { orderBy: { declinedAt: "desc" } },
-      outreachRecords: { orderBy: { createdAt: "desc" } },
+      revenueOpportunities: { orderBy: [{ priority: "asc" }, { updatedAt: "desc" }] },
+      outreachRecords: {
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          shopId: true,
+          customerId: true,
+          vehicleId: true,
+          message: true,
+          channel: true,
+          status: true,
+          copiedAt: true,
+          manuallySentAt: true,
+          responseStatus: true,
+          followUpDate: true,
+          appointmentId: true,
+          performedByUserId: true,
+          createdAt: true,
+        },
+      },
       importHistory: { orderBy: { importedAt: "desc" } },
       appointments: {
-        include: { services: true },
+        select: {
+          id: true,
+          shopId: true,
+          customerId: true,
+          vehicleId: true,
+          scheduledStart: true,
+          scheduledEnd: true,
+          status: true,
+          totalLaborMinutes: true,
+          totalPriceCents: true,
+          source: true,
+          attributionSource: true,
+          opportunityId: true,
+          outreachRecordId: true,
+          completedRevenueCents: true,
+          completedLaborMinutes: true,
+          notes: true,
+          completedAt: true,
+          services: true,
+        },
         orderBy: { scheduledStart: "asc" },
       },
     },
   });
   assertSameShop(context, shop.id);
+  const [
+    serviceDefinitions,
+    maintenanceRecords,
+    shopDefaultAnnualMileage,
+    mileageReadingRows,
+    drivingProfileRows,
+    bookingSettings,
+    bookingWindows,
+    bookingBlackouts,
+    customerBookingLinks,
+    outreachBookingLinkIds,
+    appointmentBookingMetadata,
+  ] = await Promise.all([
+    loadStateServiceDefinitions(context.shopId),
+    loadStateMaintenanceRecords(context.shopId),
+    loadShopDefaultAnnualMileage(context.shopId),
+    loadStateMileageReadings(context.shopId),
+    loadStateDrivingProfiles(context.shopId),
+    loadStateBookingSettings(context.shopId),
+    loadStateBookingWindows(context.shopId),
+    loadStateBookingBlackouts(context.shopId),
+    loadStateCustomerBookingLinks(context.shopId),
+    loadStateOutreachBookingLinkIds(context.shopId),
+    loadStateAppointmentBookingMetadata(context.shopId),
+  ]);
 
-  const services: MaintenanceService[] = shop.serviceDefinitions.map((service) => ({
-    id: service.id,
-    shopId: service.shopId,
-    name: service.name,
-    category: service.category,
-    defaultMileageInterval: service.defaultMileageInterval,
-    defaultTimeIntervalMonths: service.defaultTimeIntervalMonths,
-    defaultNotificationThreshold: service.defaultNotificationThreshold,
-    estimatedLaborMinutes: service.estimatedLaborMinutes,
-    defaultPriceCents: service.defaultPriceCents,
-    description: service.description ?? "",
-    isActive: service.isActive,
+  const services: MaintenanceService[] = serviceDefinitions.map(toStateServiceDefinition);
+  const outreachBookingLinkById = new Map(outreachBookingLinkIds.map((record) => [record.id, record.bookingLinkId]));
+  const appointmentBookingMetadataById = new Map(appointmentBookingMetadata.map((appointment) => [appointment.id, appointment]));
+  const serviceById = new Map(services.map((service) => [service.id, service]));
+  const readingsByVehicle = new Map<string, StateMileageReading[]>();
+  for (const reading of mileageReadingRows) {
+    const existing = readingsByVehicle.get(reading.vehicleId) ?? [];
+    existing.push(reading);
+    readingsByVehicle.set(reading.vehicleId, existing);
+  }
+  const persistedProfileByVehicle = new Map(drivingProfileRows.map((profile) => [profile.vehicleId, profile]));
+  const stateMileageReadings: VehicleMileageReading[] = mileageReadingRows.map((reading) => ({
+    id: reading.id,
+    shopId: reading.shopId,
+    vehicleId: reading.vehicleId,
+    readingMileage: reading.readingMileage,
+    readingDate: dateOnly(reading.readingDate),
+    source: reading.source,
+    verificationStatus: reading.verificationStatus,
+    anomalyStatus: reading.anomalyStatus,
+    includedInForecast: reading.includedInForecast,
+    correctionReason: reading.correctionReason ?? undefined,
+    reviewNotes: reading.reviewNotes ?? undefined,
+    sourceReferenceType: reading.sourceReferenceType ?? undefined,
+    sourceReferenceId: reading.sourceReferenceId ?? undefined,
+    recordedByUserId: reading.recordedByUserId ?? undefined,
+    createdAt: iso(reading.createdAt),
+    updatedAt: iso(reading.updatedAt),
   }));
+  const stateVehicles: Vehicle[] = shop.vehicles.map((vehicle): Vehicle => {
+    const readings = readingsByVehicle.get(vehicle.id) ?? [];
+    const current = resolveCurrentMileage({ currentMileage: vehicle.currentMileage }, readings.map((reading) => ({
+      readingMileage: reading.readingMileage,
+      readingDate: dateOnly(reading.readingDate),
+      source: reading.source,
+      verificationStatus: reading.verificationStatus,
+      anomalyStatus: reading.anomalyStatus,
+      includedInForecast: reading.includedInForecast,
+    })));
+    return {
+      id: vehicle.id,
+      shopId: vehicle.shopId,
+      customerId: vehicle.customerId,
+      year: vehicle.year,
+      make: vehicle.make,
+      model: vehicle.model,
+      vin: vehicle.vin ?? "",
+      licensePlate: vehicle.licensePlate ?? "",
+      engine: vehicle.engine ?? "",
+      trim: vehicle.trim ?? "",
+      vehicleType: vehicle.vehicleType ?? "Passenger vehicle",
+      currentMileage: current.currentMileage,
+      estimatedAnnualMileage: vehicle.estimatedAnnualMileage ?? shopDefaultAnnualMileage,
+      overallHealth: vehicle.overallHealth,
+      lastServiceDate: dateOnly(vehicle.lastServiceDate || vehicle.updatedAt),
+    };
+  });
+  const vehicleById = new Map(stateVehicles.map((vehicle) => [vehicle.id, vehicle]));
+  const stateDrivingProfiles: VehicleDrivingProfile[] = stateVehicles.map((vehicle) => {
+    const persisted = persistedProfileByVehicle.get(vehicle.id);
+    const readingDrafts = (readingsByVehicle.get(vehicle.id) ?? []).map((reading) => ({
+      readingMileage: reading.readingMileage,
+      readingDate: dateOnly(reading.readingDate),
+      source: reading.source,
+      verificationStatus: reading.verificationStatus,
+      anomalyStatus: reading.anomalyStatus,
+      includedInForecast: reading.includedInForecast,
+    }));
+    const calculated = calculateDrivingProfile({
+      shopId: context.shopId,
+      vehicleId: vehicle.id,
+      readings: readingDrafts,
+      shopDefaultAnnualMileage,
+      customerReportedAnnualMileage: persisted?.customerReportedAnnualMileage ?? vehicle.estimatedAnnualMileage,
+      customerReportedAt: persisted ? dateOnly(persisted.customerReportedAt) || null : null,
+      customerReportedByUserId: persisted?.customerReportedByUserId ?? null,
+      existingProfile: persisted
+        ? {
+            customerReportedAnnualMileage: persisted.customerReportedAnnualMileage,
+            customerReportedAt: dateOnly(persisted.customerReportedAt) || null,
+            customerReportedByUserId: persisted.customerReportedByUserId,
+            manualAnnualMileageOverride: persisted.manualAnnualMileageOverride,
+            manualOverrideReason: persisted.manualOverrideReason,
+            manualOverrideNotes: persisted.manualOverrideNotes,
+            manualOverrideSetAt: iso(persisted.manualOverrideSetAt) || null,
+            manualOverrideSetByUserId: persisted.manualOverrideSetByUserId,
+          }
+        : null,
+    });
+    return {
+      id: persisted?.id ?? `profile-${vehicle.id}`,
+      shopId: context.shopId,
+      vehicleId: vehicle.id,
+      customerReportedAnnualMileage: calculated.customerReportedAnnualMileage,
+      customerReportedAt: calculated.customerReportedAt,
+      customerReportedByUserId: calculated.customerReportedByUserId,
+      calculatedAnnualMileage: calculated.calculatedAnnualMileage,
+      estimateSource: calculated.estimateSource,
+      confidence: calculated.confidence,
+      confidenceReason: calculated.confidenceReason,
+      manualAnnualMileageOverride: calculated.manualAnnualMileageOverride,
+      manualOverrideReason: calculated.manualOverrideReason,
+      manualOverrideNotes: calculated.manualOverrideNotes,
+      manualOverrideSetAt: calculated.manualOverrideSetAt,
+      manualOverrideSetByUserId: calculated.manualOverrideSetByUserId,
+      lastCalculatedAt: calculated.lastCalculatedAt,
+    };
+  });
 
   return {
     shop: {
@@ -201,9 +1815,11 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
       address: shop.address ?? "",
       timezone: shop.timezone,
       dailyBayHours: shop.dailyBayHours,
+      defaultAnnualMileage: shopDefaultAnnualMileage,
       isDemo: shop.isDemo,
       onboardingCompletedAt: iso(shop.onboardingCompletedAt) || null,
     },
+    currentUserId: context.userId,
     users: shop.memberships.map((membership) => ({
       id: membership.userId,
       shopId: membership.shopId,
@@ -229,40 +1845,95 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
       lifetimeRevenueCents: customer.lifetimeRevenueCents,
       lastVisit: dateOnly(customer.lastVisit || customer.updatedAt),
     })),
-    vehicles: shop.vehicles.map((vehicle): Vehicle => ({
-      id: vehicle.id,
-      shopId: vehicle.shopId,
-      customerId: vehicle.customerId,
-      year: vehicle.year,
-      make: vehicle.make,
-      model: vehicle.model,
-      vin: vehicle.vin ?? "",
-      licensePlate: vehicle.licensePlate ?? "",
-      engine: vehicle.engine ?? "",
-      trim: vehicle.trim ?? "",
-      vehicleType: vehicle.vehicleType ?? "Passenger vehicle",
-      currentMileage: vehicle.currentMileage,
-      estimatedAnnualMileage: vehicle.estimatedAnnualMileage ?? 12_000,
-      overallHealth: vehicle.overallHealth,
-      lastServiceDate: dateOnly(vehicle.lastServiceDate || vehicle.updatedAt),
-    })),
+    vehicles: stateVehicles,
     services,
-    maintenanceRecords: shop.maintenanceRecords.map((record): VehicleMaintenanceRecord => ({
-      id: record.id,
-      shopId: record.shopId,
-      vehicleId: record.vehicleId,
-      serviceId: record.serviceDefinitionId,
-      serviceName: record.serviceName,
-      lastCompletedDate: dateOnly(record.lastCompletedDate || record.createdAt),
-      lastCompletedMileage: record.lastCompletedMileage ?? 0,
-      recommendedMileageInterval: record.recommendedMileageInterval,
-      recommendedTimeIntervalMonths: record.recommendedTimeIntervalMonths,
-      priceCents: record.priceCents,
-      laborHours: record.laborMinutes / 60,
-      notificationThreshold: record.notificationThreshold,
-      outreachStatus: record.outreachStatus,
-      outreachRecordId: record.outreachRecordId ?? undefined,
-      appointmentId: record.appointmentId ?? undefined,
+    maintenanceRecords: maintenanceRecords.map((record): VehicleMaintenanceRecord => {
+      const service = record.serviceDefinitionId ? serviceById.get(record.serviceDefinitionId) : undefined;
+      const vehicle = vehicleById.get(record.vehicleId);
+      const baseRecord: VehicleMaintenanceRecord = {
+        id: record.id,
+        shopId: record.shopId,
+        vehicleId: record.vehicleId,
+        serviceId: record.serviceDefinitionId,
+        serviceName: record.serviceName,
+        customServiceName: record.customServiceName ?? undefined,
+        customCategory: record.customCategory ?? undefined,
+        lastCompletedDate: dateOnly(record.lastCompletedDate) || null,
+        lastCompletedMileage: record.lastCompletedMileage,
+        recommendedMileageInterval: record.recommendedMileageInterval,
+        recommendedTimeIntervalMonths: record.recommendedTimeIntervalMonths,
+        mileageIntervalOverride: record.mileageIntervalOverride ?? null,
+        timeIntervalValueOverride: record.timeIntervalValueOverride ?? null,
+        timeIntervalUnitOverride: record.timeIntervalUnitOverride ?? null,
+        priceCents: record.priceCents,
+        laborHours: record.laborMinutes / 60,
+        priceOverrideCents: record.priceOverrideCents ?? null,
+        laborMinutesOverride: record.laborMinutesOverride ?? null,
+        notificationThreshold: record.notificationThreshold,
+        outreachThresholdType: record.outreachThresholdType ?? "MILES_BEFORE_DUE",
+        outreachThresholdValue: record.outreachThresholdValue ?? 500,
+        outreachStatus: record.outreachStatus,
+        outreachRecordId: record.outreachRecordId ?? undefined,
+        appointmentId: record.appointmentId ?? undefined,
+        isActive: record.isActive ?? true,
+        notes: record.notes ?? undefined,
+        createdByUserId: record.createdByUserId ?? undefined,
+        updatedByUserId: record.updatedByUserId ?? undefined,
+      };
+      if (!vehicle) return baseRecord;
+      const effective = resolveMaintenanceInterval({
+        record: baseRecord,
+        service,
+        vehicle: {
+          id: vehicle.id,
+          shopId: vehicle.shopId,
+          customerId: vehicle.customerId,
+          year: vehicle.year,
+          make: vehicle.make,
+          model: vehicle.model,
+          vin: vehicle.vin ?? "",
+          licensePlate: vehicle.licensePlate ?? "",
+          engine: vehicle.engine ?? "",
+          trim: vehicle.trim ?? "",
+          vehicleType: vehicle.vehicleType ?? "Passenger vehicle",
+          currentMileage: vehicle.currentMileage,
+          estimatedAnnualMileage: vehicle.estimatedAnnualMileage ?? 12_000,
+          overallHealth: vehicle.overallHealth,
+          lastServiceDate: vehicle.lastServiceDate,
+        },
+      });
+      return {
+        ...baseRecord,
+        serviceName: effective.serviceName,
+        recommendedMileageInterval: effective.mileageInterval,
+        recommendedTimeIntervalMonths: monthsFromTime(effective.timeIntervalValue, effective.timeIntervalUnit),
+        priceCents: effective.priceCents,
+        laborHours: effective.laborMinutes / 60,
+      };
+    }),
+    mileageReadings: stateMileageReadings,
+    drivingProfiles: stateDrivingProfiles,
+    revenueOpportunities: shop.revenueOpportunities.map((opportunity): RevenueOpportunityRecord => ({
+      id: opportunity.id,
+      shopId: opportunity.shopId,
+      customerId: opportunity.customerId,
+      vehicleId: opportunity.vehicleId,
+      maintenanceRecordId: opportunity.maintenanceRecordId ?? undefined,
+      declinedWorkRecordId: opportunity.declinedWorkRecordId ?? undefined,
+      source: opportunity.source,
+      stage: opportunity.stage,
+      priority: opportunity.priority,
+      explanation: opportunity.explanation,
+      priorityReason: opportunity.priorityReason,
+      estimatedRevenueCents: opportunity.estimatedRevenueCents,
+      estimatedLaborHours: opportunity.estimatedLaborMinutes / 60,
+      dueDate: iso(opportunity.dueDate) || undefined,
+      dueMileage: opportunity.dueMileage ?? undefined,
+      daysOverdue: opportunity.daysOverdue,
+      milesOverdue: opportunity.milesOverdue,
+      lastActivityAt: iso(opportunity.lastActivityAt) || undefined,
+      createdAt: iso(opportunity.createdAt),
+      updatedAt: iso(opportunity.updatedAt),
     })),
     serviceRecords: shop.serviceHistoryRecords.map((record) => ({
       id: record.id,
@@ -294,10 +1965,10 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
       shopId: record.shopId,
       customerId: record.customerId,
       vehicleId: record.vehicleId,
-      maintenanceRecordIds: shop.maintenanceRecords
+      maintenanceRecordIds: maintenanceRecords
         .filter((item) => item.outreachRecordId === record.id)
         .map((item) => item.id),
-      serviceNames: shop.maintenanceRecords
+      serviceNames: maintenanceRecords
         .filter((item) => item.outreachRecordId === record.id)
         .map((item) => item.serviceName),
       message: record.message,
@@ -308,32 +1979,49 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
       responseStatus: record.responseStatus,
       followUpDate: iso(record.followUpDate) || undefined,
       appointmentId: record.appointmentId ?? undefined,
+      bookingLinkId: outreachBookingLinkById.get(record.id) ?? undefined,
       performedByUserId: record.performedByUserId ?? undefined,
       status: record.status,
     })),
-    appointments: shop.appointments.map((appointment): Appointment => ({
-      id: appointment.id,
-      shopId: appointment.shopId,
-      customerId: appointment.customerId,
-      vehicleId: appointment.vehicleId,
-      maintenanceRecordIds: appointment.services
-        .map((service) => service.maintenanceRecordId)
-        .filter((id): id is string => Boolean(id)),
-      serviceNames: appointment.services.map((service) => service.serviceName),
-      scheduledStart: iso(appointment.scheduledStart),
-      scheduledEnd: iso(appointment.scheduledEnd),
-      status: appointment.status,
-      totalPriceCents: appointment.totalPriceCents,
-      totalLaborHours: appointment.totalLaborMinutes / 60,
-      source: appointment.source,
-      attributionSource: appointment.attributionSource,
-      opportunityId: appointment.opportunityId ?? undefined,
-      outreachRecordId: appointment.outreachRecordId ?? undefined,
-      completedRevenueCents: appointment.completedRevenueCents ?? undefined,
-      completedLaborHours: appointment.completedLaborMinutes ? appointment.completedLaborMinutes / 60 : undefined,
-      completedAt: iso(appointment.completedAt) || undefined,
-      notes: appointment.notes ?? "",
-    })),
+    appointments: shop.appointments.map((appointment): Appointment => {
+      const bookingMetadata = appointmentBookingMetadataById.get(appointment.id);
+      return {
+        id: appointment.id,
+        shopId: appointment.shopId,
+        customerId: appointment.customerId,
+        vehicleId: appointment.vehicleId,
+        maintenanceRecordIds: appointment.services
+          .map((service) => service.maintenanceRecordId)
+          .filter((id): id is string => Boolean(id)),
+        serviceNames: appointment.services.map((service) => service.serviceName),
+        scheduledStart: iso(appointment.scheduledStart),
+        scheduledEnd: iso(appointment.scheduledEnd),
+        status: appointment.status,
+        totalPriceCents: appointment.totalPriceCents,
+        totalLaborHours: appointment.totalLaborMinutes / 60,
+        source: appointment.source,
+        attributionSource: appointment.attributionSource,
+        opportunityId: appointment.opportunityId ?? undefined,
+        outreachRecordId: appointment.outreachRecordId ?? undefined,
+        bookingLinkId: bookingMetadata?.bookingLinkId ?? undefined,
+        intakeType: bookingMetadata?.intakeType ?? undefined,
+        customerNotes: bookingMetadata?.customerNotes ?? undefined,
+        internalNotes: bookingMetadata?.internalNotes ?? undefined,
+        completedRevenueCents: appointment.completedRevenueCents ?? undefined,
+        completedLaborHours: appointment.completedLaborMinutes ? appointment.completedLaborMinutes / 60 : undefined,
+        completedAt: iso(appointment.completedAt) || undefined,
+        requestedAt: iso(bookingMetadata?.requestedAt) || undefined,
+        approvedAt: iso(bookingMetadata?.approvedAt) || undefined,
+        declinedAt: iso(bookingMetadata?.declinedAt) || undefined,
+        customerCancelledAt: iso(bookingMetadata?.customerCancelledAt) || undefined,
+        rescheduledAt: iso(bookingMetadata?.rescheduledAt) || undefined,
+        notes: appointment.notes ?? "",
+      };
+    }),
+    bookingSettings,
+    bookingWindows,
+    bookingBlackouts,
+    customerBookingLinks,
     importHistory: shop.importHistory.map((record): ImportHistoryRecord => ({
       id: record.id,
       shopId: record.shopId,
@@ -394,45 +2082,105 @@ export async function addPilotVehicle(context: AuthenticatedShopContext, input: 
     engine: z.string().optional(),
     trim: z.string().optional(),
     estimatedAnnualMileage: z.number().int().nonnegative().optional(),
+    initialMileageReadingDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   }).parse(input);
   const customer = await prisma.customer.findUnique({ where: { id: parsed.customerId } });
   assertSameShop(context, customer?.shopId);
-  const vehicle = await prisma.vehicle.create({
-    data: {
-      shopId: context.shopId,
-      customerId: parsed.customerId,
-      year: parsed.year,
-      make: parsed.make,
-      model: parsed.model,
-      vin: parsed.vin || null,
-      engine: parsed.engine || null,
-      trim: parsed.trim || null,
-      currentMileage: parsed.currentMileage,
-      estimatedAnnualMileage: parsed.estimatedAnnualMileage ?? 12_000,
-      lastServiceDate: new Date(),
-    },
-  });
 
-  const services = await prisma.serviceDefinition.findMany({
-    where: { shopId: context.shopId, isActive: true },
-    take: 6,
-  });
+  await prisma.$transaction(async (tx) => {
+    const readingDate = parsed.initialMileageReadingDate ?? currentDateInTimeZone(context.shopTimezone);
+    const validationIssues = validateMileageReading({
+      reading: { readingMileage: parsed.currentMileage, readingDate },
+      existingReadings: [],
+      vehicleYear: parsed.year,
+      asOf: currentDateInTimeZone(context.shopTimezone),
+    });
+    const blockingIssue = validationIssues.find((issue) => issue.severity === "error");
+    if (blockingIssue) {
+      throw new SafeActionError({
+        code: blockingIssue.code,
+        message: blockingIssue.message,
+        status: 400,
+        table: "VehicleMileageReading",
+        operation: "INSERT",
+      });
+    }
 
-  await prisma.vehicleMaintenanceRecord.createMany({
-    data: services.map((service) => ({
-      shopId: context.shopId,
-      vehicleId: vehicle.id,
-      serviceDefinitionId: service.id,
-      serviceName: service.name,
-      lastCompletedDate: new Date(),
-      lastCompletedMileage: parsed.currentMileage,
-      recommendedMileageInterval: service.defaultMileageInterval,
-      recommendedTimeIntervalMonths: service.defaultTimeIntervalMonths,
-      notificationThreshold: service.defaultNotificationThreshold,
-      priceCents: service.defaultPriceCents,
-      laborMinutes: service.estimatedLaborMinutes,
-      status: "HEALTHY" as const,
-    })),
+    const vehicle = await tx.vehicle.create({
+      data: {
+        shopId: context.shopId,
+        customerId: parsed.customerId,
+        year: parsed.year,
+        make: parsed.make,
+        model: parsed.model,
+        vin: parsed.vin || null,
+        engine: parsed.engine || null,
+        trim: parsed.trim || null,
+        currentMileage: parsed.currentMileage,
+        estimatedAnnualMileage: parsed.estimatedAnnualMileage ?? 12_000,
+        lastServiceDate: dateFromDateOnly(readingDate),
+      },
+    });
+
+    const services = await tx.serviceDefinition.findMany({
+      where: { shopId: context.shopId, isActive: true },
+      take: 6,
+    });
+
+    await tx.vehicleMaintenanceRecord.createMany({
+      data: services.map((service) => ({
+        shopId: context.shopId,
+        vehicleId: vehicle.id,
+        serviceDefinitionId: service.id,
+        serviceName: service.name,
+        lastCompletedDate: dateFromDateOnly(readingDate),
+        lastCompletedMileage: parsed.currentMileage,
+        recommendedMileageInterval: null,
+        recommendedTimeIntervalMonths: null,
+        mileageIntervalOverride: null,
+        timeIntervalValueOverride: null,
+        timeIntervalUnitOverride: null,
+        notificationThreshold: service.defaultNotificationThreshold,
+        outreachThresholdType: "MILES_BEFORE_DUE" as const,
+        outreachThresholdValue: 500,
+        priceCents: service.defaultPriceCents,
+        laborMinutes: service.estimatedLaborMinutes,
+        status: "HEALTHY" as const,
+        isActive: true,
+        createdByUserId: context.userId,
+        updatedByUserId: context.userId,
+      })),
+    });
+    const createdMaintenanceRecords = await tx.vehicleMaintenanceRecord.findMany({
+      where: { shopId: context.shopId, vehicleId: vehicle.id, isActive: true, archivedAt: null },
+      select: { id: true },
+    });
+
+    if (parsed.currentMileage > 0) {
+      const warningMessages = validationIssues
+        .filter((issue) => issue.severity === "warning")
+        .map((issue) => issue.message);
+      await tx.vehicleMileageReading.create({
+        data: {
+          shopId: context.shopId,
+          vehicleId: vehicle.id,
+          readingMileage: parsed.currentMileage,
+          readingDate: dateFromDateOnly(readingDate),
+          source: "SHOP_MANUAL_ENTRY",
+          verificationStatus: "VERIFIED",
+          anomalyStatus: warningMessages.length > 0 ? "NEEDS_REVIEW" : "NONE",
+          includedInForecast: warningMessages.length === 0,
+          reviewNotes: warningMessages.join(" ") || null,
+          recordedByUserId: context.userId,
+        },
+      });
+      await recalculatePersistedDrivingProfile({ tx, context, vehicleId: vehicle.id });
+    }
+    await syncMaintenanceRevenueOpportunities(
+      tx,
+      context,
+      createdMaintenanceRecords.map((record) => record.id),
+    );
   });
 }
 
@@ -443,10 +2191,1046 @@ export async function updatePilotVehicle(
 ) {
   const existing = await prisma.vehicle.findUnique({ where: { id: vehicleId } });
   assertSameShop(context, existing?.shopId);
-  const parsed = vehicleSchema.partial().omit({ customerId: true }).parse(input);
+  const parsed = vehicleSchema.partial().omit({ customerId: true }).extend({
+    mileageReadingDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  }).parse(input);
+  const { currentMileage, mileageReadingDate, ...vehicleData } = parsed;
   await prisma.vehicle.update({
     where: { id: vehicleId },
-    data: parsed,
+    data: vehicleData,
+  });
+  if (currentMileage !== undefined && currentMileage !== existing?.currentMileage) {
+    await updatePilotVehicleMileage(context, {
+      vehicleId,
+      currentMileage,
+      readingDate: mileageReadingDate ?? currentDateInTimeZone(context.shopTimezone),
+      allowLowerCorrection: currentMileage < (existing?.currentMileage ?? 0),
+      correctionReason: currentMileage < (existing?.currentMileage ?? 0) ? "Corrected from vehicle edit." : undefined,
+    });
+  }
+}
+
+export async function addPilotServiceDefinition(context: AuthenticatedShopContext, input: unknown) {
+  const parsed = serviceDefinitionSchema.parse(input);
+  if (!parsed.defaultMileageInterval && !parsed.defaultTimeIntervalValue && parsed.category.toLowerCase().includes("maintenance")) {
+    throw new SafeActionError({
+      code: "SERVICE_INTERVAL_REQUIRED",
+      message: "A recurring maintenance service needs a mileage or time interval.",
+      table: "ServiceDefinition",
+      operation: "INSERT",
+    });
+  }
+
+  const duplicate = await prisma.serviceDefinition.findUnique({
+    where: {
+      shopId_name: {
+        shopId: context.shopId,
+        name: parsed.name,
+      },
+    },
+  });
+  if (duplicate) {
+    throw new SafeActionError({
+      code: "DUPLICATE_SERVICE_DEFINITION",
+      message: "A service with this name already exists for your shop.",
+      status: 409,
+      table: "ServiceDefinition",
+      operation: "INSERT",
+    });
+  }
+
+  const service = await prisma.serviceDefinition.create({
+    data: {
+      shopId: context.shopId,
+      name: parsed.name,
+      category: parsed.category,
+      defaultMileageInterval: parsed.defaultMileageInterval ?? null,
+      defaultTimeIntervalMonths: monthsFromTime(parsed.defaultTimeIntervalValue, parsed.defaultTimeIntervalUnit),
+      defaultTimeIntervalValue: parsed.defaultTimeIntervalValue ?? null,
+      defaultTimeIntervalUnit: parsed.defaultTimeIntervalUnit,
+      defaultNotificationThreshold: parsed.defaultNotificationThreshold,
+      estimatedLaborMinutes: parsed.estimatedLaborMinutes,
+      defaultPriceCents: parsed.defaultPriceCents,
+      description: parsed.description || null,
+      isActive: parsed.isActive,
+    },
+  });
+  assertSameShop(context, service.shopId);
+}
+
+export async function updatePilotServiceDefinition(
+  context: AuthenticatedShopContext,
+  serviceDefinitionId: string,
+  input: unknown,
+) {
+  const existing = await requireServiceDefinitionInActiveShop(context, serviceDefinitionId);
+  const parsed = serviceDefinitionSchema.partial().parse(input);
+  await prisma.$transaction(async (tx) => {
+    await tx.serviceDefinition.update({
+      where: { id: serviceDefinitionId },
+      data: {
+        ...parsed,
+        defaultTimeIntervalMonths: parsed.defaultTimeIntervalValue !== undefined || parsed.defaultTimeIntervalUnit !== undefined
+          ? monthsFromTime(
+            parsed.defaultTimeIntervalValue ?? existing?.defaultTimeIntervalValue,
+            parsed.defaultTimeIntervalUnit ?? existing?.defaultTimeIntervalUnit,
+          )
+          : undefined,
+        description: parsed.description === undefined ? undefined : parsed.description || null,
+      },
+    });
+    const inheritedMaintenanceRecords = await tx.vehicleMaintenanceRecord.findMany({
+      where: {
+        shopId: context.shopId,
+        serviceDefinitionId,
+        isActive: true,
+        archivedAt: null,
+        mileageIntervalOverride: null,
+        timeIntervalValueOverride: null,
+      },
+      select: { id: true },
+    });
+    await syncMaintenanceRevenueOpportunities(
+      tx,
+      context,
+      inheritedMaintenanceRecords.map((record) => record.id),
+    );
+  });
+}
+
+export async function addPilotMaintenanceItem(context: AuthenticatedShopContext, input: unknown) {
+  const parsed = maintenanceItemSchema.parse(input);
+  const vehicle = await requireVehicleInActiveShop(context, parsed.vehicleId);
+
+  let service = parsed.serviceDefinitionId
+    ? await requireServiceDefinitionInActiveShop(context, parsed.serviceDefinitionId)
+    : null;
+
+  if (!service && !parsed.customServiceName?.trim()) {
+    throw new SafeActionError({
+      code: "SERVICE_REQUIRED",
+      message: "Choose a service or enter a custom service name.",
+      table: "VehicleMaintenanceRecord",
+      operation: "INSERT",
+    });
+  }
+
+  if (service && !parsed.allowDuplicate) {
+    const duplicate = await prisma.vehicleMaintenanceRecord.findFirst({
+      where: {
+        shopId: context.shopId,
+        vehicleId: vehicle.id,
+        serviceDefinitionId: service.id,
+        isActive: true,
+        archivedAt: null,
+      },
+    });
+    if (duplicate) {
+      throw new SafeActionError({
+        code: "DUPLICATE_VEHICLE_SERVICE",
+        message: "This service already exists for the vehicle.",
+        status: 409,
+        table: "VehicleMaintenanceRecord",
+        operation: "INSERT",
+      });
+    }
+  }
+
+  if (!service && parsed.addToLibrary && parsed.customServiceName) {
+    service = await prisma.serviceDefinition.create({
+      data: {
+        shopId: context.shopId,
+        name: parsed.customServiceName,
+        category: parsed.customCategory || "Custom",
+        defaultMileageInterval: parsed.mileageIntervalOverride ?? null,
+        defaultTimeIntervalMonths: monthsFromTime(parsed.timeIntervalValueOverride, parsed.timeIntervalUnitOverride),
+        defaultTimeIntervalValue: parsed.timeIntervalValueOverride ?? null,
+        defaultTimeIntervalUnit: parsed.timeIntervalUnitOverride ?? "MONTHS",
+        defaultNotificationThreshold: 10,
+        estimatedLaborMinutes: parsed.laborMinutesOverride ?? 0,
+        defaultPriceCents: parsed.priceOverrideCents ?? 0,
+        description: parsed.notes || null,
+        isActive: true,
+      },
+    });
+  }
+
+  const useDefaults = Boolean(service && parsed.useShopDefaults);
+  const mileageOverride = useDefaults ? null : parsed.mileageIntervalOverride ?? null;
+  const timeValueOverride = useDefaults ? null : parsed.timeIntervalValueOverride ?? null;
+  const timeUnitOverride = useDefaults ? null : parsed.timeIntervalUnitOverride ?? null;
+  const priceOverride = useDefaults ? null : parsed.priceOverrideCents ?? null;
+  const laborOverride = useDefaults ? null : parsed.laborMinutesOverride ?? null;
+  const maintenance = await prisma.$transaction(async (tx) => {
+    const created = await tx.vehicleMaintenanceRecord.create({
+      data: {
+        shopId: context.shopId,
+        vehicleId: vehicle.id,
+        serviceDefinitionId: service?.id ?? null,
+        serviceName: service?.name ?? parsed.customServiceName?.trim() ?? "Custom service",
+        customServiceName: service ? null : parsed.customServiceName?.trim() ?? null,
+        customCategory: service ? null : parsed.customCategory || "Custom",
+        lastCompletedDate: parsed.lastCompletedDate ? new Date(parsed.lastCompletedDate) : null,
+        lastCompletedMileage: parsed.lastCompletedMileage ?? null,
+        recommendedMileageInterval: mileageOverride,
+        recommendedTimeIntervalMonths: monthsFromTime(timeValueOverride, timeUnitOverride),
+        mileageIntervalOverride: mileageOverride,
+        timeIntervalValueOverride: timeValueOverride,
+        timeIntervalUnitOverride: timeUnitOverride,
+        notificationThreshold: 10,
+        outreachThresholdType: parsed.outreachThresholdType,
+        outreachThresholdValue: parsed.outreachThresholdValue,
+        priceCents: priceOverride ?? service?.defaultPriceCents ?? parsed.priceOverrideCents ?? 0,
+        laborMinutes: laborOverride ?? service?.estimatedLaborMinutes ?? parsed.laborMinutesOverride ?? 0,
+        priceOverrideCents: priceOverride,
+        laborMinutesOverride: laborOverride,
+        status: "HEALTHY",
+        outreachStatus: "NEEDS_OUTREACH",
+        isActive: true,
+        notes: parsed.notes || null,
+        createdByUserId: context.userId,
+        updatedByUserId: context.userId,
+      },
+    });
+    await syncMaintenanceRevenueOpportunities(tx, context, [created.id]);
+    return created;
+  });
+  assertSameShop(context, maintenance.shopId);
+}
+
+export async function updatePilotMaintenanceItem(
+  context: AuthenticatedShopContext,
+  maintenanceRecordId: string,
+  input: unknown,
+) {
+  const existing = await requireMaintenanceRecordInActiveShop(context, maintenanceRecordId);
+  const parsed = maintenanceItemUpdateSchema.parse(input);
+  const clearOverrides = parsed.useShopDefaults === true;
+
+  await prisma.$transaction(async (tx) => {
+    await tx.vehicleMaintenanceRecord.update({
+      where: { id: maintenanceRecordId },
+      data: {
+        recommendedMileageInterval: clearOverrides ? null : parsed.mileageIntervalOverride,
+        recommendedTimeIntervalMonths: clearOverrides
+          ? null
+          : parsed.timeIntervalValueOverride !== undefined || parsed.timeIntervalUnitOverride !== undefined
+            ? monthsFromTime(
+              parsed.timeIntervalValueOverride ?? existing.timeIntervalValueOverride,
+              parsed.timeIntervalUnitOverride ?? existing.timeIntervalUnitOverride,
+            )
+            : undefined,
+        mileageIntervalOverride: clearOverrides ? null : parsed.mileageIntervalOverride,
+        timeIntervalValueOverride: clearOverrides ? null : parsed.timeIntervalValueOverride,
+        timeIntervalUnitOverride: clearOverrides ? null : parsed.timeIntervalUnitOverride,
+        priceOverrideCents: clearOverrides ? null : parsed.priceOverrideCents,
+        laborMinutesOverride: clearOverrides ? null : parsed.laborMinutesOverride,
+        lastCompletedDate: parsed.lastCompletedDate ? new Date(parsed.lastCompletedDate) : undefined,
+        lastCompletedMileage: parsed.lastCompletedMileage,
+        outreachThresholdType: parsed.outreachThresholdType,
+        outreachThresholdValue: parsed.outreachThresholdValue,
+        notes: parsed.notes,
+        updatedByUserId: context.userId,
+        outreachStatus: "NEEDS_OUTREACH",
+      },
+    });
+    await syncMaintenanceRevenueOpportunities(tx, context, [maintenanceRecordId]);
+  });
+}
+
+export async function deactivatePilotMaintenanceItem(
+  context: AuthenticatedShopContext,
+  maintenanceRecordId: string,
+) {
+  await requireMaintenanceRecordInActiveShop(context, maintenanceRecordId);
+  await prisma.$transaction(async (tx) => {
+    await tx.vehicleMaintenanceRecord.update({
+      where: { id: maintenanceRecordId },
+      data: {
+        isActive: false,
+        archivedAt: new Date(),
+        outreachStatus: "STOPPED",
+        updatedByUserId: context.userId,
+      },
+    });
+    await tx.maintenanceRevenueOpportunity.updateMany({
+      where: {
+        shopId: context.shopId,
+        maintenanceRecordId,
+        stage: { in: ["IDENTIFIED", "CONTACTED", "RESPONDED"] },
+      },
+      data: {
+        stage: "LOST",
+        explanation: "Maintenance item was deactivated and no longer generates outreach.",
+      },
+    });
+  });
+}
+
+export async function markPilotMaintenanceServiceComplete(
+  context: AuthenticatedShopContext,
+  input: unknown,
+) {
+  const parsed = serviceCompletionSchema.parse(input);
+  assertProductionEntityId(parsed.maintenanceRecordId, "The selected maintenance item");
+  const record = await prisma.vehicleMaintenanceRecord.findFirst({
+    where: {
+      id: parsed.maintenanceRecordId,
+      shopId: context.shopId,
+      archivedAt: null,
+    },
+    include: { vehicle: true },
+  });
+  if (!record) {
+    throw new SafeActionError({
+      code: "MAINTENANCE_ITEM_NOT_IN_ACTIVE_SHOP",
+      message: "The selected maintenance item does not belong to your active shop.",
+      status: 404,
+      table: "VehicleMaintenanceRecord",
+      operation: "SELECT",
+    });
+  }
+  const existingReadings = await prisma.vehicleMileageReading.findMany({
+    where: { shopId: context.shopId, vehicleId: record.vehicleId },
+    orderBy: [{ readingDate: "asc" }, { createdAt: "asc" }],
+  });
+  const validationIssues = validateMileageReading({
+    reading: {
+      readingMileage: parsed.completedMileage,
+      readingDate: parsed.completedAt,
+    },
+    existingReadings: existingReadings.map((reading) => ({
+      readingMileage: reading.readingMileage,
+      readingDate: dateOnly(reading.readingDate),
+      source: reading.source,
+      verificationStatus: reading.verificationStatus,
+      anomalyStatus: reading.anomalyStatus,
+      includedInForecast: reading.includedInForecast,
+    })),
+    vehicleYear: record.vehicle.year,
+    asOf: currentDateInTimeZone(context.shopTimezone),
+  });
+  const blockingIssue = validationIssues.find((issue) => issue.severity === "error");
+  if (blockingIssue) {
+    throw new SafeActionError({
+      code: blockingIssue.code,
+      message: blockingIssue.message,
+      status: 400,
+      table: "VehicleMileageReading",
+      operation: "INSERT",
+    });
+  }
+
+  await prisma.$transaction(async (tx) => {
+    const completedDate = dateFromDateOnly(parsed.completedAt);
+    const warningMessages = validationIssues
+      .filter((issue) => issue.severity === "warning")
+      .map((issue) => issue.message);
+    const serviceHistory = await tx.serviceHistoryRecord.create({
+      data: {
+        shopId: context.shopId,
+        customerId: record.vehicle.customerId,
+        vehicleId: record.vehicleId,
+        serviceDefinitionId: record.serviceDefinitionId,
+        maintenanceRecordId: record.id,
+        serviceName: record.customServiceName || record.serviceName,
+        completedAt: completedDate,
+        mileage: parsed.completedMileage,
+        laborMinutes: parsed.finalLaborMinutes,
+        priceCents: parsed.finalPriceCents,
+        notes: parsed.notes || null,
+      },
+    });
+    await tx.vehicleMileageReading.create({
+      data: {
+        shopId: context.shopId,
+        vehicleId: record.vehicleId,
+        readingMileage: parsed.completedMileage,
+        readingDate: completedDate,
+        source: "SHOP_REPAIR_ORDER",
+        verificationStatus: "VERIFIED",
+        anomalyStatus: warningMessages.length > 0 ? "NEEDS_REVIEW" : "NONE",
+        includedInForecast: warningMessages.length === 0,
+        reviewNotes: warningMessages.join(" ") || null,
+        sourceReferenceType: "ServiceHistoryRecord",
+        sourceReferenceId: serviceHistory.id,
+        recordedByUserId: context.userId,
+      },
+    });
+    await tx.vehicleMaintenanceRecord.update({
+      where: { id: record.id },
+      data: {
+        lastCompletedDate: completedDate,
+        lastCompletedMileage: parsed.completedMileage,
+        priceCents: parsed.finalPriceCents,
+        laborMinutes: parsed.finalLaborMinutes,
+        status: "HEALTHY",
+        outreachStatus: "NEEDS_OUTREACH",
+        appointmentId: null,
+        updatedByUserId: context.userId,
+      },
+    });
+    await tx.vehicle.update({
+      where: { id: record.vehicleId },
+      data: {
+        currentMileage: Math.max(record.vehicle.currentMileage, parsed.completedMileage),
+        lastServiceDate: completedDate,
+      },
+    });
+    await tx.maintenanceRevenueOpportunity.updateMany({
+      where: { shopId: context.shopId, maintenanceRecordId: record.id },
+      data: { stage: "COMPLETED", lastActivityAt: completedDate },
+    });
+    await tx.auditLog.create({
+      data: {
+        shopId: context.shopId,
+        actorUserId: context.userId,
+        action: "maintenance.service_completed",
+        entityType: "VehicleMaintenanceRecord",
+        entityId: record.id,
+        metadata: {
+          completedMileage: parsed.completedMileage,
+          finalPriceCents: parsed.finalPriceCents,
+          finalLaborMinutes: parsed.finalLaborMinutes,
+          readingDate: parsed.completedAt,
+          warnings: warningMessages,
+        },
+      },
+    });
+    await recalculatePersistedDrivingProfile({ tx, context, vehicleId: record.vehicleId });
+    const activeMaintenanceRecords = await tx.vehicleMaintenanceRecord.findMany({
+      where: { shopId: context.shopId, vehicleId: record.vehicleId, isActive: true, archivedAt: null },
+      select: { id: true },
+    });
+    await syncMaintenanceRevenueOpportunities(
+      tx,
+      context,
+      [
+        record.id,
+        ...activeMaintenanceRecords.map((item) => item.id),
+      ],
+    );
+  });
+}
+
+async function recalculatePersistedDrivingProfile({
+  tx,
+  context,
+  vehicleId,
+  customerReportedAnnualMileage,
+  clearManualOverride = false,
+  manualAnnualMileageOverride,
+  manualOverrideReason,
+  manualOverrideNotes,
+}: {
+  tx: MileageTransactionClient;
+  context: AuthenticatedShopContext;
+  vehicleId: string;
+  customerReportedAnnualMileage?: number | null;
+  clearManualOverride?: boolean;
+  manualAnnualMileageOverride?: number | null;
+  manualOverrideReason?: string | null;
+  manualOverrideNotes?: string | null;
+}) {
+  const existing = await tx.vehicleDrivingProfile.findUnique({ where: { vehicleId } });
+  const shopDefaultRows = await tx.$queryRaw<{ defaultAnnualMileage: number | null }[]>`
+    SELECT "defaultAnnualMileage" FROM public."Shop" WHERE "id" = ${context.shopId} LIMIT 1
+  `;
+  const readings = await tx.vehicleMileageReading.findMany({
+    where: { shopId: context.shopId, vehicleId },
+    orderBy: [{ readingDate: "asc" }, { createdAt: "asc" }],
+  });
+  const customerReported = customerReportedAnnualMileage ?? existing?.customerReportedAnnualMileage ?? null;
+  const now = new Date();
+  const manualOverride = clearManualOverride
+    ? null
+    : manualAnnualMileageOverride ?? existing?.manualAnnualMileageOverride ?? null;
+  const calculated = calculateDrivingProfile({
+    shopId: context.shopId,
+    vehicleId,
+    readings: readings.map((reading) => ({
+      readingMileage: reading.readingMileage,
+      readingDate: dateOnly(reading.readingDate),
+      source: reading.source,
+      verificationStatus: reading.verificationStatus,
+      anomalyStatus: reading.anomalyStatus,
+      includedInForecast: reading.includedInForecast,
+    })),
+    shopDefaultAnnualMileage: shopDefaultRows[0]?.defaultAnnualMileage ?? DEFAULT_ANNUAL_MILEAGE,
+    customerReportedAnnualMileage: customerReported,
+    customerReportedAt: customerReportedAnnualMileage !== undefined ? now.toISOString() : iso(existing?.customerReportedAt) || null,
+    customerReportedByUserId: customerReportedAnnualMileage !== undefined ? context.userId : existing?.customerReportedByUserId ?? null,
+    existingProfile: {
+      customerReportedAnnualMileage: customerReported,
+      customerReportedAt: customerReportedAnnualMileage !== undefined ? now.toISOString() : iso(existing?.customerReportedAt) || null,
+      customerReportedByUserId: customerReportedAnnualMileage !== undefined ? context.userId : existing?.customerReportedByUserId ?? null,
+      manualAnnualMileageOverride: manualOverride,
+      manualOverrideReason: clearManualOverride ? null : manualOverrideReason ?? existing?.manualOverrideReason ?? null,
+      manualOverrideNotes: clearManualOverride ? null : manualOverrideNotes ?? existing?.manualOverrideNotes ?? null,
+      manualOverrideSetAt: manualAnnualMileageOverride !== undefined ? now.toISOString() : clearManualOverride ? null : iso(existing?.manualOverrideSetAt) || null,
+      manualOverrideSetByUserId: manualAnnualMileageOverride !== undefined ? context.userId : clearManualOverride ? null : existing?.manualOverrideSetByUserId ?? null,
+    },
+    asOf: now,
+  });
+
+  await tx.vehicleDrivingProfile.upsert({
+    where: { vehicleId },
+    create: {
+      shopId: context.shopId,
+      vehicleId,
+      customerReportedAnnualMileage: calculated.customerReportedAnnualMileage,
+      customerReportedAt: calculated.customerReportedAt ? new Date(calculated.customerReportedAt) : null,
+      customerReportedByUserId: calculated.customerReportedByUserId,
+      calculatedAnnualMileage: calculated.calculatedAnnualMileage,
+      estimateSource: calculated.estimateSource,
+      confidence: calculated.confidence,
+      confidenceReason: calculated.confidenceReason,
+      manualAnnualMileageOverride: calculated.manualAnnualMileageOverride,
+      manualOverrideReason: calculated.manualOverrideReason,
+      manualOverrideNotes: calculated.manualOverrideNotes,
+      manualOverrideSetAt: calculated.manualOverrideSetAt ? new Date(calculated.manualOverrideSetAt) : null,
+      manualOverrideSetByUserId: calculated.manualOverrideSetByUserId,
+      lastCalculatedAt: now,
+    },
+    update: {
+      customerReportedAnnualMileage: calculated.customerReportedAnnualMileage,
+      customerReportedAt: calculated.customerReportedAt ? new Date(calculated.customerReportedAt) : null,
+      customerReportedByUserId: calculated.customerReportedByUserId,
+      calculatedAnnualMileage: calculated.calculatedAnnualMileage,
+      estimateSource: calculated.estimateSource,
+      confidence: calculated.confidence,
+      confidenceReason: calculated.confidenceReason,
+      manualAnnualMileageOverride: calculated.manualAnnualMileageOverride,
+      manualOverrideReason: calculated.manualOverrideReason,
+      manualOverrideNotes: calculated.manualOverrideNotes,
+      manualOverrideSetAt: calculated.manualOverrideSetAt ? new Date(calculated.manualOverrideSetAt) : null,
+      manualOverrideSetByUserId: calculated.manualOverrideSetByUserId,
+      lastCalculatedAt: now,
+    },
+  });
+}
+
+export async function updatePilotVehicleMileage(context: AuthenticatedShopContext, input: unknown) {
+  const parsed = mileageUpdateSchema.parse(input);
+  const vehicle = await requireVehicleInActiveShop(context, parsed.vehicleId);
+  const existingReadings = await prisma.vehicleMileageReading.findMany({
+    where: { shopId: context.shopId, vehicleId: vehicle.id },
+    orderBy: [{ readingDate: "asc" }, { createdAt: "asc" }],
+  });
+  const validationIssues = validateMileageReading({
+    reading: {
+      readingMileage: parsed.currentMileage,
+      readingDate: parsed.readingDate,
+    },
+    existingReadings: existingReadings.map((reading) => ({
+      readingMileage: reading.readingMileage,
+      readingDate: dateOnly(reading.readingDate),
+      source: reading.source,
+      verificationStatus: reading.verificationStatus,
+      anomalyStatus: reading.anomalyStatus,
+      includedInForecast: reading.includedInForecast,
+    })),
+    vehicleYear: vehicle.year,
+    asOf: currentDateInTimeZone(context.shopTimezone),
+  });
+  const blockingIssue = validationIssues.find((issue) => issue.severity === "error");
+  if (blockingIssue) {
+    throw new SafeActionError({
+      code: blockingIssue.code,
+      message: blockingIssue.message,
+      status: 400,
+      table: "VehicleMileageReading",
+      operation: "INSERT",
+    });
+  }
+  if (parsed.currentMileage < vehicle.currentMileage && !parsed.allowLowerCorrection) {
+    throw new SafeActionError({
+      code: "MILEAGE_CORRECTION_REQUIRED",
+      message: "Mileage is below the current reading. Confirm a correction and provide a reason.",
+      table: "Vehicle",
+      operation: "UPDATE",
+    });
+  }
+  if (parsed.currentMileage < vehicle.currentMileage && !parsed.correctionReason?.trim()) {
+    throw new SafeActionError({
+      code: "MILEAGE_CORRECTION_REASON_REQUIRED",
+      message: "A correction reason is required for lower mileage.",
+      table: "Vehicle",
+      operation: "UPDATE",
+    });
+  }
+  const source = parsed.currentMileage < vehicle.currentMileage ? "CORRECTION" : parsed.source;
+  const duplicateReading = existingReadings.find((reading) =>
+    dateOnly(reading.readingDate) === parsed.readingDate &&
+    reading.readingMileage === parsed.currentMileage &&
+    reading.source === source,
+  );
+  if (duplicateReading) {
+    await prisma.$transaction(async (tx) => {
+      const activeMaintenanceRecords = await tx.vehicleMaintenanceRecord.findMany({
+        where: { shopId: context.shopId, vehicleId: vehicle.id, isActive: true, archivedAt: null },
+        select: { id: true },
+      });
+      await syncMaintenanceRevenueOpportunities(
+        tx,
+        context,
+        activeMaintenanceRecords.map((record) => record.id),
+      );
+    });
+    return;
+  }
+
+  await prisma.$transaction(async (tx) => {
+    const warningMessages = validationIssues
+      .filter((issue) => issue.severity === "warning")
+      .map((issue) => issue.message);
+    const needsReview = warningMessages.length > 0;
+    await tx.vehicleMileageReading.create({
+      data: {
+        shopId: context.shopId,
+        vehicleId: vehicle.id,
+        readingMileage: parsed.currentMileage,
+        readingDate: dateFromDateOnly(parsed.readingDate),
+        source,
+        verificationStatus: parsed.verificationStatus,
+        anomalyStatus: needsReview ? "NEEDS_REVIEW" : parsed.currentMileage < vehicle.currentMileage ? "RESOLVED" : "NONE",
+        includedInForecast: !needsReview,
+        correctionReason: parsed.correctionReason || null,
+        reviewNotes: [parsed.notes?.trim(), warningMessages.join(" ")]
+          .filter(Boolean)
+          .join(" ")
+          || null,
+        recordedByUserId: context.userId,
+      },
+    });
+    await tx.vehicle.update({
+      where: { id: vehicle.id },
+      data: { currentMileage: parsed.currentMileage },
+    });
+    await tx.vehicleMaintenanceRecord.updateMany({
+      where: { shopId: context.shopId, vehicleId: vehicle.id, isActive: true },
+      data: { updatedByUserId: context.userId },
+    });
+    await tx.auditLog.create({
+      data: {
+        shopId: context.shopId,
+        actorUserId: context.userId,
+        action: "vehicle.mileage_updated",
+        entityType: "Vehicle",
+        entityId: vehicle.id,
+        metadata: {
+          previousMileage: vehicle.currentMileage,
+          currentMileage: parsed.currentMileage,
+          readingDate: parsed.readingDate,
+          correctionReason: parsed.correctionReason,
+          warnings: warningMessages,
+        },
+      },
+    });
+    await recalculatePersistedDrivingProfile({ tx, context, vehicleId: vehicle.id });
+    const activeMaintenanceRecords = await tx.vehicleMaintenanceRecord.findMany({
+      where: { shopId: context.shopId, vehicleId: vehicle.id, isActive: true, archivedAt: null },
+      select: { id: true },
+    });
+    await syncMaintenanceRevenueOpportunities(
+      tx,
+      context,
+      activeMaintenanceRecords.map((record) => record.id),
+    );
+  });
+}
+
+export async function recordPilotInspection(context: AuthenticatedShopContext, input: unknown) {
+  const parsed = inspectionSchema.parse(input);
+  const vehicle = await requireVehicleInActiveShop(context, parsed.vehicleId);
+  const inspectionDate = dateFromDateOnly(parsed.inspectionDate);
+  if (inspectionDate.getTime() > dateFromDateOnly(currentDateInTimeZone(context.shopTimezone)).getTime()) {
+    throw new SafeActionError({
+      code: "INSPECTION_DATE_FUTURE",
+      message: "Inspection date cannot be in the future.",
+      status: 400,
+      table: "ServiceHistoryRecord",
+      operation: "INSERT",
+    });
+  }
+
+  const mileage = parsed.mileage ?? null;
+  const existingReadings = mileage
+    ? await prisma.vehicleMileageReading.findMany({
+        where: { shopId: context.shopId, vehicleId: vehicle.id },
+        orderBy: [{ readingDate: "asc" }, { createdAt: "asc" }],
+      })
+    : [];
+  const validationIssues = mileage
+    ? validateMileageReading({
+        reading: {
+          readingMileage: mileage,
+          readingDate: parsed.inspectionDate,
+        },
+        existingReadings: existingReadings.map((reading) => ({
+          readingMileage: reading.readingMileage,
+          readingDate: dateOnly(reading.readingDate),
+          source: reading.source,
+          verificationStatus: reading.verificationStatus,
+          anomalyStatus: reading.anomalyStatus,
+          includedInForecast: reading.includedInForecast,
+        })),
+        vehicleYear: vehicle.year,
+        asOf: currentDateInTimeZone(context.shopTimezone),
+      })
+    : [];
+  const blockingIssue = validationIssues.find((issue) => issue.severity === "error");
+  if (blockingIssue) {
+    throw new SafeActionError({
+      code: blockingIssue.code,
+      message: blockingIssue.message,
+      status: 400,
+      table: "VehicleMileageReading",
+      operation: "INSERT",
+    });
+  }
+  if (mileage !== null && mileage < vehicle.currentMileage) {
+    throw new SafeActionError({
+      code: "INSPECTION_MILEAGE_BELOW_CURRENT",
+      message: "Inspection mileage is below the current vehicle mileage. Add an odometer correction first.",
+      status: 400,
+      table: "VehicleMileageReading",
+      operation: "INSERT",
+    });
+  }
+
+  const recommendations = parsed.recommendations
+    .map((recommendation) => ({
+      ...recommendation,
+      serviceName: recommendation.serviceName?.trim() ?? "",
+      notes: recommendation.notes?.trim() || undefined,
+    }))
+    .filter((recommendation) => recommendation.serviceName);
+
+  await prisma.$transaction(async (tx) => {
+    const recommendationSummary = recommendations.map((recommendation) =>
+      `${recommendation.serviceName} (${recommendation.result.toLowerCase()}, ${recommendation.urgency.toLowerCase()} urgency)`,
+    );
+    const notes = [
+      `[Inspection]`,
+      parsed.technician?.trim() ? `Recorded by: ${parsed.technician.trim()}` : "",
+      `Condition: ${parsed.condition.replaceAll("_", " ").toLowerCase()}`,
+      parsed.componentsInspected?.trim() ? `Components inspected: ${parsed.componentsInspected.trim()}` : "",
+      parsed.notes?.trim() ? `Notes: ${parsed.notes.trim()}` : "",
+      recommendationSummary.length > 0 ? `Recommendations: ${recommendationSummary.join("; ")}` : "",
+    ].filter(Boolean).join("\n");
+
+    const inspectionRecord = await tx.serviceHistoryRecord.create({
+      data: {
+        shopId: context.shopId,
+        customerId: vehicle.customerId,
+        vehicleId: vehicle.id,
+        serviceName: "Vehicle Inspection",
+        completedAt: inspectionDate,
+        mileage,
+        laborMinutes: 0,
+        priceCents: 0,
+        notes,
+      },
+    });
+
+    if (mileage !== null) {
+      const duplicateInspectionReading = await tx.vehicleMileageReading.findFirst({
+        where: {
+          shopId: context.shopId,
+          vehicleId: vehicle.id,
+          readingDate: inspectionDate,
+          readingMileage: mileage,
+          sourceReferenceType: "Inspection",
+        },
+      });
+      if (!duplicateInspectionReading) {
+        const warningMessages = validationIssues
+          .filter((issue) => issue.severity === "warning")
+          .map((issue) => issue.message);
+        await tx.vehicleMileageReading.create({
+          data: {
+            shopId: context.shopId,
+            vehicleId: vehicle.id,
+            readingMileage: mileage,
+            readingDate: inspectionDate,
+            source: "OTHER",
+            verificationStatus: "VERIFIED",
+            anomalyStatus: warningMessages.length > 0 ? "NEEDS_REVIEW" : "NONE",
+            includedInForecast: warningMessages.length === 0,
+            reviewNotes: [parsed.notes?.trim(), warningMessages.join(" ")]
+              .filter(Boolean)
+              .join(" ") || null,
+            sourceReferenceType: "Inspection",
+            sourceReferenceId: inspectionRecord.id,
+            recordedByUserId: context.userId,
+          },
+        });
+      }
+      await tx.vehicle.update({
+        where: { id: vehicle.id },
+        data: {
+          currentMileage: mileage,
+          lastServiceDate: inspectionDate,
+        },
+      });
+      await recalculatePersistedDrivingProfile({ tx, context, vehicleId: vehicle.id });
+    }
+
+    const touchedMaintenanceRecordIds: string[] = [];
+    const touchedDeclinedWorkRecordIds: string[] = [];
+    for (const recommendation of recommendations) {
+      let service = await tx.serviceDefinition.findFirst({
+        where: { shopId: context.shopId, name: recommendation.serviceName },
+      });
+      service ??= await tx.serviceDefinition.create({
+        data: {
+          shopId: context.shopId,
+          name: recommendation.serviceName,
+          category: "Inspection Recommendation",
+          defaultMileageInterval: null,
+          defaultTimeIntervalMonths: null,
+          defaultTimeIntervalValue: null,
+          defaultTimeIntervalUnit: "MONTHS",
+          defaultNotificationThreshold: 10,
+          estimatedLaborMinutes: recommendation.laborMinutes,
+          defaultPriceCents: recommendation.priceCents,
+          description: "Created from a recorded inspection recommendation.",
+          isActive: true,
+        },
+      });
+      const existingMaintenance = await tx.vehicleMaintenanceRecord.findFirst({
+        where: {
+          shopId: context.shopId,
+          vehicleId: vehicle.id,
+          serviceDefinitionId: service.id,
+          isActive: true,
+          archivedAt: null,
+        },
+      });
+      const maintenance = existingMaintenance
+        ? await tx.vehicleMaintenanceRecord.update({
+            where: { id: existingMaintenance.id },
+            data: {
+              priceCents: recommendation.priceCents,
+              laborMinutes: recommendation.laborMinutes,
+              priceOverrideCents: recommendation.priceCents,
+              laborMinutesOverride: recommendation.laborMinutes,
+              status: "DUE_SOON",
+              outreachStatus: "NEEDS_OUTREACH",
+              notes: recommendation.notes ?? parsed.notes ?? null,
+              updatedByUserId: context.userId,
+            },
+          })
+        : await tx.vehicleMaintenanceRecord.create({
+            data: {
+              shopId: context.shopId,
+              vehicleId: vehicle.id,
+              serviceDefinitionId: service.id,
+              serviceName: recommendation.serviceName,
+              lastCompletedDate: null,
+              lastCompletedMileage: mileage,
+              recommendedMileageInterval: null,
+              recommendedTimeIntervalMonths: null,
+              mileageIntervalOverride: null,
+              timeIntervalValueOverride: null,
+              timeIntervalUnitOverride: null,
+              notificationThreshold: service.defaultNotificationThreshold,
+              outreachThresholdType: "MILES_BEFORE_DUE",
+              outreachThresholdValue: 500,
+              laborMinutes: recommendation.laborMinutes,
+              priceCents: recommendation.priceCents,
+              priceOverrideCents: recommendation.priceCents,
+              laborMinutesOverride: recommendation.laborMinutes,
+              status: "DUE_SOON",
+              outreachStatus: "NEEDS_OUTREACH",
+              isActive: true,
+              notes: recommendation.notes ?? parsed.notes ?? null,
+              createdByUserId: context.userId,
+              updatedByUserId: context.userId,
+            },
+          });
+      touchedMaintenanceRecordIds.push(maintenance.id);
+
+      if (recommendation.result === "DECLINED") {
+        const existingDeclined = await tx.declinedWorkRecord.findFirst({
+          where: {
+            shopId: context.shopId,
+            customerId: vehicle.customerId,
+            vehicleId: vehicle.id,
+            serviceName: recommendation.serviceName,
+            declinedAt: inspectionDate,
+          },
+        });
+        const declinedRecord = existingDeclined ?? await tx.declinedWorkRecord.create({
+          data: {
+            shopId: context.shopId,
+            customerId: vehicle.customerId,
+            vehicleId: vehicle.id,
+            serviceName: recommendation.serviceName,
+            declinedAt: inspectionDate,
+            recommendedPriceCents: recommendation.priceCents,
+            laborMinutes: recommendation.laborMinutes,
+            advisorNotes: recommendation.notes ?? parsed.notes ?? null,
+            status: "OPEN",
+            outreachStatus: "NEEDS_OUTREACH",
+          },
+        });
+        touchedDeclinedWorkRecordIds.push(declinedRecord.id);
+      }
+    }
+
+    const activeMaintenanceRecords = await tx.vehicleMaintenanceRecord.findMany({
+      where: { shopId: context.shopId, vehicleId: vehicle.id, isActive: true, archivedAt: null },
+      select: { id: true },
+    });
+    await syncMaintenanceRevenueOpportunities(
+      tx,
+      context,
+      [
+        ...touchedMaintenanceRecordIds,
+        ...activeMaintenanceRecords.map((record) => record.id),
+      ],
+    );
+    await syncDeclinedWorkRevenueOpportunities(tx, context, touchedDeclinedWorkRecordIds);
+    await tx.auditLog.create({
+      data: {
+        shopId: context.shopId,
+        actorUserId: context.userId,
+        action: "vehicle.inspection_recorded",
+        entityType: "ServiceHistoryRecord",
+        entityId: inspectionRecord.id,
+        metadata: {
+          vehicleId: vehicle.id,
+          inspectionDate: parsed.inspectionDate,
+          mileage,
+          recommendations: recommendations.length,
+          declinedRecommendations: recommendations.filter((recommendation) => recommendation.result === "DECLINED").length,
+        },
+      },
+    });
+  });
+}
+
+export async function setPilotCustomerReportedMileage(context: AuthenticatedShopContext, input: unknown) {
+  requireDrivingEstimateManager(context);
+  const parsed = customerReportedMileageSchema.parse(input);
+  const vehicle = await requireVehicleInActiveShop(context, parsed.vehicleId);
+
+  await prisma.$transaction(async (tx) => {
+    await recalculatePersistedDrivingProfile({
+      tx,
+      context,
+      vehicleId: vehicle.id,
+      customerReportedAnnualMileage: parsed.annualMileage,
+    });
+    await tx.vehicle.update({
+      where: { id: vehicle.id },
+      data: { estimatedAnnualMileage: parsed.annualMileage },
+    });
+    await tx.auditLog.create({
+      data: {
+        shopId: context.shopId,
+        actorUserId: context.userId,
+        action: "vehicle.customer_reported_annual_mileage_set",
+        entityType: "Vehicle",
+        entityId: vehicle.id,
+        metadata: { annualMileage: parsed.annualMileage },
+      },
+    });
+  });
+}
+
+export async function setPilotManualMileageOverride(context: AuthenticatedShopContext, input: unknown) {
+  requireDrivingEstimateManager(context);
+  const parsed = manualMileageOverrideSchema.parse(input);
+  const vehicle = await requireVehicleInActiveShop(context, parsed.vehicleId);
+  const reviewNote = [
+    parsed.notes?.trim(),
+    `Review condition: ${parsed.reviewCondition.replaceAll("_", " ").toLowerCase()}.`,
+    parsed.reviewDate ? `Review date: ${parsed.reviewDate}.` : "",
+  ].filter(Boolean).join("\n");
+
+  await prisma.$transaction(async (tx) => {
+    await recalculatePersistedDrivingProfile({
+      tx,
+      context,
+      vehicleId: vehicle.id,
+      manualAnnualMileageOverride: parsed.annualMileage,
+      manualOverrideReason: parsed.reason,
+      manualOverrideNotes: reviewNote || null,
+    });
+    await tx.auditLog.create({
+      data: {
+        shopId: context.shopId,
+        actorUserId: context.userId,
+        action: "vehicle.driving_profile_manual_override_set",
+        entityType: "Vehicle",
+        entityId: vehicle.id,
+        metadata: {
+          annualMileage: parsed.annualMileage,
+          reason: parsed.reason,
+          reviewCondition: parsed.reviewCondition,
+          reviewDate: parsed.reviewDate || null,
+        },
+      },
+    });
+  });
+}
+
+export async function resetPilotManualMileageOverride(context: AuthenticatedShopContext, input: unknown) {
+  requireDrivingEstimateManager(context);
+  const parsed = z.object({ vehicleId: z.string().min(1) }).parse(input);
+  const vehicle = await requireVehicleInActiveShop(context, parsed.vehicleId);
+
+  await prisma.$transaction(async (tx) => {
+    await recalculatePersistedDrivingProfile({
+      tx,
+      context,
+      vehicleId: vehicle.id,
+      clearManualOverride: true,
+    });
+    await tx.auditLog.create({
+      data: {
+        shopId: context.shopId,
+        actorUserId: context.userId,
+        action: "vehicle.driving_profile_manual_override_reset",
+        entityType: "Vehicle",
+        entityId: vehicle.id,
+      },
+    });
+  });
+}
+
+export async function reviewPilotMileageReading(context: AuthenticatedShopContext, input: unknown) {
+  requireDrivingEstimateManager(context);
+  const parsed = mileageReadingReviewSchema.parse(input);
+  const reading = await prisma.vehicleMileageReading.findUnique({ where: { id: parsed.readingId } });
+  assertSameShop(context, reading?.shopId);
+
+  await prisma.$transaction(async (tx) => {
+    await tx.vehicleMileageReading.update({
+      where: { id: parsed.readingId },
+      data: {
+        includedInForecast: parsed.includedInForecast,
+        anomalyStatus: parsed.anomalyStatus,
+        reviewNotes: parsed.reviewNotes || null,
+      },
+    });
+    await recalculatePersistedDrivingProfile({ tx, context, vehicleId: reading!.vehicleId });
+    await tx.auditLog.create({
+      data: {
+        shopId: context.shopId,
+        actorUserId: context.userId,
+        action: "vehicle.mileage_reading_reviewed",
+        entityType: "VehicleMileageReading",
+        entityId: parsed.readingId,
+        metadata: {
+          includedInForecast: parsed.includedInForecast,
+          anomalyStatus: parsed.anomalyStatus,
+        },
+      },
+    });
   });
 }
 
@@ -504,6 +3288,438 @@ export async function markPilotOutreachManuallySent(
         outreachRecordId: outreach.id,
       },
     });
+    const synced = await syncMaintenanceRevenueOpportunities(tx, context, input.maintenanceRecordIds);
+    await tx.maintenanceRevenueOpportunity.updateMany({
+      where: { id: { in: synced.map((opportunity) => opportunity.id) }, shopId: context.shopId },
+      data: {
+        stage: input.responseStatus && input.responseStatus !== "NO_RESPONSE"
+          ? input.responseStatus === "DECLINED" || input.responseStatus === "DO_NOT_CONTACT"
+            ? "LOST"
+            : "RESPONDED"
+          : "CONTACTED",
+        lastActivityAt: new Date(),
+      },
+    });
+  });
+}
+
+export async function recordPilotOpportunityContact(
+  context: AuthenticatedShopContext,
+  input: {
+    customerId: string;
+    vehicleId: string;
+    opportunityIds: string[];
+    message: string;
+    channel: OutreachRecord["channel"];
+    responseStatus: OutreachRecord["responseStatus"];
+    followUpDate?: string;
+    bookingLinkId?: string;
+  },
+) {
+  const targets = await loadOpenQueueTargets(context, input);
+  const sourceStatus = responseOutreachStatus(input.responseStatus);
+  const stage = responseOpportunityStage(input.responseStatus);
+  const followUpDate = input.followUpDate ? dateFromDateOnly(input.followUpDate) : null;
+
+  await prisma.$transaction(async (tx) => {
+    const outreach = await tx.outreachRecord.create({
+      data: {
+        shopId: context.shopId,
+        customerId: input.customerId,
+        vehicleId: input.vehicleId,
+        message: input.message,
+        channel: input.channel,
+        status: "MANUALLY_SENT",
+        responseStatus: input.responseStatus,
+        followUpDate,
+        bookingLinkId: input.bookingLinkId ?? null,
+        copiedAt: input.channel === "TEXT" || input.channel === "EMAIL" ? new Date() : null,
+        manuallySentAt: new Date(),
+        performedByUserId: context.userId,
+      },
+    });
+
+    if (input.bookingLinkId) {
+      await tx.customerBookingLink.updateMany({
+        where: {
+          id: input.bookingLinkId,
+          shopId: context.shopId,
+          customerId: input.customerId,
+          vehicleId: input.vehicleId,
+        },
+        data: { outreachRecordId: outreach.id },
+      });
+    }
+
+    if (targets.maintenanceRecordIds.length > 0) {
+      await tx.vehicleMaintenanceRecord.updateMany({
+        where: { id: { in: targets.maintenanceRecordIds }, shopId: context.shopId },
+        data: {
+          outreachStatus: sourceStatus,
+          outreachRecordId: outreach.id,
+          updatedByUserId: context.userId,
+        },
+      });
+    }
+    if (targets.declinedWorkRecordIds.length > 0) {
+      await tx.declinedWorkRecord.updateMany({
+        where: { id: { in: targets.declinedWorkRecordIds }, shopId: context.shopId },
+        data: { outreachStatus: sourceStatus },
+      });
+    }
+    await tx.maintenanceRevenueOpportunity.updateMany({
+      where: { id: { in: targets.opportunityIds }, shopId: context.shopId },
+      data: {
+        stage,
+        lastActivityAt: new Date(),
+      },
+    });
+  });
+}
+
+export async function createPilotBookingLink(
+  context: AuthenticatedShopContext,
+  input: {
+    customerId: string;
+    vehicleId: string;
+    opportunityIds: string[];
+    appUrl: string;
+  },
+) {
+  assertCustomerBookingFeatureEnabled();
+  const targets = await loadOpenQueueTargets(context, input);
+  const link = await createCustomerBookingLink({
+    context,
+    appUrl: input.appUrl,
+    customerId: input.customerId,
+    vehicleId: input.vehicleId,
+    opportunityIds: targets.opportunityIds,
+  });
+  const [customer, vehicle, shop] = await Promise.all([
+    prisma.customer.findFirst({ where: { id: input.customerId, shopId: context.shopId } }),
+    prisma.vehicle.findFirst({ where: { id: input.vehicleId, shopId: context.shopId } }),
+    prisma.shop.findFirst({ where: { id: context.shopId } }),
+  ]);
+  const serviceNames = [
+    ...targets.maintenanceRecords.map((record) => record.serviceName),
+    ...targets.declinedWorkRecords.map((record) => record.serviceName),
+  ];
+  return {
+    ...link,
+    message: `Hi ${customer?.firstName ?? "there"}, this is ${shop?.name ?? context.shopName}. Based on your ${vehicle ? `${vehicle.year} ${vehicle.make} ${vehicle.model}` : "vehicle"} service history, ${serviceNames.join(", ") || "recommended maintenance"} is ready to schedule. You can view available times and schedule here: ${link.url}`,
+  };
+}
+
+export async function savePilotBookingSettings(context: AuthenticatedShopContext, input: unknown) {
+  assertCustomerBookingFeatureEnabled();
+  const parsed = shopBookingSettingsSchema.parse(input);
+  const { windows, ...settings } = parsed;
+  await prisma.$transaction(async (tx) => {
+    await tx.shopBookingSettings.upsert({
+      where: { shopId: context.shopId },
+      create: {
+        shopId: context.shopId,
+        ...settings,
+      },
+      update: settings,
+    });
+    if (windows) {
+      await tx.shopBookingWindow.deleteMany({ where: { shopId: context.shopId } });
+      await tx.shopBookingWindow.createMany({
+        data: Array.from(new Map(windows.map((window) => [window.dayOfWeek, window])).values()).map((window) => ({
+          shopId: context.shopId,
+          dayOfWeek: window.dayOfWeek,
+          startMinute: window.startMinute,
+          endMinute: window.endMinute,
+          isActive: window.isActive,
+        })),
+      });
+    }
+  });
+}
+
+export async function savePilotServiceBookingRule(
+  context: AuthenticatedShopContext,
+  serviceDefinitionId: string,
+  input: unknown,
+) {
+  assertCustomerBookingFeatureEnabled();
+  const parsed = serviceBookingRuleSchema.parse(input);
+  await requireServiceDefinitionInActiveShop(context, serviceDefinitionId);
+
+  await prisma.$transaction(async (tx) => {
+    const rule = await tx.serviceBookingRule.upsert({
+      where: { serviceDefinitionId },
+      create: {
+        shopId: context.shopId,
+        serviceDefinitionId,
+        bookingEnabled: parsed.bookingEnabled,
+        bookingMode: parsed.bookingMode,
+        estimatedDurationMinutes: parsed.estimatedDurationMinutes,
+        bufferBeforeMinutes: parsed.bufferBeforeMinutes,
+        bufferAfterMinutes: parsed.bufferAfterMinutes,
+        allowedIntakeType: parsed.allowedIntakeType,
+        minimumNoticeMinutes: parsed.minimumNoticeMinutes ?? null,
+        maximumAdvanceDays: parsed.maximumAdvanceDays ?? null,
+        maximumSimultaneousBookings: parsed.maximumSimultaneousBookings ?? null,
+      },
+      update: {
+        bookingEnabled: parsed.bookingEnabled,
+        bookingMode: parsed.bookingMode,
+        estimatedDurationMinutes: parsed.estimatedDurationMinutes,
+        bufferBeforeMinutes: parsed.bufferBeforeMinutes,
+        bufferAfterMinutes: parsed.bufferAfterMinutes,
+        allowedIntakeType: parsed.allowedIntakeType,
+        minimumNoticeMinutes: parsed.minimumNoticeMinutes ?? null,
+        maximumAdvanceDays: parsed.maximumAdvanceDays ?? null,
+        maximumSimultaneousBookings: parsed.maximumSimultaneousBookings ?? null,
+      },
+    });
+    await tx.serviceBookingWindow.deleteMany({
+      where: { shopId: context.shopId, serviceBookingRuleId: rule.id },
+    });
+    await tx.serviceBookingWindow.createMany({
+      data: Array.from(new Set(parsed.weekdays)).map((dayOfWeek) => ({
+        shopId: context.shopId,
+        serviceBookingRuleId: rule.id,
+        dayOfWeek,
+        startMinute: parsed.startMinute,
+        endMinute: parsed.endMinute,
+        isActive: true,
+      })),
+    });
+  });
+}
+
+export async function approvePilotAppointmentRequest(context: AuthenticatedShopContext, appointmentId: string) {
+  assertCustomerBookingFeatureEnabled();
+  const appointment = await prisma.appointment.findFirst({
+    where: { id: appointmentId, shopId: context.shopId },
+    include: { services: true },
+  });
+  if (!appointment || appointment.status !== "REQUESTED") {
+    throw new SafeActionError({
+      code: "APPOINTMENT_REQUEST_NOT_FOUND",
+      message: "Appointment request was not found.",
+      status: 404,
+      table: "Appointment",
+      operation: "UPDATE",
+    });
+  }
+
+  const maintenanceRecordIds = appointment.services
+    .map((service) => service.maintenanceRecordId)
+    .filter((id): id is string => Boolean(id));
+  const declinedWorkRecordIds = await prisma.declinedWorkRecord.findMany({
+    where: { appointmentId: appointment.id, shopId: context.shopId },
+    select: { id: true },
+  });
+  await prisma.$transaction(async (tx) => {
+    await tx.appointment.update({
+      where: { id: appointment.id },
+      data: { status: "CONFIRMED", approvedAt: new Date() },
+    });
+    if (appointment.bookingLinkId) {
+      await tx.customerBookingLink.updateMany({
+        where: { id: appointment.bookingLinkId, shopId: context.shopId },
+        data: {
+          status: "COMPLETED",
+          bookingCompletedAt: new Date(),
+          appointmentId: appointment.id,
+        },
+      });
+    }
+    await tx.vehicleMaintenanceRecord.updateMany({
+      where: { id: { in: maintenanceRecordIds }, shopId: context.shopId },
+      data: { outreachStatus: "SCHEDULED", appointmentId: appointment.id, updatedByUserId: context.userId },
+    });
+    await tx.declinedWorkRecord.updateMany({
+      where: { appointmentId: appointment.id, shopId: context.shopId },
+      data: { status: "BOOKED", outreachStatus: "SCHEDULED" },
+    });
+    await tx.maintenanceRevenueOpportunity.updateMany({
+      where: {
+        shopId: context.shopId,
+        OR: [
+          appointment.opportunityId ? { id: appointment.opportunityId } : undefined,
+          maintenanceRecordIds.length ? { maintenanceRecordId: { in: maintenanceRecordIds } } : undefined,
+          declinedWorkRecordIds.length ? { declinedWorkRecordId: { in: declinedWorkRecordIds.map((record) => record.id) } } : undefined,
+        ].filter((item): item is Exclude<typeof item, undefined> => Boolean(item)),
+      },
+      data: { stage: "BOOKED", lastActivityAt: new Date() },
+    });
+  });
+}
+
+export async function declinePilotAppointmentRequest(
+  context: AuthenticatedShopContext,
+  appointmentId: string,
+  input: unknown,
+) {
+  assertCustomerBookingFeatureEnabled();
+  const parsed = z.object({ reason: z.string().optional() }).parse(input ?? {});
+  const appointment = await prisma.appointment.findFirst({
+    where: { id: appointmentId, shopId: context.shopId },
+  });
+  if (!appointment || appointment.status !== "REQUESTED") {
+    throw new SafeActionError({
+      code: "APPOINTMENT_REQUEST_NOT_FOUND",
+      message: "Appointment request was not found.",
+      status: 404,
+      table: "Appointment",
+      operation: "UPDATE",
+    });
+  }
+  await prisma.$transaction(async (tx) => {
+    await tx.appointment.update({
+      where: { id: appointment.id },
+      data: {
+        status: "CANCELLED",
+        declinedAt: new Date(),
+        internalNotes: parsed.reason ?? appointment.internalNotes,
+      },
+    });
+    await tx.appointmentChangeRecord.create({
+      data: {
+        shopId: context.shopId,
+        appointmentId: appointment.id,
+        bookingLinkId: appointment.bookingLinkId,
+        action: "SHOP_DECLINED_REQUEST",
+        previousStart: appointment.scheduledStart,
+        previousEnd: appointment.scheduledEnd,
+        reason: parsed.reason,
+      },
+    });
+    if (appointment.opportunityId) {
+      await tx.maintenanceRevenueOpportunity.updateMany({
+        where: { id: appointment.opportunityId, shopId: context.shopId },
+        data: { stage: "RESPONDED", lastActivityAt: new Date() },
+      });
+    }
+  });
+}
+
+export async function snoozePilotOpportunity(
+  context: AuthenticatedShopContext,
+  input: {
+    customerId: string;
+    vehicleId: string;
+    opportunityIds: string[];
+    snoozedUntil: string;
+    reason: string;
+    notes?: string;
+  },
+) {
+  const snoozedUntil = requireFutureDate(input.snoozedUntil);
+  const reason = input.reason.trim();
+  if (!reason) {
+    throw queueActionError({
+      code: "SNOOZE_REASON_REQUIRED",
+      message: "Choose a snooze reason.",
+      status: 400,
+    });
+  }
+  const targets = await loadOpenQueueTargets(context, input);
+  const message = [
+    `Snoozed until ${input.snoozedUntil}.`,
+    `Reason: ${reason}.`,
+    input.notes?.trim() ? `Notes: ${input.notes.trim()}` : "",
+  ].filter(Boolean).join("\n");
+
+  await prisma.$transaction(async (tx) => {
+    const outreach = await tx.outreachRecord.create({
+      data: {
+        shopId: context.shopId,
+        customerId: input.customerId,
+        vehicleId: input.vehicleId,
+        message,
+        channel: "OTHER",
+        status: "SNOOZED",
+        responseStatus: "NOT_NOW",
+        followUpDate: snoozedUntil,
+        performedByUserId: context.userId,
+      },
+    });
+
+    if (targets.maintenanceRecordIds.length > 0) {
+      await tx.vehicleMaintenanceRecord.updateMany({
+        where: { id: { in: targets.maintenanceRecordIds }, shopId: context.shopId },
+        data: {
+          outreachStatus: "SNOOZED",
+          outreachRecordId: outreach.id,
+          updatedByUserId: context.userId,
+        },
+      });
+    }
+    if (targets.declinedWorkRecordIds.length > 0) {
+      await tx.declinedWorkRecord.updateMany({
+        where: { id: { in: targets.declinedWorkRecordIds }, shopId: context.shopId },
+        data: {
+          status: "SNOOZED",
+          outreachStatus: "SNOOZED",
+        },
+      });
+    }
+    await tx.maintenanceRevenueOpportunity.updateMany({
+      where: { id: { in: targets.opportunityIds }, shopId: context.shopId },
+      data: {
+        stage: "CONTACTED",
+        lastActivityAt: new Date(),
+      },
+    });
+  });
+}
+
+export async function endPilotOpportunitySnooze(
+  context: AuthenticatedShopContext,
+  input: {
+    customerId: string;
+    vehicleId: string;
+    opportunityIds: string[];
+  },
+) {
+  const targets = await loadOpenQueueTargets(context, input);
+
+  await prisma.$transaction(async (tx) => {
+    const outreach = await tx.outreachRecord.create({
+      data: {
+        shopId: context.shopId,
+        customerId: input.customerId,
+        vehicleId: input.vehicleId,
+        message: "Snooze ended now. Opportunity returned to Needs Attention.",
+        channel: "OTHER",
+        status: "NEEDS_OUTREACH",
+        responseStatus: "NO_RESPONSE",
+        performedByUserId: context.userId,
+      },
+    });
+
+    if (targets.maintenanceRecordIds.length > 0) {
+      await tx.vehicleMaintenanceRecord.updateMany({
+        where: { id: { in: targets.maintenanceRecordIds }, shopId: context.shopId },
+        data: {
+          outreachStatus: "NEEDS_OUTREACH",
+          outreachRecordId: outreach.id,
+          updatedByUserId: context.userId,
+        },
+      });
+    }
+    if (targets.declinedWorkRecordIds.length > 0) {
+      await tx.declinedWorkRecord.updateMany({
+        where: { id: { in: targets.declinedWorkRecordIds }, shopId: context.shopId },
+        data: {
+          status: "OPEN",
+          outreachStatus: "NEEDS_OUTREACH",
+        },
+      });
+    }
+    await tx.maintenanceRevenueOpportunity.updateMany({
+      where: { id: { in: targets.opportunityIds }, shopId: context.shopId },
+      data: {
+        stage: "IDENTIFIED",
+        lastActivityAt: new Date(),
+      },
+    });
   });
 }
 
@@ -513,16 +3729,25 @@ export async function bookPilotAppointment(
     customerId: string;
     vehicleId: string;
     maintenanceRecordIds: string[];
+    opportunityIds?: string[];
     date: string;
     time: string;
     status: Appointment["status"];
     notes?: string;
   },
 ) {
-  const records = await prisma.vehicleMaintenanceRecord.findMany({
+  const targets = input.opportunityIds?.length
+    ? await loadOpenQueueTargets(context, {
+        customerId: input.customerId,
+        vehicleId: input.vehicleId,
+        opportunityIds: input.opportunityIds,
+      })
+    : undefined;
+  const records = targets?.maintenanceRecords ?? await prisma.vehicleMaintenanceRecord.findMany({
     where: { id: { in: input.maintenanceRecordIds }, shopId: context.shopId },
   });
-  if (records.length !== input.maintenanceRecordIds.length) {
+  const declinedWorkRecords = targets?.declinedWorkRecords ?? [];
+  if (!targets && records.length !== input.maintenanceRecordIds.length) {
     throw new Error("One or more selected services are unavailable.");
   }
   const customer = await prisma.customer.findUnique({ where: { id: input.customerId } });
@@ -535,25 +3760,32 @@ export async function bookPilotAppointment(
   if (records.some((record) => record.vehicleId !== input.vehicleId)) {
     throw new Error("Selected services do not belong to the selected vehicle.");
   }
-  const totals = calculateAppointmentTotals(
-    records.map((record) => ({
-      id: record.id,
-      shopId: record.shopId,
-      vehicleId: record.vehicleId,
-      serviceId: record.serviceDefinitionId,
+  if (declinedWorkRecords.some((record) => record.vehicleId !== input.vehicleId || record.customerId !== input.customerId)) {
+    throw new Error("Selected declined work does not belong to the selected vehicle.");
+  }
+  const serviceItems = [
+    ...records.map((record) => ({
+      serviceDefinitionId: record.serviceDefinitionId,
+      maintenanceRecordId: record.id,
       serviceName: record.serviceName,
-      lastCompletedDate: dateOnly(record.lastCompletedDate || record.createdAt),
-      lastCompletedMileage: record.lastCompletedMileage ?? 0,
-      recommendedMileageInterval: record.recommendedMileageInterval,
-      recommendedTimeIntervalMonths: record.recommendedTimeIntervalMonths,
+      laborMinutes: record.laborMinutes,
       priceCents: record.priceCents,
-      laborHours: record.laborMinutes / 60,
-      notificationThreshold: record.notificationThreshold,
-      outreachStatus: record.outreachStatus,
     })),
-  );
+    ...declinedWorkRecords.map((record) => ({
+      serviceDefinitionId: null,
+      maintenanceRecordId: null,
+      serviceName: record.serviceName,
+      laborMinutes: record.laborMinutes,
+      priceCents: record.recommendedPriceCents,
+    })),
+  ];
+  if (serviceItems.length === 0) {
+    throw new Error("Select at least one service before booking.");
+  }
+  const totalLaborMinutes = serviceItems.reduce((sum, item) => sum + item.laborMinutes, 0);
+  const totalPriceCents = serviceItems.reduce((sum, item) => sum + item.priceCents, 0);
   const scheduledStart = new Date(`${input.date}T${input.time}:00`);
-  const scheduledEnd = new Date(scheduledStart.getTime() + totals.recommendedHours * 60 * 60 * 1000);
+  const scheduledEnd = new Date(scheduledStart.getTime() + Math.max(totalLaborMinutes, 30) * 60 * 1000);
   const duplicateAppointment = await prisma.appointment.findFirst({
     where: {
       shopId: context.shopId,
@@ -570,6 +3802,8 @@ export async function bookPilotAppointment(
   }
 
   await prisma.$transaction(async (tx) => {
+    const maintenanceRecordIds = targets?.maintenanceRecordIds ?? input.maintenanceRecordIds;
+    const synced = targets ? [] : await syncMaintenanceRevenueOpportunities(tx, context, maintenanceRecordIds);
     const appointment = await tx.appointment.create({
       data: {
         shopId: context.shopId,
@@ -578,16 +3812,17 @@ export async function bookPilotAppointment(
         scheduledStart,
         scheduledEnd,
         status: input.status,
-        totalLaborMinutes: Math.round(totals.recommendedHours * 60),
-        totalPriceCents: totals.totalPriceCents,
+        totalLaborMinutes,
+        totalPriceCents,
         source: "AUTOMATION",
         attributionSource: "MAINTIVA_OUTREACH",
+        opportunityId: targets?.opportunityIds[0] ?? synced[0]?.id,
         notes: input.notes,
         services: {
-          create: records.map((record) => ({
+          create: serviceItems.map((record) => ({
             shopId: context.shopId,
             serviceDefinitionId: record.serviceDefinitionId,
-            maintenanceRecordId: record.id,
+            maintenanceRecordId: record.maintenanceRecordId,
             serviceName: record.serviceName,
             laborMinutes: record.laborMinutes,
             priceCents: record.priceCents,
@@ -595,13 +3830,37 @@ export async function bookPilotAppointment(
         },
       },
     });
-    await tx.vehicleMaintenanceRecord.updateMany({
-      where: { id: { in: input.maintenanceRecordIds }, shopId: context.shopId },
-      data: {
-        outreachStatus: "SCHEDULED",
-        appointmentId: appointment.id,
-      },
-    });
+    if (maintenanceRecordIds.length > 0) {
+      await tx.vehicleMaintenanceRecord.updateMany({
+        where: { id: { in: maintenanceRecordIds }, shopId: context.shopId },
+        data: {
+          outreachStatus: "SCHEDULED",
+          appointmentId: appointment.id,
+          updatedByUserId: context.userId,
+        },
+      });
+    }
+    if (targets?.declinedWorkRecordIds.length) {
+      await tx.declinedWorkRecord.updateMany({
+        where: { id: { in: targets.declinedWorkRecordIds }, shopId: context.shopId },
+        data: {
+          status: "BOOKED",
+          outreachStatus: "SCHEDULED",
+          appointmentId: appointment.id,
+        },
+      });
+    }
+    if (targets) {
+      await tx.maintenanceRevenueOpportunity.updateMany({
+        where: { id: { in: targets.opportunityIds }, shopId: context.shopId },
+        data: {
+          stage: "BOOKED",
+          lastActivityAt: new Date(),
+        },
+      });
+    } else {
+      await syncMaintenanceRevenueOpportunities(tx, context, input.maintenanceRecordIds);
+    }
   });
 }
 
@@ -656,6 +3915,15 @@ export async function completePilotAppointment(
       where: { appointmentId: appointment.id, shopId: context.shopId },
       data: { status: "COMPLETED", outreachStatus: "SCHEDULED" },
     });
+    const maintenanceRecordIds = appointment.services
+      .map((service) => service.maintenanceRecordId)
+      .filter((id): id is string => Boolean(id));
+    await syncMaintenanceRevenueOpportunities(tx, context, maintenanceRecordIds);
+    const declinedRecords = await tx.declinedWorkRecord.findMany({
+      where: { appointmentId: appointment.id, shopId: context.shopId },
+      select: { id: true },
+    });
+    await syncDeclinedWorkRevenueOpportunities(tx, context, declinedRecords.map((record) => record.id));
   });
 }
 
@@ -704,6 +3972,10 @@ export async function importPilotCsvRows(
   await prisma.$transaction(async (tx) => {
     const customerByKey = new Map<string, { id: string; firstName: string; lastName: string; email: string | null; phone: string | null }>();
     const vehicleByKey = new Map<string, { id: string; customerId: string; year: number; make: string; model: string; vin: string | null; currentMileage: number; licensePlate: string | null }>();
+    const importedMileageKeys = new Set<string>();
+    const touchedVehicleIds = new Set<string>();
+    const touchedMaintenanceRecordIds: string[] = [];
+    const touchedDeclinedWorkRecordIds: string[] = [];
 
     for (const row of rowsToImport) {
       const normalized = row.normalized;
@@ -800,6 +4072,7 @@ export async function importPilotCsvRows(
         continue;
       }
       if (row.entities.vehicle.key) vehicleByKey.set(row.entities.vehicle.key, vehicle);
+      touchedVehicleIds.add(vehicle.id);
 
       const serviceName = stringValue(normalized, "serviceName") || stringValue(normalized, "services");
       const priceCents = numberValue(normalized, "price");
@@ -817,6 +4090,8 @@ export async function importPilotCsvRows(
             category: "Imported",
             defaultMileageInterval: defaultService?.defaultMileageInterval ?? 12_000,
             defaultTimeIntervalMonths: defaultService?.defaultTimeIntervalMonths ?? 12,
+            defaultTimeIntervalValue: defaultService?.defaultTimeIntervalValue ?? defaultService?.defaultTimeIntervalMonths ?? 12,
+            defaultTimeIntervalUnit: defaultService?.defaultTimeIntervalUnit ?? "MONTHS",
             defaultNotificationThreshold: defaultService?.defaultNotificationThreshold ?? 10,
             estimatedLaborMinutes: laborMinutes,
             defaultPriceCents: priceCents,
@@ -826,15 +4101,35 @@ export async function importPilotCsvRows(
         });
       }
 
-      await tx.vehicleMaintenanceRecord.upsert({
+      const existingMaintenance = await tx.vehicleMaintenanceRecord.findFirst({
         where: {
-          shopId_vehicleId_serviceDefinitionId: {
-            shopId: context.shopId,
-            vehicleId: vehicle.id,
-            serviceDefinitionId: service.id,
-          },
+          shopId: context.shopId,
+          vehicleId: vehicle.id,
+          serviceDefinitionId: service.id,
+          isActive: true,
+          archivedAt: null,
         },
-        create: {
+      });
+
+      if (existingMaintenance) {
+        const maintenance = await tx.vehicleMaintenanceRecord.update({
+          where: { id: existingMaintenance.id },
+          data: {
+            lastCompletedDate: stringValue(normalized, "serviceDate")
+              ? new Date(stringValue(normalized, "serviceDate"))
+              : undefined,
+            lastCompletedMileage: numberValue(normalized, "serviceMileage") || undefined,
+            priceOverrideCents: priceCents,
+            laborMinutesOverride: laborMinutes,
+            priceCents,
+            laborMinutes,
+            updatedByUserId: context.userId,
+          },
+        });
+        touchedMaintenanceRecordIds.push(maintenance.id);
+      } else {
+        const maintenance = await tx.vehicleMaintenanceRecord.create({
+          data: {
           shopId: context.shopId,
           vehicleId: vehicle.id,
           serviceDefinitionId: service.id,
@@ -843,39 +4138,75 @@ export async function importPilotCsvRows(
             ? new Date(stringValue(normalized, "serviceDate"))
             : null,
           lastCompletedMileage: numberValue(normalized, "serviceMileage") || numberValue(normalized, "currentMileage"),
-          recommendedMileageInterval: service.defaultMileageInterval,
-          recommendedTimeIntervalMonths: service.defaultTimeIntervalMonths,
+          recommendedMileageInterval: null,
+          recommendedTimeIntervalMonths: null,
+          mileageIntervalOverride: null,
+          timeIntervalValueOverride: null,
+          timeIntervalUnitOverride: null,
           notificationThreshold: service.defaultNotificationThreshold,
+          outreachThresholdType: "MILES_BEFORE_DUE",
+          outreachThresholdValue: 500,
           laborMinutes,
           priceCents,
+          priceOverrideCents: priceCents,
+          laborMinutesOverride: laborMinutes,
           status: "DUE_SOON",
           outreachStatus: "NEEDS_OUTREACH",
+          isActive: true,
+          createdByUserId: context.userId,
+          updatedByUserId: context.userId,
         },
-        update: {
-          lastCompletedDate: stringValue(normalized, "serviceDate")
-            ? new Date(stringValue(normalized, "serviceDate"))
-            : undefined,
-          lastCompletedMileage: numberValue(normalized, "serviceMileage") || undefined,
-          laborMinutes,
-          priceCents,
-        },
-      });
+        });
+        touchedMaintenanceRecordIds.push(maintenance.id);
+      }
 
       if (stringValue(normalized, "serviceDate")) {
-        await tx.serviceHistoryRecord.create({
+        const serviceDate = stringValue(normalized, "serviceDate");
+        const serviceMileage = numberValue(normalized, "serviceMileage") || numberValue(normalized, "currentMileage");
+        const serviceHistory = await tx.serviceHistoryRecord.create({
           data: {
             shopId: context.shopId,
             customerId: customer.id,
             vehicleId: vehicle.id,
             serviceDefinitionId: service.id,
             serviceName,
-            completedAt: new Date(stringValue(normalized, "serviceDate")),
-            mileage: numberValue(normalized, "serviceMileage") || numberValue(normalized, "currentMileage"),
+            completedAt: dateFromDateOnly(serviceDate),
+            mileage: serviceMileage,
             laborMinutes,
             priceCents,
             notes: "Imported from CSV.",
           },
         });
+        const mileageKey = `${vehicle.id}|${serviceDate}|${serviceMileage}`;
+        const existingReading = serviceMileage > 0
+          ? await tx.vehicleMileageReading.findFirst({
+            where: {
+              shopId: context.shopId,
+              vehicleId: vehicle.id,
+              readingDate: dateFromDateOnly(serviceDate),
+              readingMileage: serviceMileage,
+            },
+          })
+          : null;
+        if (serviceMileage > 0 && !existingReading && !importedMileageKeys.has(mileageKey)) {
+          importedMileageKeys.add(mileageKey);
+          await tx.vehicleMileageReading.create({
+            data: {
+              shopId: context.shopId,
+              vehicleId: vehicle.id,
+              readingMileage: serviceMileage,
+              readingDate: dateFromDateOnly(serviceDate),
+              source: "SERVICE_HISTORY_IMPORT",
+              verificationStatus: "IMPORTED",
+              anomalyStatus: "NONE",
+              includedInForecast: true,
+              sourceReferenceType: "ServiceHistoryRecord",
+              sourceReferenceId: serviceHistory.id,
+              recordedByUserId: context.userId,
+            },
+          });
+          await recalculatePersistedDrivingProfile({ tx, context, vehicleId: vehicle.id });
+        }
       }
 
       if (
@@ -883,7 +4214,7 @@ export async function importPilotCsvRows(
         stringValue(normalized, "declinedDate") ||
         stringValue(normalized, "status").toLowerCase().includes("declin")
       ) {
-        await tx.declinedWorkRecord.create({
+        const declinedRecord = await tx.declinedWorkRecord.create({
           data: {
             shopId: context.shopId,
             customerId: customer.id,
@@ -899,6 +4230,7 @@ export async function importPilotCsvRows(
             outreachStatus: "NEEDS_OUTREACH",
           },
         });
+        touchedDeclinedWorkRecordIds.push(declinedRecord.id);
       }
 
       const scheduledStart = appointmentDateTime(
@@ -960,6 +4292,25 @@ export async function importPilotCsvRows(
         errorReportUrl: summary.failedRows > 0 ? "downloadable-error-report" : null,
       },
     });
+
+    const touchedVehicleMaintenanceRecords = await tx.vehicleMaintenanceRecord.findMany({
+      where: {
+        shopId: context.shopId,
+        vehicleId: { in: Array.from(touchedVehicleIds) },
+        isActive: true,
+        archivedAt: null,
+      },
+      select: { id: true },
+    });
+    await syncMaintenanceRevenueOpportunities(
+      tx,
+      context,
+      [
+        ...touchedMaintenanceRecordIds,
+        ...touchedVehicleMaintenanceRecords.map((record) => record.id),
+      ],
+    );
+    await syncDeclinedWorkRevenueOpportunities(tx, context, touchedDeclinedWorkRecordIds);
 
     await tx.importRowRecord.createMany({
       data: preview.rows.map((row) => {

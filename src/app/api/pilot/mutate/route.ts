@@ -5,20 +5,44 @@ import {
   AuthRequiredError,
   OnboardingRequiredError,
   TenantAccessError,
-  getAuthenticatedShopContext,
+  requireActiveShopMembership,
 } from "@/lib/auth";
 import {
   addPilotCustomer,
+  addPilotMaintenanceItem,
+  addPilotServiceDefinition,
   addPilotVehicle,
+  approvePilotAppointmentRequest,
   bookPilotAppointment,
   buildPilotState,
   completePilotAppointment,
+  createPilotBookingLink,
+  declinePilotAppointmentRequest,
+  deactivatePilotMaintenanceItem,
+  endPilotOpportunitySnooze,
   importPilotCsvRows,
+  markPilotMaintenanceServiceComplete,
   markPilotOutreachManuallySent,
+  recordPilotInspection,
+  recordPilotOpportunityContact,
+  resetPilotManualMileageOverride,
+  reviewPilotMileageReading,
+  setPilotCustomerReportedMileage,
+  setPilotManualMileageOverride,
+  savePilotBookingSettings,
+  savePilotServiceBookingRule,
+  snoozePilotOpportunity,
+  updatePilotMaintenanceItem,
   updatePilotCustomer,
+  updatePilotServiceDefinition,
   updatePilotVehicle,
+  updatePilotVehicleMileage,
 } from "@/lib/pilot-state";
-import { logPilotMutationFailure } from "@/lib/server-diagnostics";
+import {
+  clientMutationError,
+  logPilotMutationFailure,
+  safeMutationOperation,
+} from "@/lib/server-diagnostics";
 import { BrowserShopIdError, rejectBrowserShopId } from "@/lib/tenant-security";
 
 const mutationSchema = z.discriminatedUnion("action", [
@@ -34,6 +58,35 @@ const mutationSchema = z.discriminatedUnion("action", [
     id: z.string().min(1),
     payload: z.unknown(),
   }),
+  z.object({ action: z.literal("addServiceDefinition"), payload: z.unknown() }),
+  z.object({
+    action: z.literal("updateServiceDefinition"),
+    id: z.string().min(1),
+    payload: z.unknown(),
+  }),
+  z.object({ action: z.literal("saveBookingSettings"), payload: z.unknown() }),
+  z.object({
+    action: z.literal("saveServiceBookingRule"),
+    id: z.string().min(1),
+    payload: z.unknown(),
+  }),
+  z.object({ action: z.literal("addMaintenanceItem"), payload: z.unknown() }),
+  z.object({
+    action: z.literal("updateMaintenanceItem"),
+    id: z.string().min(1),
+    payload: z.unknown(),
+  }),
+  z.object({
+    action: z.literal("deactivateMaintenanceItem"),
+    id: z.string().min(1),
+  }),
+  z.object({ action: z.literal("markMaintenanceServiceComplete"), payload: z.unknown() }),
+  z.object({ action: z.literal("recordInspection"), payload: z.unknown() }),
+  z.object({ action: z.literal("updateVehicleMileage"), payload: z.unknown() }),
+  z.object({ action: z.literal("setCustomerReportedMileage"), payload: z.unknown() }),
+  z.object({ action: z.literal("setManualMileageOverride"), payload: z.unknown() }),
+  z.object({ action: z.literal("resetManualMileageOverride"), payload: z.unknown() }),
+  z.object({ action: z.literal("reviewMileageReading"), payload: z.unknown() }),
   z.object({
     action: z.literal("markOutreachManuallySent"),
     payload: z.object({
@@ -55,11 +108,42 @@ const mutationSchema = z.discriminatedUnion("action", [
     }),
   }),
   z.object({
+    action: z.literal("recordOpportunityContact"),
+    payload: z.object({
+      customerId: z.string().min(1),
+      vehicleId: z.string().min(1),
+      opportunityIds: z.array(z.string().min(1)).min(1),
+      message: z.string().min(3),
+      channel: z.enum(["PHONE", "TEXT", "EMAIL", "CALL", "IN_PERSON", "OTHER"]),
+      responseStatus: z.enum([
+        "NO_RESPONSE",
+        "INTERESTED",
+        "WANTS_CALLBACK",
+        "BOOKED",
+        "DECLINED",
+        "NOT_NOW",
+        "WRONG_CONTACT",
+        "DO_NOT_CONTACT",
+      ]),
+      followUpDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().or(z.literal("")),
+      bookingLinkId: z.string().min(1).optional(),
+    }),
+  }),
+  z.object({
+    action: z.literal("createBookingLink"),
+    payload: z.object({
+      customerId: z.string().min(1),
+      vehicleId: z.string().min(1),
+      opportunityIds: z.array(z.string().min(1)).min(1),
+    }),
+  }),
+  z.object({
     action: z.literal("bookAppointment"),
     payload: z.object({
       customerId: z.string().min(1),
       vehicleId: z.string().min(1),
-      maintenanceRecordIds: z.array(z.string().min(1)).min(1),
+      maintenanceRecordIds: z.array(z.string().min(1)),
+      opportunityIds: z.array(z.string().min(1)).optional(),
       date: z.string().min(8),
       time: z.string().min(4),
       status: z.enum([
@@ -74,6 +158,25 @@ const mutationSchema = z.discriminatedUnion("action", [
     }),
   }),
   z.object({
+    action: z.literal("snoozeOpportunity"),
+    payload: z.object({
+      customerId: z.string().min(1),
+      vehicleId: z.string().min(1),
+      opportunityIds: z.array(z.string().min(1)).min(1),
+      snoozedUntil: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      reason: z.string().min(1),
+      notes: z.string().optional(),
+    }),
+  }),
+  z.object({
+    action: z.literal("endOpportunitySnooze"),
+    payload: z.object({
+      customerId: z.string().min(1),
+      vehicleId: z.string().min(1),
+      opportunityIds: z.array(z.string().min(1)).min(1),
+    }),
+  }),
+  z.object({
     action: z.literal("completeAppointment"),
     payload: z.object({
       appointmentId: z.string().min(1),
@@ -82,6 +185,15 @@ const mutationSchema = z.discriminatedUnion("action", [
       completedAt: z.string().min(8),
       notes: z.string().optional(),
     }),
+  }),
+  z.object({
+    action: z.literal("approveAppointmentRequest"),
+    id: z.string().min(1),
+  }),
+  z.object({
+    action: z.literal("declineAppointmentRequest"),
+    id: z.string().min(1),
+    payload: z.object({ reason: z.string().optional() }).optional(),
   }),
   z.object({
     action: z.literal("importCsvRows"),
@@ -133,11 +245,15 @@ const mutationSchema = z.discriminatedUnion("action", [
 export async function POST(request: Request) {
   let context: AuthenticatedShopContext | undefined;
   let json: unknown;
+  let operation = safeMutationOperation(undefined);
   try {
     json = await request.json();
     rejectBrowserShopId(json);
-    context = await getAuthenticatedShopContext();
+    operation = safeMutationOperation(json);
+    context = await requireActiveShopMembership();
     const body = mutationSchema.parse(json);
+    operation = safeMutationOperation(body);
+    let bookingLink: Awaited<ReturnType<typeof createPilotBookingLink>> | undefined;
 
     switch (body.action) {
       case "addCustomer":
@@ -152,23 +268,86 @@ export async function POST(request: Request) {
       case "updateVehicle":
         await updatePilotVehicle(context, body.id, body.payload);
         break;
+      case "addServiceDefinition":
+        await addPilotServiceDefinition(context, body.payload);
+        break;
+      case "updateServiceDefinition":
+        await updatePilotServiceDefinition(context, body.id, body.payload);
+        break;
+      case "saveBookingSettings":
+        await savePilotBookingSettings(context, body.payload);
+        break;
+      case "saveServiceBookingRule":
+        await savePilotServiceBookingRule(context, body.id, body.payload);
+        break;
+      case "addMaintenanceItem":
+        await addPilotMaintenanceItem(context, body.payload);
+        break;
+      case "updateMaintenanceItem":
+        await updatePilotMaintenanceItem(context, body.id, body.payload);
+        break;
+      case "deactivateMaintenanceItem":
+        await deactivatePilotMaintenanceItem(context, body.id);
+        break;
+      case "markMaintenanceServiceComplete":
+        await markPilotMaintenanceServiceComplete(context, body.payload);
+        break;
+      case "recordInspection":
+        await recordPilotInspection(context, body.payload);
+        break;
+      case "updateVehicleMileage":
+        await updatePilotVehicleMileage(context, body.payload);
+        break;
+      case "setCustomerReportedMileage":
+        await setPilotCustomerReportedMileage(context, body.payload);
+        break;
+      case "setManualMileageOverride":
+        await setPilotManualMileageOverride(context, body.payload);
+        break;
+      case "resetManualMileageOverride":
+        await resetPilotManualMileageOverride(context, body.payload);
+        break;
+      case "reviewMileageReading":
+        await reviewPilotMileageReading(context, body.payload);
+        break;
       case "markOutreachManuallySent":
         await markPilotOutreachManuallySent(context, body.payload);
+        break;
+      case "recordOpportunityContact":
+        await recordPilotOpportunityContact(context, body.payload);
+        break;
+      case "createBookingLink":
+        bookingLink = await createPilotBookingLink(context, {
+          ...body.payload,
+          appUrl: request.headers.get("origin") ?? process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000",
+        });
         break;
       case "bookAppointment":
         await bookPilotAppointment(context, body.payload);
         break;
+      case "snoozeOpportunity":
+        await snoozePilotOpportunity(context, body.payload);
+        break;
+      case "endOpportunitySnooze":
+        await endPilotOpportunitySnooze(context, body.payload);
+        break;
       case "completeAppointment":
         await completePilotAppointment(context, body.payload);
+        break;
+      case "approveAppointmentRequest":
+        await approvePilotAppointmentRequest(context, body.id);
+        break;
+      case "declineAppointmentRequest":
+        await declinePilotAppointmentRequest(context, body.id, body.payload);
         break;
       case "importCsvRows":
         await importPilotCsvRows(context, body.payload);
         break;
     }
 
-    return NextResponse.json({ state: await buildPilotState(context) });
+    return NextResponse.json({ state: await buildPilotState(context), bookingLink });
   } catch (error) {
-    logPilotMutationFailure({ error, context, payload: json });
+    logPilotMutationFailure({ error, context, payload: json, operation });
     if (error instanceof OnboardingRequiredError) {
       return NextResponse.json(
         { code: "ONBOARDING_REQUIRED", message: error.message },
@@ -187,9 +366,16 @@ export async function POST(request: Request) {
         { status: 403 },
       );
     }
+    const clientError = clientMutationError(error, operation);
+    if (clientError) {
+      return NextResponse.json(
+        { code: clientError.code, message: clientError.message },
+        { status: clientError.status },
+      );
+    }
     if (error instanceof z.ZodError) {
       return NextResponse.json(
-        { code: "VALIDATION_FAILED", message: "Invalid request payload.", issues: error.issues },
+        { code: "VALIDATION_FAILED", message: "A required service field is missing or invalid.", issues: error.issues },
         { status: 400 },
       );
     }

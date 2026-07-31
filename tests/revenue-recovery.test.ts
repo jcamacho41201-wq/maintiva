@@ -26,7 +26,7 @@ describe("revenue recovery engine", () => {
 
     expect(jeep?.recommendedServices).toContain("Brake Pads");
     expect(jeep?.estimatedRevenueCents).toBeGreaterThan(40_000);
-    expect(jeep?.nextAction).toBe("Generate message");
+    expect(jeep?.nextAction).toBe("Contact customer");
   });
 
   it("calculates booked and recovered Maintiva revenue without counting open value as guaranteed", () => {

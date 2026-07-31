@@ -13,9 +13,10 @@ import {
   getRecommendedRecords,
   vehicleLabel,
 } from "@/lib/demo-calculations";
+import { getOpenRevenueOpportunitiesForCustomer, type RevenueOpportunity } from "@/lib/revenue-recovery";
 import { useDemoStore } from "@/lib/demo-store";
 import { type Customer, type Vehicle } from "@/lib/demo-data";
-import { formatCurrency, formatDate } from "@/lib/utils";
+import { currentDateInTimeZone, formatCurrency, formatDate } from "@/lib/utils";
 
 function editableCustomerFields(customer: Customer) {
   return {
@@ -39,6 +40,18 @@ function emptyVehicleForm(customerId: string) {
     currentMileage: 0,
     estimatedAnnualMileage: 12000,
   };
+}
+
+function opportunityStatusLabel(stage: RevenueOpportunity["stage"]) {
+  const labels: Record<RevenueOpportunity["stage"], string> = {
+    IDENTIFIED: "Needs outreach",
+    CONTACTED: "Contacted",
+    RESPONDED: "Responded",
+    BOOKED: "Booked",
+    COMPLETED: "Completed",
+    LOST: "Declined",
+  };
+  return labels[stage];
 }
 
 export default function CustomerDetailPage() {
@@ -74,6 +87,8 @@ export default function CustomerDetailPage() {
     .sort((a, b) => new Date(b.completedAt).getTime() - new Date(a.completedAt).getTime());
   const appointments = state.appointments.filter((appointment) => appointment.customerId === customer.id);
   const outreach = state.outreachRecords.filter((record) => record.customerId === customer.id);
+  const openRevenueOpportunities = getOpenRevenueOpportunitiesForCustomer(state, customer.id);
+  const openOpportunityValue = openRevenueOpportunities.reduce((sum, opportunity) => sum + opportunity.estimatedRevenueCents, 0);
 
   async function saveCustomer(input: ReturnType<typeof editableCustomerFields>) {
     if (!input.firstName.trim() || !input.lastName.trim()) {
@@ -90,7 +105,7 @@ export default function CustomerDetailPage() {
     setError("");
   }
 
-  function saveVehicle(vehicle: Vehicle, input: Partial<Vehicle>) {
+  function saveVehicle(vehicle: Vehicle, input: Partial<Vehicle> & { mileageReadingDate?: string }) {
     if (!String(input.make ?? "").trim() || !String(input.model ?? "").trim()) {
       setError("Vehicle make and model are required.");
       return;
@@ -113,6 +128,7 @@ export default function CustomerDetailPage() {
       trim: String(data.get("trim")),
       currentMileage: Number(data.get("currentMileage")),
       estimatedAnnualMileage: Number(data.get("estimatedAnnualMileage")),
+      initialMileageReadingDate: String(data.get("initialMileageReadingDate")),
     };
     if (!input.make.trim() || !input.model.trim() || !input.vin.trim()) {
       setError("Vehicle make, model, and VIN are required.");
@@ -182,6 +198,78 @@ export default function CustomerDetailPage() {
         </CardContent>
       </Card>
 
+      <Card>
+        <CardHeader>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold">Open Revenue Opportunities</h2>
+              <p className="mt-1 text-sm text-zinc-500">
+                Real recoverable opportunities linked to this customer and their vehicles.
+              </p>
+            </div>
+            <Badge variant="purple">
+              {openRevenueOpportunities.length} · {formatCurrency(openOpportunityValue)}
+            </Badge>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {vehicles.map((vehicle) => {
+            const opportunities = openRevenueOpportunities.filter((opportunity) => opportunity.vehicleId === vehicle.id);
+            if (opportunities.length === 0) return null;
+            return (
+              <div key={vehicle.id} className="rounded-lg border border-zinc-200 p-4">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <Link href={`/vehicles/${vehicle.id}`} className="font-semibold text-violet-950">
+                    {vehicleLabel(vehicle)}
+                  </Link>
+                  <Badge>{opportunities.length} open</Badge>
+                </div>
+                <div className="mt-3 space-y-2">
+                  {opportunities.map((opportunity) => {
+                    const appointment = state.appointments.find((item) =>
+                      item.opportunityId === opportunity.id ||
+                      (
+                        opportunity.maintenanceRecordId &&
+                        item.maintenanceRecordIds.includes(opportunity.maintenanceRecordId)
+                      ),
+                    );
+                    return (
+                      <div key={opportunity.id} className="grid gap-3 rounded-lg bg-zinc-50 p-3 text-sm md:grid-cols-[1fr_auto] md:items-center">
+                        <div>
+                          <p className="font-semibold">{opportunity.serviceNames.join(", ")}</p>
+                          <p className="mt-1 text-zinc-600">
+                            {opportunity.sourceLabel} · {opportunityStatusLabel(opportunity.stage)} · {opportunity.priority} priority
+                          </p>
+                          <p className="mt-1 text-zinc-500">
+                            {opportunity.sourceType === "DeclinedWorkRecord" ? "Declined" : "Due"} {opportunity.dueDate ? formatDate(opportunity.dueDate) : "date not recorded"}
+                            {" · "}
+                            {opportunity.outreachStatus === "SNOOZED" ? "Snoozed until" : "Last contact"} {opportunity.lastActivityAt ? formatDate(opportunity.lastActivityAt) : "never"}
+                          </p>
+                          {appointment && (
+                            <Link href="/appointments" className="mt-1 inline-block font-semibold text-violet-950">
+                              Linked appointment {formatDate(appointment.scheduledStart)}
+                            </Link>
+                          )}
+                        </div>
+                        <div className="flex flex-wrap gap-2 md:justify-end">
+                          <Badge variant="purple">{formatCurrency(opportunity.estimatedRevenueCents)}</Badge>
+                          <Badge>{opportunity.estimatedLaborHours} hr</Badge>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+          {openRevenueOpportunities.length === 0 && (
+            <p className="rounded-lg border border-dashed border-zinc-300 p-6 text-sm text-zinc-500">
+              No open revenue opportunities yet.
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
       <div className="grid gap-6 lg:grid-cols-2">
         {vehicles.map((vehicle) => {
           const items = state.maintenanceRecords.filter((item) => item.vehicleId === vehicle.id);
@@ -235,7 +323,12 @@ export default function CustomerDetailPage() {
                   </button>
                 </div>
                 {editingVehicleId === vehicle.id && (
-                  <VehicleEditForm vehicle={vehicle} onCancel={() => setEditingVehicleId(null)} onSave={(input) => saveVehicle(vehicle, input)} />
+                  <VehicleEditForm
+                    vehicle={vehicle}
+                    shopTimezone={state.shop.timezone}
+                    onCancel={() => setEditingVehicleId(null)}
+                    onSave={(input) => saveVehicle(vehicle, input)}
+                  />
                 )}
               </CardContent>
             </Card>
@@ -268,12 +361,46 @@ export default function CustomerDetailPage() {
               </button>
             </div>
             <div className="grid gap-4 p-5 sm:grid-cols-2">
-              {Object.entries(emptyVehicleForm(customer.id)).filter(([key]) => key !== "customerId").map(([key, value]) => (
-                <label key={key} className="text-sm font-medium">
-                  {key.replace(/([A-Z])/g, " $1").replace(/^\w/, (letter) => letter.toUpperCase())}
-                  <input name={key} defaultValue={value} type={typeof value === "number" ? "number" : "text"} className="mt-2 h-10 w-full rounded-lg border border-zinc-200 px-3 outline-none focus:border-violet-500" />
+              {Object.entries(emptyVehicleForm(customer.id)).filter(([key]) => key !== "customerId").map(([key, value]) => {
+                const isCustomerEstimate = key === "estimatedAnnualMileage";
+                return (
+                  <label key={key} className="text-sm font-medium">
+                    {isCustomerEstimate
+                      ? "Customer's Driving Estimate"
+                      : key.replace(/([A-Z])/g, " $1").replace(/^\w/, (letter) => letter.toUpperCase())}
+                    <input
+                      name={key}
+                      defaultValue={value}
+                      type={typeof value === "number" ? "number" : "text"}
+                      list={isCustomerEstimate ? "annual-mileage-estimates" : undefined}
+                      className="mt-2 h-10 w-full rounded-lg border border-zinc-200 px-3 outline-none focus:border-violet-500"
+                    />
+                    {isCustomerEstimate && (
+                      <span className="mt-1 block text-xs font-normal text-zinc-500">
+                        About how many miles do you drive each year?
+                      </span>
+                    )}
+                  </label>
+                );
+              })}
+              <datalist id="annual-mileage-estimates">
+                <option value="6000" />
+                <option value="12000" />
+                <option value="18000" />
+                <option value="24000" />
+              </datalist>
+                <label className="text-sm font-medium">
+                  Reading Date
+                  <input
+                    name="initialMileageReadingDate"
+                    type="date"
+                    required
+                    max={currentDateInTimeZone(state.shop.timezone)}
+                    defaultValue={currentDateInTimeZone(state.shop.timezone)}
+                    className="mt-2 h-10 w-full rounded-lg border border-zinc-200 px-3 outline-none focus:border-violet-500"
+                  />
+                  <span className="mt-1 block text-xs font-normal text-zinc-500">The date this odometer reading was observed.</span>
                 </label>
-              ))}
             </div>
             <div className="flex justify-end gap-2 border-t border-zinc-100 p-5">
               <button type="button" onClick={() => setAddingVehicle(false)} className="rounded-lg border border-zinc-200 px-4 py-2 text-sm font-semibold">Cancel</button>
@@ -350,19 +477,23 @@ function CustomerEditModal({
 
 function VehicleEditForm({
   vehicle,
+  shopTimezone,
   onCancel,
   onSave,
 }: {
   vehicle: Vehicle;
+  shopTimezone: string;
   onCancel: () => void;
-  onSave: (input: Partial<Vehicle>) => void;
+  onSave: (input: Partial<Vehicle> & { mileageReadingDate?: string }) => void;
 }) {
+  const today = currentDateInTimeZone(shopTimezone);
   const [form, setForm] = useState({
     year: vehicle.year,
     make: vehicle.make,
     model: vehicle.model,
     vin: vehicle.vin,
     currentMileage: vehicle.currentMileage,
+    mileageReadingDate: today,
   });
 
   return (
@@ -373,6 +504,18 @@ function VehicleEditForm({
         <input value={form.model} onChange={(event) => setForm({ ...form, model: event.target.value })} className="h-10 rounded-lg border border-zinc-200 px-3 outline-none focus:border-violet-500" />
         <input value={form.vin} onChange={(event) => setForm({ ...form, vin: event.target.value })} className="h-10 rounded-lg border border-zinc-200 px-3 outline-none focus:border-violet-500" />
         <input value={form.currentMileage} type="number" onChange={(event) => setForm({ ...form, currentMileage: Number(event.target.value) })} className="h-10 rounded-lg border border-zinc-200 px-3 outline-none focus:border-violet-500" />
+        <label className="text-sm font-medium">
+          Reading Date
+          <input
+            value={form.mileageReadingDate}
+            type="date"
+            required
+            max={today}
+            onChange={(event) => setForm({ ...form, mileageReadingDate: event.target.value })}
+            className="mt-2 h-10 w-full rounded-lg border border-zinc-200 px-3 outline-none focus:border-violet-500"
+          />
+          <span className="mt-1 block text-xs font-normal text-zinc-500">The date this odometer reading was observed.</span>
+        </label>
       </div>
       <div className="mt-3 flex gap-2">
         <button onClick={() => onSave(form)} className="rounded-lg bg-violet-950 px-3 py-2 text-sm font-semibold text-white">Save vehicle</button>

@@ -37,6 +37,35 @@ export type AppointmentStatus =
   | "COMPLETED"
   | "CANCELLED"
   | "NO_SHOW";
+export type BookingMode = "INSTANT" | "REQUEST";
+export type BookingIntakeType = "WAIT" | "DROP_OFF";
+export type ServiceBookingIntakeOption = "WAIT_ONLY" | "DROP_OFF_ONLY" | "EITHER";
+export type CustomerBookingLinkStatus = "ACTIVE" | "REVOKED" | "COMPLETED" | "EXPIRED";
+export type TimeIntervalUnit = "DAYS" | "MONTHS" | "YEARS";
+export type OutreachThresholdType = "MILES_BEFORE_DUE" | "DAYS_BEFORE_DUE" | "PERCENT_REMAINING";
+export type MileageReadingSource =
+  | "SHOP_REPAIR_ORDER"
+  | "SHOP_MANUAL_ENTRY"
+  | "SERVICE_HISTORY_IMPORT"
+  | "CUSTOMER_REPORTED"
+  | "APPOINTMENT_INTAKE"
+  | "CORRECTION"
+  | "OTHER";
+export type MileageVerificationStatus =
+  | "VERIFIED"
+  | "CUSTOMER_REPORTED"
+  | "IMPORTED"
+  | "UNVERIFIED"
+  | "EXCLUDED";
+export type MileageAnomalyStatus = "NONE" | "NEEDS_REVIEW" | "RESOLVED";
+export type DrivingProfileEstimateSource =
+  | "SHOP_VERIFIED_READINGS"
+  | "IMPORTED_READINGS"
+  | "CUSTOMER_REPORTED"
+  | "VERIFIED_PLUS_DEFAULT"
+  | "SHOP_DEFAULT"
+  | "MANUAL_OVERRIDE";
+export type DrivingProfileConfidence = "LOW" | "MEDIUM" | "HIGH";
 
 export type Shop = {
   id: string;
@@ -47,6 +76,7 @@ export type Shop = {
   address: string;
   timezone: string;
   dailyBayHours: number;
+  defaultAnnualMileage: number;
   isDemo: boolean;
   onboardingCompletedAt: string | null;
 };
@@ -103,31 +133,47 @@ export type MaintenanceService = {
   shopId: string;
   name: string;
   category: string;
-  defaultMileageInterval: number;
-  defaultTimeIntervalMonths: number;
+  defaultMileageInterval: number | null;
+  defaultTimeIntervalMonths?: number | null;
+  defaultTimeIntervalValue: number | null;
+  defaultTimeIntervalUnit: TimeIntervalUnit;
   defaultNotificationThreshold: number;
   estimatedLaborMinutes: number;
   defaultPriceCents: number;
   description: string;
   isActive: boolean;
+  bookingRule?: ServiceBookingRule;
 };
 
 export type VehicleMaintenanceRecord = {
   id: string;
   shopId: string;
   vehicleId: string;
-  serviceId: string;
+  serviceId?: string | null;
   serviceName: string;
-  lastCompletedDate: string;
-  lastCompletedMileage: number;
-  recommendedMileageInterval: number;
-  recommendedTimeIntervalMonths: number;
+  customServiceName?: string;
+  customCategory?: string;
+  lastCompletedDate: string | null;
+  lastCompletedMileage: number | null;
+  recommendedMileageInterval?: number | null;
+  recommendedTimeIntervalMonths?: number | null;
+  mileageIntervalOverride?: number | null;
+  timeIntervalValueOverride?: number | null;
+  timeIntervalUnitOverride?: TimeIntervalUnit | null;
   priceCents: number;
   laborHours: number;
+  priceOverrideCents?: number | null;
+  laborMinutesOverride?: number | null;
   notificationThreshold: number;
+  outreachThresholdType?: OutreachThresholdType;
+  outreachThresholdValue?: number;
   outreachStatus: OutreachStatus;
   outreachRecordId?: string;
   appointmentId?: string;
+  isActive?: boolean;
+  notes?: string;
+  createdByUserId?: string;
+  updatedByUserId?: string;
 };
 
 export type ServiceRecord = {
@@ -140,6 +186,44 @@ export type ServiceRecord = {
   mileage: number;
   priceCents: number;
   notes: string;
+};
+
+export type VehicleMileageReading = {
+  id: string;
+  shopId: string;
+  vehicleId: string;
+  readingMileage: number;
+  readingDate: string;
+  source: MileageReadingSource;
+  verificationStatus: MileageVerificationStatus;
+  anomalyStatus: MileageAnomalyStatus;
+  includedInForecast: boolean;
+  correctionReason?: string;
+  reviewNotes?: string;
+  sourceReferenceType?: string;
+  sourceReferenceId?: string;
+  recordedByUserId?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type VehicleDrivingProfile = {
+  id: string;
+  shopId: string;
+  vehicleId: string;
+  customerReportedAnnualMileage?: number | null;
+  customerReportedAt?: string | null;
+  customerReportedByUserId?: string | null;
+  calculatedAnnualMileage: number;
+  estimateSource: DrivingProfileEstimateSource;
+  confidence: DrivingProfileConfidence;
+  confidenceReason: string;
+  manualAnnualMileageOverride?: number | null;
+  manualOverrideReason?: string | null;
+  manualOverrideNotes?: string | null;
+  manualOverrideSetAt?: string | null;
+  manualOverrideSetByUserId?: string | null;
+  lastCalculatedAt: string;
 };
 
 export type DeclinedWorkRecord = {
@@ -189,6 +273,7 @@ export type OutreachRecord = {
   responseStatus: CustomerResponseStatus;
   followUpDate?: string;
   appointmentId?: string;
+  bookingLinkId?: string;
   performedByUserId?: string;
   status: OutreachStatus;
 };
@@ -209,23 +294,130 @@ export type Appointment = {
   attributionSource: "MAINTIVA_OUTREACH" | "MANUAL_SHOP_ENTRY" | "IMPORTED_APPOINTMENT" | "OTHER";
   opportunityId?: string;
   outreachRecordId?: string;
+  bookingLinkId?: string;
+  intakeType?: BookingIntakeType;
+  customerNotes?: string;
+  internalNotes?: string;
   completedRevenueCents?: number;
   completedLaborHours?: number;
   completedAt?: string;
+  requestedAt?: string;
+  approvedAt?: string;
+  declinedAt?: string;
+  customerCancelledAt?: string;
+  rescheduledAt?: string;
   notes: string;
+};
+
+export type BookingWindow = {
+  id: string;
+  shopId: string;
+  dayOfWeek: number;
+  startMinute: number;
+  endMinute: number;
+  isActive: boolean;
+};
+
+export type ShopBookingBlackout = {
+  id: string;
+  shopId: string;
+  startsAt: string;
+  endsAt: string;
+  reason?: string;
+  isFullDay: boolean;
+};
+
+export type ShopBookingSettings = {
+  id: string;
+  shopId: string;
+  onlineBookingEnabled: boolean;
+  minimumNoticeMinutes: number;
+  maximumAdvanceDays: number;
+  defaultBufferBeforeMinutes: number;
+  defaultBufferAfterMinutes: number;
+  maximumSimultaneousAppointments: number;
+  cancellationCutoffMinutes: number;
+  reschedulingCutoffMinutes: number;
+};
+
+export type ServiceBookingRule = {
+  id: string;
+  shopId: string;
+  serviceDefinitionId: string;
+  bookingEnabled: boolean;
+  bookingMode: BookingMode;
+  estimatedDurationMinutes: number;
+  bufferBeforeMinutes: number;
+  bufferAfterMinutes: number;
+  allowedIntakeType: ServiceBookingIntakeOption;
+  minimumNoticeMinutes?: number | null;
+  maximumAdvanceDays?: number | null;
+  maximumSimultaneousBookings?: number | null;
+  windows: BookingWindow[];
+};
+
+export type CustomerBookingLink = {
+  id: string;
+  shopId: string;
+  customerId: string;
+  vehicleId: string;
+  opportunityId?: string;
+  maintenanceRecordIds: string[];
+  declinedWorkRecordIds: string[];
+  status: CustomerBookingLinkStatus;
+  url?: string;
+  expiresAt: string;
+  revokedAt?: string;
+  usedAt?: string;
+  lastViewedAt?: string;
+  bookingCompletedAt?: string;
+  outreachRecordId?: string;
+  appointmentId?: string;
+  createdAt: string;
+};
+
+export type RevenueOpportunityRecord = {
+  id: string;
+  shopId: string;
+  customerId: string;
+  vehicleId: string;
+  maintenanceRecordId?: string;
+  declinedWorkRecordId?: string;
+  source: "DUE_MAINTENANCE" | "OVERDUE_MAINTENANCE" | "DECLINED_WORK" | "DEFERRED_WORK" | "REACTIVATION";
+  stage: "IDENTIFIED" | "CONTACTED" | "RESPONDED" | "BOOKED" | "COMPLETED" | "LOST";
+  priority: "HIGH" | "MEDIUM" | "LOW";
+  explanation: string;
+  priorityReason: string;
+  estimatedRevenueCents: number;
+  estimatedLaborHours: number;
+  dueDate?: string;
+  dueMileage?: number;
+  daysOverdue: number;
+  milesOverdue: number;
+  lastActivityAt?: string;
+  createdAt: string;
+  updatedAt?: string;
 };
 
 export type DemoState = {
   shop: Shop;
+  currentUserId?: string;
   users: User[];
   customers: Customer[];
   vehicles: Vehicle[];
   services: MaintenanceService[];
   maintenanceRecords: VehicleMaintenanceRecord[];
+  revenueOpportunities: RevenueOpportunityRecord[];
+  mileageReadings: VehicleMileageReading[];
+  drivingProfiles: VehicleDrivingProfile[];
   serviceRecords: ServiceRecord[];
   declinedWorkRecords: DeclinedWorkRecord[];
   outreachRecords: OutreachRecord[];
   appointments: Appointment[];
+  bookingSettings?: ShopBookingSettings;
+  bookingWindows: BookingWindow[];
+  bookingBlackouts: ShopBookingBlackout[];
+  customerBookingLinks: CustomerBookingLink[];
   importHistory: ImportHistoryRecord[];
   seededAt: string;
 };
@@ -239,6 +431,7 @@ export const demoShop: Shop = {
   address: "1200 DeKalb Ave NE, Atlanta, GA",
   timezone: "America/New_York",
   dailyBayHours: 64,
+  defaultAnnualMileage: 12_500,
   isDemo: true,
   onboardingCompletedAt: "2026-07-01T09:00:00-04:00",
 };
@@ -295,6 +488,8 @@ export const serviceDefinitions: MaintenanceService[] = serviceSeed.map(
     category,
     defaultMileageInterval,
     defaultTimeIntervalMonths,
+    defaultTimeIntervalValue: defaultTimeIntervalMonths,
+    defaultTimeIntervalUnit: "MONTHS",
     defaultNotificationThreshold,
     estimatedLaborMinutes,
     defaultPriceCents,
@@ -302,6 +497,51 @@ export const serviceDefinitions: MaintenanceService[] = serviceSeed.map(
     isActive: true,
   }),
 );
+
+export const defaultBookingSettings: ShopBookingSettings = {
+  id: "booking-settings-demo",
+  shopId: demoShop.id,
+  onlineBookingEnabled: true,
+  minimumNoticeMinutes: 1440,
+  maximumAdvanceDays: 30,
+  defaultBufferBeforeMinutes: 0,
+  defaultBufferAfterMinutes: 15,
+  maximumSimultaneousAppointments: 2,
+  cancellationCutoffMinutes: 1440,
+  reschedulingCutoffMinutes: 1440,
+};
+
+export const defaultBookingWindows: BookingWindow[] = [1, 2, 3, 4, 5].map((dayOfWeek) => ({
+  id: `booking-window-${dayOfWeek}`,
+  shopId: demoShop.id,
+  dayOfWeek,
+  startMinute: 8 * 60,
+  endMinute: 17 * 60,
+  isActive: true,
+}));
+
+export function defaultServiceBookingRule(service: MaintenanceService): ServiceBookingRule {
+  const diagnostics = service.name.toLowerCase().includes("diagnostic");
+  return {
+    id: `booking-rule-${service.id}`,
+    shopId: demoShop.id,
+    serviceDefinitionId: service.id,
+    bookingEnabled: ["Oil Change", "Tire Rotation", "Cabin Air Filter", "Brake Fluid", "A/C Diagnostic"].includes(service.name),
+    bookingMode: diagnostics ? "REQUEST" : "INSTANT",
+    estimatedDurationMinutes: Math.max(30, service.estimatedLaborMinutes),
+    bufferBeforeMinutes: 0,
+    bufferAfterMinutes: 15,
+    allowedIntakeType: diagnostics ? "DROP_OFF_ONLY" : "EITHER",
+    minimumNoticeMinutes: 1440,
+    maximumAdvanceDays: 30,
+    maximumSimultaneousBookings: diagnostics ? 1 : 2,
+    windows: defaultBookingWindows.map((window) => ({
+      ...window,
+      id: `service-${service.id}-${window.dayOfWeek}`,
+      endMinute: diagnostics ? 12 * 60 : 15 * 60,
+    })),
+  };
+}
 
 type CustomerSeed = [
   string,
@@ -456,10 +696,18 @@ function maintenanceRecord(
     lastCompletedMileage,
     recommendedMileageInterval: service.defaultMileageInterval,
     recommendedTimeIntervalMonths: service.defaultTimeIntervalMonths,
+    mileageIntervalOverride: null,
+    timeIntervalValueOverride: null,
+    timeIntervalUnitOverride: null,
     priceCents: service.defaultPriceCents,
     laborHours: service.estimatedLaborMinutes / 60,
+    priceOverrideCents: null,
+    laborMinutesOverride: null,
     notificationThreshold: service.defaultNotificationThreshold,
+    outreachThresholdType: "MILES_BEFORE_DUE",
+    outreachThresholdValue: 500,
     outreachStatus: "NEEDS_OUTREACH",
+    isActive: true,
     ...overrides,
   };
 }
@@ -678,21 +926,6 @@ export const importHistory: ImportHistoryRecord[] = [
   },
 ];
 
-export const initialDemoState: DemoState = {
-  shop: demoShop,
-  users: demoUsers,
-  customers,
-  vehicles,
-  services: serviceDefinitions,
-  maintenanceRecords: maintenanceItems,
-  serviceRecords,
-  declinedWorkRecords,
-  outreachRecords,
-  appointments,
-  importHistory,
-  seededAt: asOfDate.toISOString(),
-};
-
 export const revenueForecast = [
   { label: "Next 7 days", predicted: 184500, scheduled: 0 },
   { label: "Next 30 days", predicted: 841000, scheduled: 0 },
@@ -721,25 +954,84 @@ export const vehicleLookup = Object.fromEntries(
   ]),
 );
 
-export const mileageReadings = Object.fromEntries(
-  vehicles.map((vehicle) => [
-    vehicle.id,
-    [
-      {
-        mileage: Math.max(0, vehicle.currentMileage - 3200),
-        recordedAt: "2026-01-10",
-        source: "SHOP_REPAIR_ORDER",
-        confidence: "VERIFIED",
-      },
-      {
-        mileage: vehicle.currentMileage,
-        recordedAt: vehicle.lastServiceDate,
-        source: "SHOP_REPAIR_ORDER",
-        confidence: "VERIFIED",
-      },
-    ],
-  ]),
-);
+export const mileageReadings: VehicleMileageReading[] = vehicles.flatMap((vehicle) => [
+  {
+    id: `mile-${vehicle.id}-baseline`,
+    shopId: demoShop.id,
+    vehicleId: vehicle.id,
+    readingMileage: Math.max(0, vehicle.currentMileage - Math.round(vehicle.estimatedAnnualMileage / 2)),
+    readingDate: "2026-01-10",
+    source: "SHOP_REPAIR_ORDER",
+    verificationStatus: "VERIFIED",
+    anomalyStatus: "NONE",
+    includedInForecast: true,
+    sourceReferenceType: "ServiceHistoryRecord",
+    recordedByUserId: "user-owner",
+    createdAt: "2026-01-10T15:00:00-05:00",
+    updatedAt: "2026-01-10T15:00:00-05:00",
+  },
+  {
+    id: `mile-${vehicle.id}-latest`,
+    shopId: demoShop.id,
+    vehicleId: vehicle.id,
+    readingMileage: vehicle.currentMileage,
+    readingDate: vehicle.lastServiceDate,
+    source: "SHOP_REPAIR_ORDER",
+    verificationStatus: "VERIFIED",
+    anomalyStatus: "NONE",
+    includedInForecast: true,
+    sourceReferenceType: "Vehicle",
+    sourceReferenceId: vehicle.id,
+    recordedByUserId: "user-owner",
+    createdAt: `${vehicle.lastServiceDate}T15:00:00-04:00`,
+    updatedAt: `${vehicle.lastServiceDate}T15:00:00-04:00`,
+  },
+]);
+
+export const drivingProfiles: VehicleDrivingProfile[] = vehicles.map((vehicle) => ({
+  id: `profile-${vehicle.id}`,
+  shopId: demoShop.id,
+  vehicleId: vehicle.id,
+  customerReportedAnnualMileage: vehicle.estimatedAnnualMileage,
+  customerReportedAt: vehicle.lastServiceDate,
+  customerReportedByUserId: "user-owner",
+  calculatedAnnualMileage: vehicle.estimatedAnnualMileage,
+  estimateSource: "SHOP_VERIFIED_READINGS",
+  confidence: "MEDIUM",
+  confidenceReason: "Using verified shop readings for demo vehicle mileage pacing.",
+  manualAnnualMileageOverride: null,
+  manualOverrideReason: null,
+  manualOverrideNotes: null,
+  manualOverrideSetAt: null,
+  manualOverrideSetByUserId: null,
+  lastCalculatedAt: asOfDate.toISOString(),
+}));
+
+export const initialDemoState: DemoState = {
+  shop: demoShop,
+  currentUserId: "user-owner",
+  users: demoUsers,
+  customers,
+  vehicles,
+  services: serviceDefinitions.map((service) => ({
+    ...service,
+    bookingRule: defaultServiceBookingRule(service),
+  })),
+  maintenanceRecords: maintenanceItems,
+  revenueOpportunities: [],
+  mileageReadings,
+  drivingProfiles,
+  serviceRecords,
+  declinedWorkRecords,
+  outreachRecords,
+  appointments,
+  bookingSettings: defaultBookingSettings,
+  bookingWindows: defaultBookingWindows,
+  bookingBlackouts: [],
+  customerBookingLinks: [],
+  importHistory,
+  seededAt: asOfDate.toISOString(),
+};
 
 export function createInitialDemoState(): DemoState {
   return structuredClone(initialDemoState);
