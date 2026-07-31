@@ -9,6 +9,7 @@ import {
   detectColumnMapping,
   importRowLimitMessage,
   isImportRowLimitExceeded,
+  MAINTIVA_IMPORT_BATCH_SIZE,
   maintivaCsvTemplate,
   parseCsv,
   previewImport,
@@ -80,6 +81,7 @@ export default function ImportPage() {
   const [completed, setCompleted] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
+  const [activeImportId, setActiveImportId] = useState("");
   const headers = Object.keys(rows[0] ?? {});
   const preview = useMemo(
     () => previewImport({ rows, mapping, importType, state }),
@@ -116,23 +118,61 @@ export default function ImportPage() {
     setSaving(true);
     setSaveError("");
     setCompleted(false);
-    const result = await store.importCsvRows({
+    setActiveImportId("");
+    const createResult = await store.createImportJob({
       fileName: fileName || "manual-import.csv",
       importType,
       duplicateMode,
       rows,
       mapping,
-      previewRows: preview.rows,
       rowActions: Object.fromEntries(Object.entries(rowActions).map(([key, value]) => [key, value])),
+      batchSize: MAINTIVA_IMPORT_BATCH_SIZE,
     });
-    setSaving(false);
-    if (!result.ok) {
+    if (!createResult.ok) {
+      setSaving(false);
       setCompleted(false);
-      setSaveError(result.message ?? "Import could not be saved. Check the database schema and try again.");
+      setSaveError(createResult.message ?? "Import could not be saved. Check the database schema and try again.");
       return;
     }
-    setCompleted(true);
+
+    let importJob = createResult.state?.importHistory[0];
+    if (!importJob) {
+      setSaving(false);
+      setSaveError("Import job could not be loaded. Refresh the page and try again.");
+      return;
+    }
+    setActiveImportId(importJob.id);
+    importJob = await processImportUntilComplete(importJob.id, createResult.state);
+    setSaving(false);
+    setCompleted(Boolean(importJob && (importJob.status === "COMPLETED" || importJob.status === "PARTIAL")));
   }
+
+  async function processImportUntilComplete(importId: string, startingState = state) {
+    let importJob = startingState.importHistory.find((item) => item.id === importId);
+    if (!importJob) {
+      setSaveError("Import progress could not be loaded. Refresh the page to resume.");
+      return undefined;
+    }
+
+    while ((importJob.processedRows ?? 0) < importJob.totalRows && importJob.status === "PREVIEWED") {
+      const batchResult = await store.processNextImportBatch(importJob.id);
+      if (!batchResult.ok) {
+        setSaveError(batchResult.message ?? "Import paused. Previously completed batches were preserved.");
+        return importJob;
+      }
+      importJob = batchResult.state?.importHistory.find((item) => item.id === importJob?.id);
+      if (!importJob) {
+        setSaveError("Import progress could not be reloaded. Refresh the page to resume.");
+        return undefined;
+      }
+    }
+
+    return importJob;
+  }
+
+  const activeImport = activeImportId
+    ? state.importHistory.find((item) => item.id === activeImportId)
+    : state.importHistory.find((item) => item.status === "PREVIEWED");
 
   return (
     <div className="space-y-6">
@@ -306,6 +346,14 @@ export default function ImportPage() {
                 {completed ? "Import complete" : saving ? "Importing..." : "Confirm import"}
               </button>
             </div>
+            {activeImport && activeImport.status === "PREVIEWED" && (
+              <div className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-medium text-violet-900">
+                <p>Importing customers</p>
+                <p className="mt-1">
+                  Processed {activeImport.processedRows ?? 0} of {activeImport.totalRows} rows. Imported {activeImport.successfulRows}, matched {activeImport.matchedRows ?? activeImport.updatedRows}, duplicates skipped {activeImport.duplicateRows}, needs review {activeImport.needsReviewRows ?? activeImport.skippedRows}, failed {activeImport.failedRows}.
+                </p>
+              </div>
+            )}
             {completed && (
               <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700">
                 Import complete. Valid rows now create recovery opportunities and imported appointments where applicable.
@@ -334,6 +382,7 @@ export default function ImportPage() {
                 <th className="px-5 py-3">Successful</th>
                 <th className="px-5 py-3">Duplicates</th>
                 <th className="px-5 py-3">Failed</th>
+                <th className="px-5 py-3">Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-100">
@@ -345,6 +394,22 @@ export default function ImportPage() {
                   <td className="px-5 py-4">{item.successfulRows}</td>
                   <td className="px-5 py-4">{item.duplicateRows}</td>
                   <td className="px-5 py-4">{item.failedRows}</td>
+                  <td className="px-5 py-4">
+                    {item.status === "PREVIEWED" ? (
+                      <button
+                        onClick={() => {
+                          setActiveImportId(item.id);
+                          setSaving(true);
+                          void processImportUntilComplete(item.id).finally(() => setSaving(false));
+                        }}
+                        className="rounded-lg border border-zinc-200 px-3 py-1.5 text-xs font-semibold text-zinc-800"
+                      >
+                        Resume
+                      </button>
+                    ) : (
+                      <span className="text-xs text-zinc-500">View results</span>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>

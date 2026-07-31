@@ -41,7 +41,9 @@ export type MaintivaField =
 
 export type CsvRow = Record<string, string>;
 
-export const MAINTIVA_IMPORT_ROW_LIMIT = 50;
+export const MAINTIVA_IMPORT_ROW_LIMIT = 5_000;
+export const MAINTIVA_IMPORT_BATCH_SIZE = 25;
+export const MAINTIVA_IMPORT_MAX_BATCH_SIZE = 50;
 
 export function importRowLimitMessage(rowCount: number, limit = MAINTIVA_IMPORT_ROW_LIMIT) {
   return `This import contains ${rowCount} rows. Maintiva currently supports up to ${limit} rows per import. Split the file into smaller batches and try again.`;

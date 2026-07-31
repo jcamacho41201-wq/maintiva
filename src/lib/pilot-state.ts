@@ -37,6 +37,8 @@ import { currentDateInTimeZone } from "@/lib/utils";
 import { safeDatabaseError, SafeActionError } from "@/lib/server-diagnostics";
 import { isCustomerBookingEnabled } from "@/lib/feature-flags";
 import {
+  MAINTIVA_IMPORT_BATCH_SIZE,
+  MAINTIVA_IMPORT_MAX_BATCH_SIZE,
   MAINTIVA_IMPORT_ROW_LIMIT,
   importRowLimitMessage,
   isImportRowLimitExceeded,
@@ -106,6 +108,64 @@ const baselineAppointmentWithServicesSelect = {
 const duplicateAppointmentSelect = {
   id: true,
 } satisfies Prisma.AppointmentSelect;
+
+type ImportJobMetadata = {
+  batchSize: number;
+  currentBatch: number;
+  processedRows: number;
+  validRows: number;
+  matchedRows: number;
+  needsReviewRows: number;
+  lastCompletedRow: number;
+  startedAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  safeFailureSummary?: string;
+  batchDurationsMs: number[];
+};
+
+type ImportRowResultStatus = "PENDING" | "IMPORTED" | "MATCHED_EXISTING" | "DUPLICATE_SKIPPED" | "NEEDS_REVIEW" | "FAILED";
+
+function importJobMetadata(value: Prisma.JsonValue | null | undefined): ImportJobMetadata {
+  const record = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, Prisma.JsonValue>
+    : {};
+  const now = new Date().toISOString();
+  const durations = Array.isArray(record.batchDurationsMs)
+    ? record.batchDurationsMs.filter((item): item is number => typeof item === "number")
+    : [];
+  return {
+    batchSize: typeof record.batchSize === "number" ? record.batchSize : MAINTIVA_IMPORT_BATCH_SIZE,
+    currentBatch: typeof record.currentBatch === "number" ? record.currentBatch : 0,
+    processedRows: typeof record.processedRows === "number" ? record.processedRows : 0,
+    validRows: typeof record.validRows === "number" ? record.validRows : 0,
+    matchedRows: typeof record.matchedRows === "number" ? record.matchedRows : 0,
+    needsReviewRows: typeof record.needsReviewRows === "number" ? record.needsReviewRows : 0,
+    lastCompletedRow: typeof record.lastCompletedRow === "number" ? record.lastCompletedRow : 0,
+    startedAt: typeof record.startedAt === "string" ? record.startedAt : now,
+    updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : now,
+    completedAt: typeof record.completedAt === "string" ? record.completedAt : undefined,
+    safeFailureSummary: typeof record.safeFailureSummary === "string" ? record.safeFailureSummary : undefined,
+    batchDurationsMs: durations,
+  };
+}
+
+function importJobMetadataJson(metadata: ImportJobMetadata): Prisma.InputJsonObject {
+  return {
+    batchSize: metadata.batchSize,
+    currentBatch: metadata.currentBatch,
+    processedRows: metadata.processedRows,
+    validRows: metadata.validRows,
+    matchedRows: metadata.matchedRows,
+    needsReviewRows: metadata.needsReviewRows,
+    lastCompletedRow: metadata.lastCompletedRow,
+    startedAt: metadata.startedAt,
+    updatedAt: metadata.updatedAt,
+    completedAt: metadata.completedAt ?? null,
+    safeFailureSummary: metadata.safeFailureSummary ?? null,
+    batchDurationsMs: metadata.batchDurationsMs,
+  };
+}
 
 const shopBookingSettingsSchema = z.object({
   onlineBookingEnabled: z.boolean(),
@@ -283,6 +343,14 @@ function stringValue(record: Record<string, string | number>, key: string) {
 function numberValue(record: Record<string, string | number>, key: string) {
   const value = record[key];
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function normalizedImportRow(value: Prisma.JsonValue): Record<string, string | number> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value as Record<string, Prisma.JsonValue>)
+      .filter(([, item]) => typeof item === "string" || typeof item === "number"),
+  ) as Record<string, string | number>;
 }
 
 function appointmentDateTime(date: string, time: string) {
@@ -2048,22 +2116,36 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
     bookingWindows,
     bookingBlackouts,
     customerBookingLinks,
-    importHistory: shop.importHistory.map((record): ImportHistoryRecord => ({
-      id: record.id,
-      shopId: record.shopId,
-      userId: record.userId ?? "",
-      fileName: record.fileName,
-      importType: record.importType,
-      status: record.status,
-      importedAt: iso(record.importedAt),
-      totalRows: record.totalRows,
-      successfulRows: record.successfulRows,
-      duplicateRows: record.duplicateRows,
-      updatedRows: record.updatedRows,
-      skippedRows: record.skippedRows,
-      failedRows: record.failedRows,
-      errorReportUrl: record.errorReportUrl ?? undefined,
-    })),
+    importHistory: shop.importHistory.map((record): ImportHistoryRecord => {
+      const metadata = importJobMetadata(record.errorReport);
+      return {
+        id: record.id,
+        shopId: record.shopId,
+        userId: record.userId ?? "",
+        fileName: record.fileName,
+        importType: record.importType,
+        status: record.status,
+        importedAt: iso(record.importedAt),
+        totalRows: record.totalRows,
+        successfulRows: record.successfulRows,
+        duplicateRows: record.duplicateRows,
+        updatedRows: record.updatedRows,
+        skippedRows: record.skippedRows,
+        failedRows: record.failedRows,
+        errorReportUrl: record.errorReportUrl ?? undefined,
+        validRows: metadata.validRows,
+        processedRows: metadata.processedRows,
+        matchedRows: metadata.matchedRows,
+        needsReviewRows: metadata.needsReviewRows,
+        currentBatch: metadata.currentBatch,
+        lastCompletedRow: metadata.lastCompletedRow,
+        batchSize: metadata.batchSize,
+        startedAt: metadata.startedAt,
+        updatedAt: metadata.updatedAt,
+        completedAt: metadata.completedAt,
+        safeFailureSummary: metadata.safeFailureSummary,
+      };
+    }),
     seededAt: new Date().toISOString(),
   };
 }
@@ -3952,6 +4034,725 @@ export async function completePilotAppointment(
     });
     await syncDeclinedWorkRevenueOpportunities(tx, context, declinedRecords.map((record) => record.id));
   });
+}
+
+type ImportJobInput = {
+  fileName: string;
+  importType: ImportType;
+  duplicateMode: DuplicateImportMode;
+  rowActions?: Record<string, ImportRowAction>;
+  rows: CsvRow[];
+  mapping: Record<string, MaintivaField>;
+  batchSize?: number;
+};
+
+function boundedImportBatchSize(value: unknown) {
+  if (typeof value !== "number" || !Number.isInteger(value)) return MAINTIVA_IMPORT_BATCH_SIZE;
+  return Math.max(1, Math.min(value, MAINTIVA_IMPORT_MAX_BATCH_SIZE));
+}
+
+function rowActionForImport(
+  row: { rowNumber: number; status: string; action: ImportRowAction; entities: { child: { status: string } } },
+  duplicateMode: DuplicateImportMode,
+  rowActions: Record<number, ImportRowAction>,
+) {
+  const override = rowActions[row.rowNumber];
+  if (override) return override;
+  if (row.status === "INVALID") return "HOLD" as const;
+  if (row.entities.child.status === "DUPLICATE") {
+    if (duplicateMode === "UPDATE") return "UPDATE" as const;
+    if (duplicateMode === "IMPORT_AS_NEW") return "IMPORT_AS_NEW" as const;
+    return "SKIP" as const;
+  }
+  return row.action;
+}
+
+function finalRowStatusForPreview(row: { status: string; entities: { child: { status: string } } }, action: ImportRowAction): ImportRowResultStatus {
+  if (row.status === "INVALID" || action === "HOLD") return "NEEDS_REVIEW";
+  if (action === "SKIP" && row.entities.child.status === "DUPLICATE") return "DUPLICATE_SKIPPED";
+  return "PENDING";
+}
+
+export async function createPilotImportJob(context: AuthenticatedShopContext, input: ImportJobInput) {
+  const rowCount = input.rows.length;
+  if (isImportRowLimitExceeded(rowCount)) {
+    throw new SafeActionError({
+      code: "IMPORT_ROW_LIMIT_EXCEEDED",
+      message: importRowLimitMessage(rowCount),
+      status: 400,
+      table: "ImportHistoryRecord",
+      operation: "INSERT",
+      details: `rowCount=${rowCount}; limit=${MAINTIVA_IMPORT_ROW_LIMIT}`,
+    });
+  }
+
+  const state = await buildPilotState(context);
+  const preview = previewImport({
+    rows: input.rows,
+    mapping: input.mapping,
+    importType: input.importType,
+    state,
+  });
+  const rowActions = Object.fromEntries(
+    Object.entries(input.rowActions ?? {}).map(([rowNumber, action]) => [Number(rowNumber), action]),
+  ) as Record<number, ImportRowAction>;
+  const now = new Date().toISOString();
+  const batchSize = boundedImportBatchSize(input.batchSize);
+  const initialStatuses = preview.rows.map((row) => {
+    const action = rowActionForImport(row, input.duplicateMode, rowActions);
+    return {
+      row,
+      action,
+      status: finalRowStatusForPreview(row, action),
+    };
+  });
+  const needsReviewRows = initialStatuses.filter((row) => row.status === "NEEDS_REVIEW").length;
+  const duplicateRows = initialStatuses.filter((row) => row.status === "DUPLICATE_SKIPPED").length;
+  const pendingRows = initialStatuses.filter((row) => row.status === "PENDING").length;
+  const processedRows = rowCount - pendingRows;
+  const metadata: ImportJobMetadata = {
+    batchSize,
+    currentBatch: 0,
+    processedRows,
+    validRows: pendingRows + duplicateRows,
+    matchedRows: 0,
+    needsReviewRows,
+    lastCompletedRow: processedRows > 0
+      ? Math.max(...initialStatuses.filter((row) => row.status !== "PENDING").map((row) => row.row.rowNumber))
+      : 0,
+    startedAt: now,
+    updatedAt: now,
+    batchDurationsMs: [],
+  };
+
+  await prisma.$transaction(async (tx) => {
+    const job = await tx.importHistoryRecord.create({
+      data: {
+        shopId: context.shopId,
+        userId: context.userId,
+        fileName: input.fileName,
+        importType: input.importType,
+        status: "PREVIEWED",
+        totalRows: rowCount,
+        successfulRows: 0,
+        duplicateRows,
+        updatedRows: 0,
+        skippedRows: duplicateRows + needsReviewRows,
+        failedRows: 0,
+        errorReport: importJobMetadataJson(metadata),
+      },
+      select: { id: true },
+    });
+
+    await tx.importRowRecord.createMany({
+      data: initialStatuses.map(({ row, action, status }) => ({
+        shopId: context.shopId,
+        importHistoryRecordId: job.id,
+        rowNumber: row.rowNumber,
+        action,
+        status,
+        entityType: row.entities.child.entity,
+        errorMessage: status === "NEEDS_REVIEW"
+          ? row.errors.join("; ") || row.issue || "Row needs review before import."
+          : status === "DUPLICATE_SKIPPED"
+            ? row.duplicateReason ?? "Duplicate row skipped."
+            : null,
+        sourceRow: row.raw,
+        normalizedRow: row.normalized,
+      })),
+    });
+  });
+}
+
+async function updateImportJobProgress(
+  tx: Prisma.TransactionClient,
+  context: AuthenticatedShopContext,
+  jobId: string,
+  metadata: ImportJobMetadata,
+) {
+  const rows = await tx.importRowRecord.findMany({
+    where: { shopId: context.shopId, importHistoryRecordId: jobId },
+    select: { rowNumber: true, status: true },
+  });
+  const totalRows = rows.length;
+  const pendingRows = rows.filter((row) => row.status === "PENDING").length;
+  const importedRows = rows.filter((row) => row.status === "IMPORTED").length;
+  const matchedRows = rows.filter((row) => row.status === "MATCHED_EXISTING").length;
+  const duplicateRows = rows.filter((row) => row.status === "DUPLICATE_SKIPPED").length;
+  const needsReviewRows = rows.filter((row) => row.status === "NEEDS_REVIEW").length;
+  const failedRows = rows.filter((row) => row.status === "FAILED").length;
+  const processedRows = totalRows - pendingRows;
+  const lastCompletedRow = rows
+    .filter((row) => row.status !== "PENDING")
+    .reduce((max, row) => Math.max(max, row.rowNumber), 0);
+  const completed = pendingRows === 0;
+  const updatedMetadata: ImportJobMetadata = {
+    ...metadata,
+    processedRows,
+    matchedRows,
+    needsReviewRows,
+    lastCompletedRow,
+    updatedAt: new Date().toISOString(),
+    completedAt: completed ? new Date().toISOString() : metadata.completedAt,
+  };
+
+  await tx.importHistoryRecord.update({
+    where: { id: jobId },
+    data: {
+      status: completed
+        ? failedRows > 0 || needsReviewRows > 0
+          ? "PARTIAL"
+          : "COMPLETED"
+        : "PREVIEWED",
+      successfulRows: importedRows,
+      duplicateRows,
+      updatedRows: matchedRows,
+      skippedRows: duplicateRows + needsReviewRows,
+      failedRows,
+      errorReportUrl: failedRows > 0 || needsReviewRows > 0 ? "downloadable-error-report" : null,
+      errorReport: importJobMetadataJson(updatedMetadata),
+    },
+  });
+
+  return { completed, processedRows, totalRows };
+}
+
+type BatchRow = {
+  id: string;
+  rowNumber: number;
+  action: string;
+  status: string;
+  entityType: string | null;
+  sourceRow: Prisma.JsonValue;
+  normalizedRow: Prisma.JsonValue;
+};
+
+async function processImportBatchRow({
+  tx,
+  context,
+  row,
+  defaultService,
+  customerByEmail,
+  customerByPhone,
+  vehicleByVin,
+  customerByKey,
+  vehicleByKey,
+}: {
+  tx: Prisma.TransactionClient;
+  context: AuthenticatedShopContext;
+  row: BatchRow;
+  defaultService: Awaited<ReturnType<Prisma.TransactionClient["serviceDefinition"]["findFirst"]>>;
+  customerByEmail: Map<string, { id: string; firstName: string; lastName: string; email: string | null; phone: string | null }>;
+  customerByPhone: Map<string, { id: string; firstName: string; lastName: string; email: string | null; phone: string | null }>;
+  vehicleByVin: Map<string, { id: string; customerId: string; year: number; make: string; model: string; vin: string | null; currentMileage: number; licensePlate: string | null }>;
+  customerByKey: Map<string, { id: string; firstName: string; lastName: string; email: string | null; phone: string | null }>;
+  vehicleByKey: Map<string, { id: string; customerId: string; year: number; make: string; model: string; vin: string | null; currentMileage: number; licensePlate: string | null }>;
+}) {
+  const normalized = normalizedImportRow(row.normalizedRow);
+  const email = stringValue(normalized, "customerEmail").toLowerCase();
+  const phone = stringValue(normalized, "customerPhone");
+  const phoneKey = phone.replace(/\D/g, "");
+  const firstName = stringValue(normalized, "customerFirstName");
+  const lastName = stringValue(normalized, "customerLastName");
+  const vin = stringValue(normalized, "vin").toUpperCase();
+  const customerExternalId = stringValue(normalized, "customerExternalId").toLowerCase();
+  const vehicleExternalId = stringValue(normalized, "vehicleExternalId").toLowerCase();
+  const customerKey = customerExternalId || email || phoneKey;
+
+  if (!customerKey) {
+    return {
+      status: "NEEDS_REVIEW" as ImportRowResultStatus,
+      message: "Customer email or phone is required for safe matching.",
+      created: false,
+      maintenanceRecordIds: [] as string[],
+      declinedWorkRecordIds: [] as string[],
+      vehicleIds: [] as string[],
+    };
+  }
+
+  const emailCustomer = email ? customerByEmail.get(email) : undefined;
+  const phoneCustomer = phoneKey ? customerByPhone.get(phoneKey) : undefined;
+  if (emailCustomer && phoneCustomer && emailCustomer.id !== phoneCustomer.id) {
+    return {
+      status: "NEEDS_REVIEW" as ImportRowResultStatus,
+      message: "Email and phone match different customers. Review before importing.",
+      created: false,
+      maintenanceRecordIds: [] as string[],
+      declinedWorkRecordIds: [] as string[],
+      vehicleIds: [] as string[],
+    };
+  }
+
+  let customer = customerByKey.get(customerKey) ?? emailCustomer ?? phoneCustomer ?? null;
+  let createdCustomer = false;
+  if (customer && row.action === "UPDATE") {
+    customer = await tx.customer.update({
+      where: { id: customer.id },
+      data: {
+        firstName: firstName || customer.firstName,
+        lastName: lastName || customer.lastName,
+        email: email || customer.email,
+        phone: phone || customer.phone,
+        lastVisit: new Date(),
+      },
+      select: { id: true, firstName: true, lastName: true, email: true, phone: true },
+    });
+  }
+  if (!customer) {
+    customer = await tx.customer.create({
+      data: {
+        shopId: context.shopId,
+        firstName,
+        lastName,
+        email: email || null,
+        phone: phone || null,
+        preferredContact: email ? "EMAIL" : "SMS",
+        smsConsent: Boolean(phone),
+        emailConsent: Boolean(email),
+        callConsent: Boolean(phone),
+        status: "ACTIVE",
+        lastVisit: new Date(),
+        notes: "Imported from CSV.",
+      },
+      select: { id: true, firstName: true, lastName: true, email: true, phone: true },
+    });
+    createdCustomer = true;
+  }
+  customerByKey.set(customerKey, customer);
+  if (email) customerByEmail.set(email, customer);
+  if (phoneKey) customerByPhone.set(phoneKey, customer);
+
+  const vehicleKey = vehicleExternalId || (vin ? `vin:${vin}` : `${customer.id}|${numberValue(normalized, "vehicleYear")}|${stringValue(normalized, "vehicleMake").toLowerCase()}|${stringValue(normalized, "vehicleModel").toLowerCase()}`);
+  let vehicle = vehicleByKey.get(vehicleKey) ?? (vin ? vehicleByVin.get(vin) ?? null : null);
+  let createdVehicle = false;
+  vehicle ??= await tx.vehicle.findFirst({
+    where: {
+      shopId: context.shopId,
+      customerId: customer.id,
+      year: numberValue(normalized, "vehicleYear"),
+      make: stringValue(normalized, "vehicleMake"),
+      model: stringValue(normalized, "vehicleModel"),
+    },
+    select: { id: true, customerId: true, year: true, make: true, model: true, vin: true, currentMileage: true, licensePlate: true },
+  });
+
+  if (vehicle) {
+    vehicle = await tx.vehicle.update({
+      where: { id: vehicle.id },
+      data: {
+        customerId: customer.id,
+        year: numberValue(normalized, "vehicleYear") || vehicle.year,
+        make: stringValue(normalized, "vehicleMake") || vehicle.make,
+        model: stringValue(normalized, "vehicleModel") || vehicle.model,
+        currentMileage: numberValue(normalized, "currentMileage") || vehicle.currentMileage,
+        licensePlate: stringValue(normalized, "licensePlate") || vehicle.licensePlate,
+        lastServiceDate: new Date(),
+      },
+      select: { id: true, customerId: true, year: true, make: true, model: true, vin: true, currentMileage: true, licensePlate: true },
+    });
+  } else if (stringValue(normalized, "vehicleMake") && stringValue(normalized, "vehicleModel") && numberValue(normalized, "vehicleYear")) {
+    vehicle = await tx.vehicle.create({
+      data: {
+        shopId: context.shopId,
+        customerId: customer.id,
+        year: numberValue(normalized, "vehicleYear"),
+        make: stringValue(normalized, "vehicleMake"),
+        model: stringValue(normalized, "vehicleModel"),
+        vin: vin || null,
+        licensePlate: stringValue(normalized, "licensePlate") || null,
+        currentMileage: numberValue(normalized, "currentMileage"),
+        estimatedAnnualMileage: 12_000,
+        lastServiceDate: new Date(),
+      },
+      select: { id: true, customerId: true, year: true, make: true, model: true, vin: true, currentMileage: true, licensePlate: true },
+    });
+    createdVehicle = true;
+  } else {
+    return {
+      status: "NEEDS_REVIEW" as ImportRowResultStatus,
+      message: "Vehicle year, make, and model are required.",
+      created: false,
+      maintenanceRecordIds: [] as string[],
+      declinedWorkRecordIds: [] as string[],
+      vehicleIds: [] as string[],
+    };
+  }
+  vehicleByKey.set(vehicleKey, vehicle);
+  if (vin) vehicleByVin.set(vin, vehicle);
+
+  const serviceName = stringValue(normalized, "serviceName") || stringValue(normalized, "services");
+  const priceCents = numberValue(normalized, "price");
+  const laborMinutes = Math.round(numberValue(normalized, "laborHours") * 60);
+  if (!serviceName || priceCents <= 0 || laborMinutes <= 0) {
+    return {
+      status: "NEEDS_REVIEW" as ImportRowResultStatus,
+      message: "Service name, price, and labor are required.",
+      created: false,
+      maintenanceRecordIds: [] as string[],
+      declinedWorkRecordIds: [] as string[],
+      vehicleIds: [vehicle.id],
+    };
+  }
+
+  let service = await tx.serviceDefinition.findFirst({
+    where: { shopId: context.shopId, name: serviceName },
+  });
+  service ??= await tx.serviceDefinition.create({
+    data: {
+      shopId: context.shopId,
+      name: serviceName,
+      category: "Imported",
+      defaultMileageInterval: defaultService?.defaultMileageInterval ?? 12_000,
+      defaultTimeIntervalMonths: defaultService?.defaultTimeIntervalMonths ?? 12,
+      defaultTimeIntervalValue: defaultService?.defaultTimeIntervalValue ?? defaultService?.defaultTimeIntervalMonths ?? 12,
+      defaultTimeIntervalUnit: defaultService?.defaultTimeIntervalUnit ?? "MONTHS",
+      defaultNotificationThreshold: defaultService?.defaultNotificationThreshold ?? 10,
+      estimatedLaborMinutes: laborMinutes,
+      defaultPriceCents: priceCents,
+      description: "Imported from CSV.",
+      isActive: true,
+    },
+  });
+
+  const maintenanceRecordIds: string[] = [];
+  const declinedWorkRecordIds: string[] = [];
+  const existingMaintenance = await tx.vehicleMaintenanceRecord.findFirst({
+    where: {
+      shopId: context.shopId,
+      vehicleId: vehicle.id,
+      serviceDefinitionId: service.id,
+      isActive: true,
+      archivedAt: null,
+    },
+  });
+  const maintenance = existingMaintenance
+    ? await tx.vehicleMaintenanceRecord.update({
+        where: { id: existingMaintenance.id },
+        data: {
+          lastCompletedDate: stringValue(normalized, "serviceDate") ? new Date(stringValue(normalized, "serviceDate")) : undefined,
+          lastCompletedMileage: numberValue(normalized, "serviceMileage") || undefined,
+          priceOverrideCents: priceCents,
+          laborMinutesOverride: laborMinutes,
+          priceCents,
+          laborMinutes,
+          updatedByUserId: context.userId,
+        },
+      })
+    : await tx.vehicleMaintenanceRecord.create({
+        data: {
+          shopId: context.shopId,
+          vehicleId: vehicle.id,
+          serviceDefinitionId: service.id,
+          serviceName,
+          lastCompletedDate: stringValue(normalized, "serviceDate") ? new Date(stringValue(normalized, "serviceDate")) : null,
+          lastCompletedMileage: numberValue(normalized, "serviceMileage") || numberValue(normalized, "currentMileage"),
+          recommendedMileageInterval: null,
+          recommendedTimeIntervalMonths: null,
+          mileageIntervalOverride: null,
+          timeIntervalValueOverride: null,
+          timeIntervalUnitOverride: null,
+          notificationThreshold: service.defaultNotificationThreshold,
+          outreachThresholdType: "MILES_BEFORE_DUE",
+          outreachThresholdValue: 500,
+          laborMinutes,
+          priceCents,
+          priceOverrideCents: priceCents,
+          laborMinutesOverride: laborMinutes,
+          status: "DUE_SOON",
+          outreachStatus: "NEEDS_OUTREACH",
+          isActive: true,
+          createdByUserId: context.userId,
+          updatedByUserId: context.userId,
+        },
+      });
+  maintenanceRecordIds.push(maintenance.id);
+
+  const serviceDate = stringValue(normalized, "serviceDate");
+  const serviceMileage = numberValue(normalized, "serviceMileage") || numberValue(normalized, "currentMileage");
+  if (serviceDate) {
+    const existingHistory = await tx.serviceHistoryRecord.findFirst({
+      where: {
+        shopId: context.shopId,
+        vehicleId: vehicle.id,
+        serviceName,
+        completedAt: dateFromDateOnly(serviceDate),
+        mileage: serviceMileage,
+      },
+      select: { id: true },
+    });
+    if (!existingHistory) {
+      const serviceHistory = await tx.serviceHistoryRecord.create({
+        data: {
+          shopId: context.shopId,
+          customerId: customer.id,
+          vehicleId: vehicle.id,
+          serviceDefinitionId: service.id,
+          serviceName,
+          completedAt: dateFromDateOnly(serviceDate),
+          mileage: serviceMileage,
+          laborMinutes,
+          priceCents,
+          notes: "Imported from CSV.",
+        },
+      });
+      const existingReading = serviceMileage > 0
+        ? await tx.vehicleMileageReading.findFirst({
+            where: {
+              shopId: context.shopId,
+              vehicleId: vehicle.id,
+              readingDate: dateFromDateOnly(serviceDate),
+              readingMileage: serviceMileage,
+            },
+            select: { id: true },
+          })
+        : null;
+      if (serviceMileage > 0 && !existingReading) {
+        await tx.vehicleMileageReading.create({
+          data: {
+            shopId: context.shopId,
+            vehicleId: vehicle.id,
+            readingMileage: serviceMileage,
+            readingDate: dateFromDateOnly(serviceDate),
+            source: "SERVICE_HISTORY_IMPORT",
+            verificationStatus: "IMPORTED",
+            anomalyStatus: "NONE",
+            includedInForecast: true,
+            sourceReferenceType: "ServiceHistoryRecord",
+            sourceReferenceId: serviceHistory.id,
+            recordedByUserId: context.userId,
+          },
+        });
+      }
+    }
+  } else if (serviceMileage > 0) {
+    return {
+      status: "NEEDS_REVIEW" as ImportRowResultStatus,
+      message: "Reading Date is required when importing mileage history.",
+      created: true,
+      maintenanceRecordIds,
+      declinedWorkRecordIds,
+      vehicleIds: [vehicle.id],
+    };
+  }
+
+  if (
+    row.entityType === "Declined work" ||
+    stringValue(normalized, "declinedDate") ||
+    stringValue(normalized, "status").toLowerCase().includes("declin")
+  ) {
+    const declined = await tx.declinedWorkRecord.create({
+      data: {
+        shopId: context.shopId,
+        customerId: customer.id,
+        vehicleId: vehicle.id,
+        serviceName,
+        declinedAt: stringValue(normalized, "declinedDate") ? new Date(stringValue(normalized, "declinedDate")) : new Date(),
+        recommendedPriceCents: priceCents,
+        laborMinutes,
+        advisorNotes: stringValue(normalized, "advisorNotes") || null,
+        status: "OPEN",
+        outreachStatus: "NEEDS_OUTREACH",
+      },
+    });
+    declinedWorkRecordIds.push(declined.id);
+  }
+
+  const scheduledStart = appointmentDateTime(
+    stringValue(normalized, "appointmentDate"),
+    stringValue(normalized, "appointmentTime"),
+  );
+  if (scheduledStart) {
+    const duplicateAppointment = await tx.appointment.findFirst({
+      where: {
+        shopId: context.shopId,
+        vehicleId: vehicle.id,
+        scheduledStart,
+        status: { notIn: ["CANCELLED", "NO_SHOW"] },
+      },
+      select: duplicateAppointmentSelect,
+    });
+    if (duplicateAppointment) {
+      return {
+        status: "DUPLICATE_SKIPPED" as ImportRowResultStatus,
+        message: "Duplicate appointment skipped.",
+        created: true,
+        maintenanceRecordIds,
+        declinedWorkRecordIds,
+        vehicleIds: [vehicle.id],
+      };
+    }
+    await tx.appointment.create({
+      data: {
+        shopId: context.shopId,
+        customerId: customer.id,
+        vehicleId: vehicle.id,
+        scheduledStart,
+        scheduledEnd: new Date(scheduledStart.getTime() + laborMinutes * 60 * 1000),
+        status: "CONFIRMED",
+        totalLaborMinutes: laborMinutes,
+        totalPriceCents: priceCents,
+        source: "IMPORTED",
+        attributionSource: "IMPORTED_APPOINTMENT",
+        notes: "Imported from CSV.",
+        services: {
+          create: {
+            shopId: context.shopId,
+            serviceDefinitionId: service.id,
+            serviceName,
+            laborMinutes,
+            priceCents,
+          },
+        },
+      },
+    });
+  }
+
+  const matchedExisting = !createdCustomer || !createdVehicle;
+  return {
+    status: matchedExisting ? "MATCHED_EXISTING" as const : "IMPORTED" as const,
+    message: matchedExisting ? "Matched existing records and updated import data." : "Imported customer, vehicle, and service data.",
+    created: !matchedExisting,
+    maintenanceRecordIds,
+    declinedWorkRecordIds,
+    vehicleIds: [vehicle.id],
+  };
+}
+
+export async function processNextPilotImportBatch(context: AuthenticatedShopContext, importId: string) {
+  const started = Date.now();
+  await prisma.$transaction(async (tx) => {
+    const job = await tx.importHistoryRecord.findFirst({
+      where: { id: importId, shopId: context.shopId },
+      select: { id: true, shopId: true, status: true, errorReport: true },
+    });
+    assertSameShop(context, job?.shopId);
+    if (!job) {
+      throw new SafeActionError({
+        code: "IMPORT_JOB_NOT_FOUND",
+        message: "Import job was not found.",
+        status: 404,
+        table: "ImportHistoryRecord",
+        operation: "SELECT",
+      });
+    }
+
+    const metadata = importJobMetadata(job.errorReport);
+    const batchRows = await tx.importRowRecord.findMany({
+      where: { shopId: context.shopId, importHistoryRecordId: importId, status: "PENDING" },
+      orderBy: { rowNumber: "asc" },
+      take: metadata.batchSize,
+    });
+    if (batchRows.length === 0) {
+      await updateImportJobProgress(tx, context, importId, metadata);
+      return;
+    }
+
+    const normalizedRows = batchRows.map((row) => normalizedImportRow(row.normalizedRow));
+    const emails = Array.from(new Set(normalizedRows.map((row) => stringValue(row, "customerEmail").toLowerCase()).filter(Boolean)));
+    const phones = Array.from(new Set(normalizedRows.map((row) => stringValue(row, "customerPhone").replace(/\D/g, "")).filter(Boolean)));
+    const vins = Array.from(new Set(normalizedRows.map((row) => stringValue(row, "vin").toUpperCase()).filter(Boolean)));
+    const [customers, vehicles, defaultService] = await Promise.all([
+      tx.customer.findMany({
+        where: {
+          shopId: context.shopId,
+          OR: [
+            emails.length ? { email: { in: emails } } : undefined,
+            phones.length ? { phone: { in: phones } } : undefined,
+          ].filter((item): item is Exclude<typeof item, undefined> => Boolean(item)),
+        },
+        select: { id: true, firstName: true, lastName: true, email: true, phone: true },
+      }),
+      tx.vehicle.findMany({
+        where: { shopId: context.shopId, vin: { in: vins } },
+        select: { id: true, customerId: true, year: true, make: true, model: true, vin: true, currentMileage: true, licensePlate: true },
+      }),
+      tx.serviceDefinition.findFirst({
+        where: { shopId: context.shopId, isActive: true },
+        orderBy: { name: "asc" },
+      }),
+    ]);
+    const customerByEmail = new Map(customers.filter((customer) => customer.email).map((customer) => [customer.email!.toLowerCase(), customer]));
+    const customerByPhone = new Map(customers.filter((customer) => customer.phone).map((customer) => [customer.phone!.replace(/\D/g, ""), customer]));
+    const vehicleByVin = new Map(vehicles.filter((vehicle) => vehicle.vin).map((vehicle) => [vehicle.vin!.toUpperCase(), vehicle]));
+    const customerByKey = new Map<string, (typeof customers)[number]>();
+    const vehicleByKey = new Map<string, (typeof vehicles)[number]>();
+    const affectedVehicleIds = new Set<string>();
+    const touchedMaintenanceRecordIds: string[] = [];
+    const touchedDeclinedWorkRecordIds: string[] = [];
+
+    for (const row of batchRows) {
+      try {
+        const result = await processImportBatchRow({
+          tx,
+          context,
+          row,
+          defaultService,
+          customerByEmail,
+          customerByPhone,
+          vehicleByVin,
+          customerByKey,
+          vehicleByKey,
+        });
+        result.vehicleIds.forEach((vehicleId) => affectedVehicleIds.add(vehicleId));
+        touchedMaintenanceRecordIds.push(...result.maintenanceRecordIds);
+        touchedDeclinedWorkRecordIds.push(...result.declinedWorkRecordIds);
+        await tx.importRowRecord.update({
+          where: { id: row.id },
+          data: {
+            status: result.status,
+            errorMessage: result.message,
+          },
+        });
+      } catch (error) {
+        await tx.importRowRecord.update({
+          where: { id: row.id },
+          data: {
+            status: "FAILED",
+            errorMessage: "Row could not be imported. Previously completed batches were preserved.",
+          },
+        });
+        console.warn("Maintiva import row failed", {
+          rowNumber: row.rowNumber,
+          database: safeDatabaseError(error),
+        });
+      }
+    }
+
+    for (const vehicleId of affectedVehicleIds) {
+      await recalculatePersistedDrivingProfile({ tx, context, vehicleId });
+    }
+    const touchedVehicleMaintenanceRecords = await tx.vehicleMaintenanceRecord.findMany({
+      where: {
+        shopId: context.shopId,
+        vehicleId: { in: Array.from(affectedVehicleIds) },
+        isActive: true,
+        archivedAt: null,
+      },
+      select: { id: true },
+    });
+    await syncMaintenanceRevenueOpportunities(
+      tx,
+      context,
+      [
+        ...touchedMaintenanceRecordIds,
+        ...touchedVehicleMaintenanceRecords.map((record) => record.id),
+      ],
+    );
+    await syncDeclinedWorkRevenueOpportunities(tx, context, touchedDeclinedWorkRecordIds);
+
+    const durationMs = Date.now() - started;
+    await updateImportJobProgress(tx, context, importId, {
+      ...metadata,
+      currentBatch: metadata.currentBatch + 1,
+      batchDurationsMs: [...metadata.batchDurationsMs, durationMs].slice(-100),
+    });
+    console.info("Maintiva import batch completed", {
+      importId,
+      shopId: context.shopId,
+      rowCount: batchRows.length,
+      durationMs,
+    });
+  }, { timeout: 15_000 });
 }
 
 export async function importPilotCsvRows(

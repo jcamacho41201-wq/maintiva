@@ -169,6 +169,14 @@ export function safeMutationOperation(value: unknown): SafeMutationOperation {
       table: "ImportHistoryRecord",
       operation: "INSERT",
     },
+    createImportJob: {
+      table: "ImportHistoryRecord",
+      operation: "INSERT",
+    },
+    processNextImportBatch: {
+      table: "ImportRowRecord",
+      operation: "UPDATE",
+    },
     snoozeOpportunity: {
       table: "OutreachRecord",
       operation: "INSERT",

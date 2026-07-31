@@ -16,11 +16,12 @@ import {
   bookPilotAppointment,
   buildPilotState,
   completePilotAppointment,
+  createPilotImportJob,
   createPilotBookingLink,
   declinePilotAppointmentRequest,
   deactivatePilotMaintenanceItem,
   endPilotOpportunitySnooze,
-  importPilotCsvRows,
+  processNextPilotImportBatch,
   markPilotMaintenanceServiceComplete,
   markPilotOutreachManuallySent,
   recordPilotInspection,
@@ -240,6 +241,58 @@ const mutationSchema = z.discriminatedUnion("action", [
       ])),
     }),
   }),
+  z.object({
+    action: z.literal("createImportJob"),
+    payload: z.object({
+      fileName: z.string().min(1),
+      importType: z.enum([
+        "CUSTOMERS",
+        "VEHICLES",
+        "SERVICE_HISTORY",
+        "DECLINED_WORK",
+        "APPOINTMENTS",
+        "COMBINED",
+      ]),
+      duplicateMode: z.enum(["SKIP", "UPDATE", "IMPORT_AS_NEW"]),
+      rowActions: z.record(z.string(), z.enum(["IMPORT", "HOLD", "SKIP", "UPDATE", "IMPORT_AS_NEW"])).optional(),
+      rows: z.array(z.record(z.string(), z.string())).max(5000),
+      mapping: z.record(z.string(), z.enum([
+        "ignore",
+        "customerExternalId",
+        "customerFirstName",
+        "customerLastName",
+        "customerFullName",
+        "customerEmail",
+        "customerPhone",
+        "vehicleExternalId",
+        "vehicleCustomerExternalId",
+        "vin",
+        "vehicleYear",
+        "vehicleMake",
+        "vehicleModel",
+        "licensePlate",
+        "currentMileage",
+        "serviceName",
+        "serviceDate",
+        "serviceMileage",
+        "price",
+        "laborHours",
+        "status",
+        "declinedDate",
+        "advisorNotes",
+        "appointmentDate",
+        "appointmentTime",
+        "services",
+      ])),
+      batchSize: z.number().int().min(1).max(50).optional(),
+    }),
+  }),
+  z.object({
+    action: z.literal("processNextImportBatch"),
+    payload: z.object({
+      importId: z.string().min(1),
+    }),
+  }),
 ]);
 
 export async function POST(request: Request) {
@@ -341,7 +394,13 @@ export async function POST(request: Request) {
         await declinePilotAppointmentRequest(context, body.id, body.payload);
         break;
       case "importCsvRows":
-        await importPilotCsvRows(context, body.payload);
+        await createPilotImportJob(context, body.payload);
+        break;
+      case "createImportJob":
+        await createPilotImportJob(context, body.payload);
+        break;
+      case "processNextImportBatch":
+        await processNextPilotImportBatch(context, body.payload.importId);
         break;
     }
 

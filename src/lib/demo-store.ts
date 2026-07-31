@@ -25,6 +25,7 @@ import {
 import { hasActiveVehicleAppointmentAt } from "@/lib/appointment";
 import { createAppointmentFromRecords } from "@/lib/demo-calculations";
 import {
+  previewImport,
   summarizeImport,
   type CsvRow,
   type DuplicateImportMode,
@@ -73,7 +74,7 @@ export type BookingLinkResult = {
   expiresAt: string;
   message?: string;
 };
-export type MutationResult = { ok: boolean; message?: string; bookingLink?: BookingLinkResult };
+export type MutationResult = { ok: boolean; message?: string; bookingLink?: BookingLinkResult; state?: DemoState };
 
 export type ServiceDefinitionInput = Omit<MaintenanceService, "id" | "shopId">;
 export type MaintenanceItemInput = {
@@ -281,7 +282,7 @@ export async function mutatePilotState(body: unknown): Promise<MutationResult> {
     }
 
     saveState(data.state);
-    return { ok: true, bookingLink: data.bookingLink };
+    return { ok: true, bookingLink: data.bookingLink, state: data.state };
   } catch {
     return {
       ok: false,
@@ -1868,7 +1869,35 @@ export function useDemoStore() {
             ],
           };
         });
-        return Promise.resolve({ ok: true, message: undefined });
+        return Promise.resolve({ ok: true, message: undefined, state: readState() });
+      },
+      createImportJob(input: {
+        fileName: string;
+        importType: ImportType;
+        duplicateMode: DuplicateImportMode;
+        rows: CsvRow[];
+        mapping: Record<string, MaintivaField>;
+        rowActions?: Record<number, ImportRowAction>;
+        batchSize?: number;
+      }): Promise<MutationResult> {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "createImportJob", payload: input });
+        }
+        return this.importCsvRows({
+          ...input,
+          previewRows: previewImport({
+            rows: input.rows,
+            mapping: input.mapping,
+            importType: input.importType,
+            state: readState(),
+          }).rows,
+        });
+      },
+      processNextImportBatch(importId: string): Promise<MutationResult> {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "processNextImportBatch", payload: { importId } });
+        }
+        return Promise.resolve({ ok: true, state: readState() });
       },
       bookAppointment(input: {
         customerId: string;
