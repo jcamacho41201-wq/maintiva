@@ -87,9 +87,9 @@ export async function getAuthenticatedShopContext(): Promise<AuthenticatedShopCo
     throw new AuthRequiredError();
   }
 
-  let membership;
+  let memberships;
   try {
-    membership = await prisma.shopMembership.findFirst({
+    memberships = await prisma.shopMembership.findMany({
       where: {
         userId: authUser.id,
         isActive: true,
@@ -125,7 +125,13 @@ export async function getAuthenticatedShopContext(): Promise<AuthenticatedShopCo
     throw error;
   }
 
+  const membership = memberships[0];
   if (!membership) {
+    console.error("Maintiva active shop membership missing", {
+      operation: "resolveActiveShop",
+      userId: authUser.id,
+      membershipCount: memberships.length,
+    });
     throw new OnboardingRequiredError(authUser.id, authUser.email);
   }
 
