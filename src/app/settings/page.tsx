@@ -5,6 +5,7 @@ import { useState } from "react";
 import { CalendarClock, FileUp, Save, ShieldCheck } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { useDemoStore } from "@/lib/demo-store";
+import { isCustomerBookingEnabled } from "@/lib/feature-flags";
 import { formatDate } from "@/lib/utils";
 
 const dayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -20,6 +21,7 @@ function timeToMinutes(value: string) {
 
 export default function SettingsPage() {
   const { state, saveBookingSettings } = useDemoStore();
+  const customerBookingEnabled = isCustomerBookingEnabled();
   const settings = state.bookingSettings!;
   const [form, setForm] = useState({
     onlineBookingEnabled: settings.onlineBookingEnabled,
@@ -68,7 +70,7 @@ export default function SettingsPage() {
       <div>
         <h1 className="text-3xl font-semibold tracking-tight">Settings</h1>
         <p className="mt-2 max-w-3xl text-sm text-zinc-600">
-          Configure pilot data, communication controls, shop capacity, and customer self-scheduling.
+          Configure pilot data, communication controls, and shop capacity.
         </p>
       </div>
 
@@ -110,6 +112,7 @@ export default function SettingsPage() {
         })}
       </section>
 
+      {customerBookingEnabled && (
       <Card>
         <CardHeader>
           <h2 className="text-lg font-semibold">Customer Self-Scheduling</h2>
@@ -210,6 +213,7 @@ export default function SettingsPage() {
           </div>
         </CardContent>
       </Card>
+      )}
 
       <Card>
         <CardHeader>

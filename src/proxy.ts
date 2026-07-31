@@ -8,13 +8,22 @@ const publicRoutes = new Set([
   "/terms",
 ]);
 
+function isPublicRoute(pathname: string) {
+  return (
+    publicRoutes.has(pathname) ||
+    pathname === "/api/health" ||
+    pathname.startsWith("/book/") ||
+    pathname.startsWith("/api/book/")
+  );
+}
+
 export async function proxy(request: NextRequest) {
   const configured = Boolean(
     process.env.NEXT_PUBLIC_SUPABASE_URL &&
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
   );
 
-  if (!configured || publicRoutes.has(request.nextUrl.pathname)) {
+  if (!configured || isPublicRoute(request.nextUrl.pathname)) {
     return NextResponse.next();
   }
 

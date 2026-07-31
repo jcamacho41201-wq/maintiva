@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getPublicAvailability } from "@/lib/customer-booking";
+import { customerBookingDisabledResponse, isCustomerBookingEnabled } from "@/lib/feature-flags";
 import { SafeActionError } from "@/lib/server-diagnostics";
 
 const querySchema = z.object({
@@ -13,6 +14,9 @@ export async function GET(
   { params }: { params: Promise<{ token: string }> },
 ) {
   try {
+    if (!isCustomerBookingEnabled()) {
+      return NextResponse.json(customerBookingDisabledResponse(), { status: 404 });
+    }
     const { token } = await params;
     const query = querySchema.parse(Object.fromEntries(new URL(request.url).searchParams));
     const extraMaintenanceRecordIds = query.extraMaintenanceRecordIds

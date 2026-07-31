@@ -11,7 +11,7 @@ function run(command, args) {
   }
 }
 
-if (process.env.VERCEL_ENV === "production") {
+if (process.env.MAINTIVA_RUN_MIGRATIONS_ON_BUILD === "true") {
   run("prisma", ["migrate", "deploy"]);
 }
 

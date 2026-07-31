@@ -5,6 +5,7 @@ import {
   reschedulePublicAppointment,
   submitPublicBooking,
 } from "@/lib/customer-booking";
+import { customerBookingDisabledResponse, isCustomerBookingEnabled } from "@/lib/feature-flags";
 import { SafeActionError } from "@/lib/server-diagnostics";
 
 const bookingSchema = z.object({
@@ -46,6 +47,9 @@ export async function POST(
   { params }: { params: Promise<{ token: string }> },
 ) {
   try {
+    if (!isCustomerBookingEnabled()) {
+      return NextResponse.json(customerBookingDisabledResponse(), { status: 404 });
+    }
     const { token } = await params;
     const body = bookingSchema.parse(await request.json());
     return NextResponse.json({ appointment: await submitPublicBooking(token, body) });
@@ -59,6 +63,9 @@ export async function PATCH(
   { params }: { params: Promise<{ token: string }> },
 ) {
   try {
+    if (!isCustomerBookingEnabled()) {
+      return NextResponse.json(customerBookingDisabledResponse(), { status: 404 });
+    }
     const { token } = await params;
     const body = patchSchema.parse(await request.json());
     if (body.action === "cancel") {

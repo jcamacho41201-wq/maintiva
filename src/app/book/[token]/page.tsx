@@ -6,6 +6,7 @@ import { CalendarCheck, Clock3, RefreshCw, XCircle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import type { BookingIntakeType, BookingMode } from "@/lib/demo-data";
 import type { AvailabilitySlot, PublicBookingContext } from "@/lib/customer-booking";
+import { isCustomerBookingEnabled } from "@/lib/feature-flags";
 import { formatCurrency } from "@/lib/utils";
 
 type BookingOutcome = {
@@ -23,6 +24,7 @@ function modeLabel(mode: BookingMode) {
 }
 
 export default function CustomerBookingPage() {
+  const customerBookingEnabled = isCustomerBookingEnabled();
   const params = useParams<{ token: string }>();
   const token = params.token;
   const [context, setContext] = useState<PublicBookingContext | null>(null);
@@ -38,6 +40,11 @@ export default function CustomerBookingPage() {
 
   useEffect(() => {
     async function loadContext() {
+      if (!customerBookingEnabled) {
+        setError("Customer booking is not available.");
+        setLoading(false);
+        return;
+      }
       setLoading(true);
       setError("");
       const response = await fetch(`/api/book/${token}/context`);
@@ -60,7 +67,7 @@ export default function CustomerBookingPage() {
       setLoading(false);
     }
     void loadContext();
-  }, [token]);
+  }, [customerBookingEnabled, token]);
 
   useEffect(() => {
     async function loadAvailability() {

@@ -20,6 +20,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import type { Appointment, Customer, CustomerResponseStatus, OutreachChannel, Vehicle, VehicleMaintenanceRecord } from "@/lib/demo-data";
 import { useDemoStore } from "@/lib/demo-store";
+import { isCustomerBookingEnabled } from "@/lib/feature-flags";
 import {
   buildRevenueOpportunities,
   groupRevenueOpportunities,
@@ -112,6 +113,7 @@ type QueueModal = {
 
 export default function AutomationPage() {
   const store = useDemoStore();
+  const customerBookingEnabled = isCustomerBookingEnabled();
   const { state, ready, loadError } = store;
   const [queueModal, setQueueModal] = useState<QueueModal>(null);
   const [tab, setTab] = useState<QueueTab>("NEEDS_ATTENTION");
@@ -402,6 +404,7 @@ export default function AutomationPage() {
           onBook={() => setQueueModal({ kind: "book", vehicleId: activeGroup.vehicleId })}
           onSave={store.recordOpportunityContact}
           onCreateBookingLink={store.createBookingLink}
+          customerBookingEnabled={customerBookingEnabled}
         />
       )}
       {activeGroup && queueModal?.kind === "book" && (
@@ -496,6 +499,7 @@ function ContactCustomerModal({
   onBook,
   onSave,
   onCreateBookingLink,
+  customerBookingEnabled,
 }: {
   group: RevenueQueueGroup;
   customer: Customer;
@@ -520,6 +524,7 @@ function ContactCustomerModal({
     vehicleId: string;
     opportunityIds: string[];
   }) => Promise<{ ok: boolean; message?: string; bookingLink?: { id: string; url: string; expiresAt: string; message?: string } }>;
+  customerBookingEnabled: boolean;
 }) {
   const [channel, setChannel] = useState<"TEXT" | "EMAIL" | "CALL">("TEXT");
   const [message, setMessage] = useState(
@@ -537,6 +542,9 @@ function ContactCustomerModal({
   const rows = serviceRows(group, records);
 
   async function createLink() {
+    if (!customerBookingEnabled) {
+      return;
+    }
     setCreatingLink(true);
     setError("");
     const result = await onCreateBookingLink({
@@ -645,14 +653,16 @@ function ContactCustomerModal({
           ))}
         </div>
 
-        <button
-          onClick={createLink}
-          disabled={creatingLink || saving || Boolean(bookingLink)}
-          className="inline-flex items-center gap-2 rounded-lg border border-violet-200 px-4 py-2 text-sm font-semibold text-violet-950 disabled:opacity-60"
-        >
-          <CalendarCheck className="h-4 w-4" />
-          {creatingLink ? "Creating link..." : bookingLink ? "Booking link created" : "Create booking link"}
-        </button>
+        {customerBookingEnabled && (
+          <button
+            onClick={createLink}
+            disabled={creatingLink || saving || Boolean(bookingLink)}
+            className="inline-flex items-center gap-2 rounded-lg border border-violet-200 px-4 py-2 text-sm font-semibold text-violet-950 disabled:opacity-60"
+          >
+            <CalendarCheck className="h-4 w-4" />
+            {creatingLink ? "Creating link..." : bookingLink ? "Booking link created" : "Create booking link"}
+          </button>
+        )}
 
         {channel === "CALL" ? (
           <label className="block text-sm font-semibold">

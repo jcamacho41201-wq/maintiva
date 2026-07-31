@@ -34,6 +34,7 @@ import {
 } from "@/lib/adaptive-mileage";
 import { currentDateInTimeZone } from "@/lib/utils";
 import { safeDatabaseError, SafeActionError } from "@/lib/server-diagnostics";
+import { isCustomerBookingEnabled } from "@/lib/feature-flags";
 import {
   previewImport,
   summarizeImport,
@@ -891,6 +892,16 @@ function queueActionError({
   });
 }
 
+function assertCustomerBookingFeatureEnabled() {
+  if (!isCustomerBookingEnabled()) {
+    throw new SafeActionError({
+      code: "CUSTOMER_BOOKING_DISABLED",
+      message: "Customer booking is not available.",
+      status: 404,
+    });
+  }
+}
+
 function responseOutreachStatus(responseStatus?: OutreachRecord["responseStatus"]) {
   if (responseStatus === "DECLINED" || responseStatus === "DO_NOT_CONTACT") return "DECLINED" as const;
   if (responseStatus && responseStatus !== "NO_RESPONSE") return "RESPONDED" as const;
@@ -1143,6 +1154,13 @@ async function requireMaintenanceRecordInActiveShop(
 }
 
 async function loadStateServiceDefinitions(shopId: string): Promise<StateServiceDefinition[]> {
+  if (!isCustomerBookingEnabled()) {
+    return prisma.serviceDefinition.findMany({
+      where: { shopId },
+      orderBy: { name: "asc" },
+    });
+  }
+
   try {
     return await prisma.serviceDefinition.findMany({
       where: { shopId },
@@ -1250,6 +1268,10 @@ async function loadStateDrivingProfiles(shopId: string): Promise<StateDrivingPro
 }
 
 async function loadStateBookingSettings(shopId: string): Promise<ShopBookingSettings> {
+  if (!isCustomerBookingEnabled()) {
+    return { ...defaultBookingSettings, shopId, id: `default-${shopId}` };
+  }
+
   try {
     const settings = await prisma.shopBookingSettings.findUnique({ where: { shopId } });
     return settings ? {
@@ -1271,6 +1293,10 @@ async function loadStateBookingSettings(shopId: string): Promise<ShopBookingSett
 }
 
 async function loadStateBookingWindows(shopId: string) {
+  if (!isCustomerBookingEnabled()) {
+    return defaultBookingWindows.map((window) => ({ ...window, shopId, id: `default-${shopId}-${window.dayOfWeek}` }));
+  }
+
   try {
     const windows = await prisma.shopBookingWindow.findMany({
       where: { shopId },
@@ -1291,6 +1317,10 @@ async function loadStateBookingWindows(shopId: string) {
 }
 
 async function loadStateBookingBlackouts(shopId: string): Promise<ShopBookingBlackout[]> {
+  if (!isCustomerBookingEnabled()) {
+    return [];
+  }
+
   try {
     const blackouts = await prisma.shopBookingBlackout.findMany({
       where: { shopId },
@@ -1311,6 +1341,10 @@ async function loadStateBookingBlackouts(shopId: string): Promise<ShopBookingBla
 }
 
 async function loadStateCustomerBookingLinks(shopId: string): Promise<CustomerBookingLink[]> {
+  if (!isCustomerBookingEnabled()) {
+    return [];
+  }
+
   try {
     const links = await prisma.customerBookingLink.findMany({
       where: { shopId },
@@ -1342,6 +1376,10 @@ async function loadStateCustomerBookingLinks(shopId: string): Promise<CustomerBo
 }
 
 async function loadStateOutreachBookingLinkIds(shopId: string) {
+  if (!isCustomerBookingEnabled()) {
+    return [];
+  }
+
   try {
     return await prisma.outreachRecord.findMany({
       where: { shopId },
@@ -1360,6 +1398,10 @@ async function loadStateOutreachBookingLinkIds(shopId: string) {
 }
 
 async function loadStateAppointmentBookingMetadata(shopId: string) {
+  if (!isCustomerBookingEnabled()) {
+    return [];
+  }
+
   try {
     return await prisma.appointment.findMany({
       where: { shopId },
@@ -3344,6 +3386,7 @@ export async function createPilotBookingLink(
     appUrl: string;
   },
 ) {
+  assertCustomerBookingFeatureEnabled();
   const targets = await loadOpenQueueTargets(context, input);
   const link = await createCustomerBookingLink({
     context,
@@ -3368,6 +3411,7 @@ export async function createPilotBookingLink(
 }
 
 export async function savePilotBookingSettings(context: AuthenticatedShopContext, input: unknown) {
+  assertCustomerBookingFeatureEnabled();
   const parsed = shopBookingSettingsSchema.parse(input);
   const { windows, ...settings } = parsed;
   await prisma.$transaction(async (tx) => {
@@ -3399,6 +3443,7 @@ export async function savePilotServiceBookingRule(
   serviceDefinitionId: string,
   input: unknown,
 ) {
+  assertCustomerBookingFeatureEnabled();
   const parsed = serviceBookingRuleSchema.parse(input);
   await requireServiceDefinitionInActiveShop(context, serviceDefinitionId);
 
@@ -3447,6 +3492,7 @@ export async function savePilotServiceBookingRule(
 }
 
 export async function approvePilotAppointmentRequest(context: AuthenticatedShopContext, appointmentId: string) {
+  assertCustomerBookingFeatureEnabled();
   const appointment = await prisma.appointment.findFirst({
     where: { id: appointmentId, shopId: context.shopId },
     include: { services: true },
@@ -3510,6 +3556,7 @@ export async function declinePilotAppointmentRequest(
   appointmentId: string,
   input: unknown,
 ) {
+  assertCustomerBookingFeatureEnabled();
   const parsed = z.object({ reason: z.string().optional() }).parse(input ?? {});
   const appointment = await prisma.appointment.findFirst({
     where: { id: appointmentId, shopId: context.shopId },

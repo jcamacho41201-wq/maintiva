@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { useDemoStore, type ServiceDefinitionInput } from "@/lib/demo-store";
 import { type BookingMode, type MaintenanceService, type ServiceBookingIntakeOption, type TimeIntervalUnit } from "@/lib/demo-data";
+import { isCustomerBookingEnabled } from "@/lib/feature-flags";
 import { formatInterval } from "@/lib/service-intervals";
 import { formatCurrency, formatHours } from "@/lib/utils";
 
@@ -117,9 +118,11 @@ function formToInput(form: ServiceFormState): ServiceDefinitionInput {
 
 function ServiceEditor({
   service,
+  customerBookingEnabled,
   onClose,
 }: {
   service?: MaintenanceService;
+  customerBookingEnabled: boolean;
   onClose: () => void;
 }) {
   const store = useDemoStore();
@@ -140,7 +143,7 @@ function ServiceEditor({
     const result = service
       ? await store.updateServiceDefinition(service.id, input)
       : await store.addServiceDefinition(input);
-    if (result.ok && service) {
+    if (result.ok && service && customerBookingEnabled) {
       const ruleResult = await store.saveServiceBookingRule(service.id, {
         bookingEnabled: form.bookingEnabled,
         bookingMode: form.bookingMode,
@@ -259,7 +262,7 @@ function ServiceEditor({
               className="w-full rounded-lg border border-zinc-200 px-3 py-2"
             />
           </label>
-          {service && (
+          {service && customerBookingEnabled && (
             <div className="space-y-4 rounded-lg border border-zinc-200 p-4 sm:col-span-2">
               <label className="flex items-center gap-2 text-sm font-semibold">
                 <input
@@ -418,6 +421,7 @@ function ServiceEditor({
 
 export default function ServicesPage() {
   const { state, updateServiceDefinition } = useDemoStore();
+  const customerBookingEnabled = isCustomerBookingEnabled();
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("All categories");
   const [activeFilter, setActiveFilter] = useState<"active" | "all">("active");
@@ -502,9 +506,11 @@ export default function ServicesPage() {
                 <Badge variant={service.isActive ? "green" : "neutral"}>
                   {service.isActive ? "Active" : "Inactive"}
                 </Badge>
-                <Badge variant={service.bookingRule?.bookingEnabled ? "purple" : "neutral"}>
-                  {service.bookingRule?.bookingEnabled ? "Bookable" : "Not bookable"}
-                </Badge>
+                {customerBookingEnabled && (
+                  <Badge variant={service.bookingRule?.bookingEnabled ? "purple" : "neutral"}>
+                    {service.bookingRule?.bookingEnabled ? "Bookable" : "Not bookable"}
+                  </Badge>
+                )}
               </div>
               <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
                 <div className="rounded-lg bg-zinc-50 p-3">
@@ -558,8 +564,14 @@ export default function ServicesPage() {
         </CardContent>
       </Card>
 
-      {adding && <ServiceEditor onClose={() => setAdding(false)} />}
-      {editing && <ServiceEditor service={editing} onClose={() => setEditing(null)} />}
+      {adding && <ServiceEditor customerBookingEnabled={customerBookingEnabled} onClose={() => setAdding(false)} />}
+      {editing && (
+        <ServiceEditor
+          service={editing}
+          customerBookingEnabled={customerBookingEnabled}
+          onClose={() => setEditing(null)}
+        />
+      )}
     </div>
   );
 }

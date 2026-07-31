@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getPublicBookingContext } from "@/lib/customer-booking";
+import { customerBookingDisabledResponse, isCustomerBookingEnabled } from "@/lib/feature-flags";
 import { SafeActionError } from "@/lib/server-diagnostics";
 
 export async function GET(
@@ -7,6 +8,9 @@ export async function GET(
   { params }: { params: Promise<{ token: string }> },
 ) {
   try {
+    if (!isCustomerBookingEnabled()) {
+      return NextResponse.json(customerBookingDisabledResponse(), { status: 404 });
+    }
     const { token } = await params;
     return NextResponse.json({ context: await getPublicBookingContext(token) });
   } catch (error) {
