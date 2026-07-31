@@ -89,34 +89,6 @@ function readableReviewCondition(value: string) {
   return labels[value] ?? value;
 }
 
-function mileageHistoryStats(readings: VehicleMileageReading[]) {
-  const usable = readings
-    .filter((reading) =>
-      reading.includedInForecast &&
-      reading.anomalyStatus !== "NEEDS_REVIEW" &&
-      reading.verificationStatus !== "EXCLUDED",
-    )
-    .sort((a, b) => a.readingDate.localeCompare(b.readingDate));
-  const verified = usable.filter((reading) => reading.verificationStatus === "VERIFIED");
-  const first = usable[0];
-  const latest = usable.at(-1);
-  const daysCovered = first && latest
-    ? Math.max(0, (new Date(`${latest.readingDate}T12:00:00Z`).getTime() - new Date(`${first.readingDate}T12:00:00Z`).getTime()) / 86_400_000)
-    : 0;
-  const recent = usable.slice(-3);
-  const trend = recent.length >= 2
-    ? Math.round(((recent.at(-1)!.readingMileage - recent[0].readingMileage) / Math.max(1, (new Date(`${recent.at(-1)!.readingDate}T12:00:00Z`).getTime() - new Date(`${recent[0].readingDate}T12:00:00Z`).getTime()) / 86_400_000)) * 365)
-    : null;
-
-  return {
-    latest,
-    verifiedCount: verified.length,
-    daysCovered,
-    trend,
-    periodLabel: daysCovered > 0 ? `${Math.round(daysCovered).toLocaleString()} days` : "Not enough history",
-  };
-}
-
 function parseOptionalInt(value: string) {
   const trimmed = value.trim();
   if (!trimmed) return null;
@@ -210,11 +182,12 @@ function formToMaintenanceInput(vehicleId: string, form: PlanFormState): Mainten
   };
 }
 
-function DetailTile({ label, value }: { label: string; value: React.ReactNode }) {
+function DetailTile({ label, value, helper }: { label: string; value: React.ReactNode; helper?: React.ReactNode }) {
   return (
     <div className="rounded-lg bg-zinc-50 p-3 text-sm">
       <p className="text-zinc-500">{label}</p>
       <p className="mt-1 font-semibold">{value}</p>
+      {helper && <p className="mt-1 text-xs leading-5 text-zinc-500">{helper}</p>}
     </div>
   );
 }
@@ -431,10 +404,25 @@ function DrivingProfilePanel({
   const [reviewDate, setReviewDate] = useState("");
   const [correctingReading, setCorrectingReading] = useState<VehicleMileageReading | null>(null);
   const [error, setError] = useState("");
-  const dailyMileage = Math.round(profile.calculatedAnnualMileage / 365);
-  const monthlyMileage = Math.round(profile.calculatedAnnualMileage / 12);
-  const stats = mileageHistoryStats(readings);
-  const latestReading = stats.latest;
+  const today = currentDateInTimeZone(shopTimezone);
+  const profileCalculation = calculateDrivingProfile({
+    shopId: vehicle.shopId,
+    vehicleId: vehicle.id,
+    readings,
+    shopDefaultAnnualMileage,
+    customerReportedAnnualMileage: profile.customerReportedAnnualMileage ?? vehicle.estimatedAnnualMileage,
+    customerReportedAt: profile.customerReportedAt ?? null,
+    customerReportedByUserId: profile.customerReportedByUserId ?? null,
+    existingProfile: profile,
+    asOf: today,
+  });
+  const effectiveAnnualMileage = profileCalculation.effectiveAnnualMileage;
+  const calculatedAnnualMileage = profileCalculation.calculatedAnnualMileage;
+  const longTermDailyMileage = Math.round(calculatedAnnualMileage / 365);
+  const longTermMonthlyMileage = Math.round(calculatedAnnualMileage / 12);
+  const effectiveDailyMileage = Math.round(effectiveAnnualMileage / 365);
+  const effectiveMonthlyMileage = Math.round(effectiveAnnualMileage / 12);
+  const latestReading = profileCalculation.latestMileageReading;
   const maintivaCalculatedProfile = calculateDrivingProfile({
     shopId: vehicle.shopId,
     vehicleId: vehicle.id,
@@ -451,6 +439,7 @@ function DrivingProfilePanel({
       manualOverrideSetAt: null,
       manualOverrideSetByUserId: null,
     },
+    asOf: today,
   });
 
   async function saveReported() {
@@ -527,21 +516,21 @@ function DrivingProfilePanel({
           <div className="grid grid-cols-2 gap-3">
             <DetailTile label="Current mileage" value={`${vehicle.currentMileage.toLocaleString()} mi`} />
             <DetailTile label="Last reading date" value={latestReading ? formatDate(latestReading.readingDate) : "Not recorded"} />
-            <DetailTile label="Estimated annual mileage" value={`${profile.calculatedAnnualMileage.toLocaleString()} mi`} />
-            <DetailTile label="Confidence" value={profile.confidence} />
-            <DetailTile label="Source" value={sourceLabel(profile.estimateSource)} />
-            <DetailTile label="Verified readings" value={stats.verifiedCount.toLocaleString()} />
-            <DetailTile label="Time period covered" value={stats.periodLabel} />
-            <DetailTile label="Recent trend" value={stats.trend ? `${stats.trend.toLocaleString()} mi/yr` : "Not enough history"} />
+            <DetailTile label="Estimated annual mileage" value={`${effectiveAnnualMileage.toLocaleString()} mi`} />
+            <DetailTile label="Confidence" value={profileCalculation.confidence} />
+            <DetailTile label="Source" value={sourceLabel(profileCalculation.estimateSource)} />
+            <DetailTile label="Verified readings" value={profileCalculation.verifiedReadingCount.toLocaleString()} />
+            <DetailTile label="Time period covered" value={profileCalculation.timeSpanDays > 0 ? `${Math.round(profileCalculation.timeSpanDays).toLocaleString()} days` : "Not enough history"} />
+            <DetailTile label="Recent trend" value={profileCalculation.recentTrend?.description ?? "Not enough recent history"} />
           </div>
           <div className="rounded-lg border border-zinc-200 p-3 text-sm">
-            <p className="font-semibold">{sourceLabel(profile.estimateSource)}</p>
-            <p className="mt-1 text-zinc-600">{profile.confidenceReason}</p>
+            <p className="font-semibold">{sourceLabel(profileCalculation.estimateSource)}</p>
+            <p className="mt-1 text-zinc-600">{profileCalculation.confidenceReason}</p>
             <p className="mt-2 text-zinc-500">
               Latest fact: {latestReading ? `${latestReading.readingMileage.toLocaleString()} mi on ${formatDate(latestReading.readingDate)}` : "unknown"}
             </p>
             <p className="mt-1 text-zinc-500">
-              Pace: {dailyMileage.toLocaleString()} mi/day · {monthlyMileage.toLocaleString()} mi/month
+              Pace: {effectiveDailyMileage.toLocaleString()} mi/day · {effectiveMonthlyMileage.toLocaleString()} mi/month
             </p>
           </div>
           {profile.manualAnnualMileageOverride && (
@@ -558,6 +547,24 @@ function DrivingProfilePanel({
           <details className="rounded-lg border border-zinc-200 p-3 text-sm">
             <summary className="cursor-pointer font-semibold">Estimate Details</summary>
             <div className="mt-3 space-y-4">
+              <div className="grid gap-3 rounded-lg bg-zinc-50 p-3 sm:grid-cols-2">
+                <DetailTile
+                  label="Long-term estimate"
+                  value={`${calculatedAnnualMileage.toLocaleString()} mi/yr`}
+                  helper={profileCalculation.longTermPeriod
+                    ? `Based on ${profileCalculation.longTermPeriod.mileageDelta.toLocaleString()} miles over ${Math.round(profileCalculation.longTermPeriod.days).toLocaleString()} days`
+                    : "Using fallback estimate until enough included history is available"}
+                />
+                <DetailTile
+                  label="Recent pace"
+                  value={profileCalculation.recentTrend ? `${profileCalculation.recentTrend.annualMileage.toLocaleString()} mi/yr` : "Not enough recent history"}
+                  helper={profileCalculation.recentTrend
+                    ? `${profileCalculation.recentTrend.description}. Based on ${profileCalculation.recentTrend.mileageDelta.toLocaleString()} miles over ${Math.round(profileCalculation.recentTrend.days).toLocaleString()} days`
+                    : "Recent trend needs at least three included readings and a 30-day latest interval"}
+                />
+                <DetailTile label="Daily pace" value={`${longTermDailyMileage.toLocaleString()} mi/day`} />
+                <DetailTile label="Monthly pace" value={`${longTermMonthlyMileage.toLocaleString()} mi/month`} />
+              </div>
               <div className="rounded-lg bg-zinc-50 p-3">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
                   <label className="flex-1 font-medium">
@@ -1496,9 +1503,10 @@ export default function VehicleMaintenancePage() {
     customerReportedAt: persistedProfile?.customerReportedAt ?? null,
     customerReportedByUserId: persistedProfile?.customerReportedByUserId ?? null,
     existingProfile: persistedProfile,
+    asOf: currentDateInTimeZone(state.shop.timezone),
   });
-  const drivingProfile: VehicleDrivingProfile = persistedProfile ?? {
-    id: `profile-${vehicle.id}`,
+  const drivingProfile: VehicleDrivingProfile = {
+    id: persistedProfile?.id ?? `profile-${vehicle.id}`,
     shopId: state.shop.id,
     vehicleId: vehicle.id,
     customerReportedAnnualMileage: calculatedProfile.customerReportedAnnualMileage,
@@ -1639,7 +1647,7 @@ export default function VehicleMaintenancePage() {
               {(() => {
                 const preview = estimateServiceDueDate({
                   currentMileage: vehicle.currentMileage,
-                  dailyMileage: drivingProfile.calculatedAnnualMileage / 365,
+                  dailyMileage: (drivingProfile.manualAnnualMileageOverride ?? drivingProfile.calculatedAnnualMileage) / 365,
                   effective,
                 });
                 return (

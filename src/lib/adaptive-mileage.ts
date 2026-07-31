@@ -30,8 +30,26 @@ export type DrivingProfileCalculationInput = {
 export type DrivingProfileCalculation = Omit<VehicleDrivingProfile, "id"> & {
   effectiveAnnualMileage: number;
   effectiveDailyMileage: number;
+  effectiveMonthlyMileage: number;
   usableReadingCount: number;
+  verifiedReadingCount: number;
+  timeSpanDays: number;
+  longTermPeriod?: MileagePacePeriod;
+  recentTrend?: MileageTrend;
   latestMileageReading?: MileageReadingDraft;
+};
+
+export type MileagePacePeriod = {
+  start: MileageReadingDraft;
+  end: MileageReadingDraft;
+  mileageDelta: number;
+  days: number;
+  annualMileage: number;
+};
+
+export type MileageTrend = MileagePacePeriod & {
+  label: "CONSISTENT" | "HIGHER_THAN_USUAL" | "LOWER_THAN_USUAL";
+  description: string;
 };
 
 export type MileageAnomalyReview = {
@@ -63,10 +81,17 @@ function daysBetween(start: Date | string, end: Date | string) {
   return Math.max(0, (parseDate(end).getTime() - parseDate(start).getTime()) / dayMs);
 }
 
-function annualize(first: MileageReadingDraft, last: MileageReadingDraft) {
+function annualizePeriod(first: MileageReadingDraft, last: MileageReadingDraft): MileagePacePeriod | null {
   const days = daysBetween(first.readingDate, last.readingDate);
-  if (days <= 0 || last.readingMileage <= first.readingMileage) return null;
-  return Math.round(((last.readingMileage - first.readingMileage) / days) * 365);
+  const mileageDelta = last.readingMileage - first.readingMileage;
+  if (days < 30 || mileageDelta <= 0) return null;
+  return {
+    start: first,
+    end: last,
+    mileageDelta,
+    days,
+    annualMileage: Math.round((mileageDelta / days) * 365),
+  };
 }
 
 function cleanAnnualMileage(value?: number | null) {
@@ -101,6 +126,17 @@ function readingsByStatus(readings: MileageReadingDraft[], statuses: MileageVeri
   );
 }
 
+function currentOdometerSegment(readings: MileageReadingDraft[]) {
+  const sorted = sortMileageReadings(readings);
+  let segmentStart = 0;
+  for (let index = 1; index < sorted.length; index += 1) {
+    if (sorted[index].readingMileage < sorted[index - 1].readingMileage) {
+      segmentStart = index;
+    }
+  }
+  return sorted.slice(segmentStart);
+}
+
 function spanDays(readings: MileageReadingDraft[]) {
   if (readings.length < 2) return 0;
   return daysBetween(readings[0].readingDate, readings[readings.length - 1].readingDate);
@@ -112,6 +148,41 @@ function repeatedActivity(readings: MileageReadingDraft[]) {
 
 function hasUnresolvedSeriousAnomaly(readings: MileageReadingDraft[]) {
   return readings.some((reading) => reading.anomalyStatus === "NEEDS_REVIEW");
+}
+
+function hasOdometerDiscontinuity(readings: MileageReadingDraft[]) {
+  const sorted = sortMileageReadings(readings);
+  return sorted.some((reading, index) => index > 0 && reading.readingMileage < sorted[index - 1].readingMileage);
+}
+
+function trendLabel(recentAnnualMileage: number, longTermAnnualMileage: number): MileageTrend["label"] {
+  if (longTermAnnualMileage <= 0) return "CONSISTENT";
+  const ratio = recentAnnualMileage / longTermAnnualMileage;
+  if (ratio > 1.2) return "HIGHER_THAN_USUAL";
+  if (ratio < 0.8) return "LOWER_THAN_USUAL";
+  return "CONSISTENT";
+}
+
+export function trendDescription(label: MileageTrend["label"]) {
+  const labels: Record<MileageTrend["label"], string> = {
+    CONSISTENT: "Consistent with the long-term average",
+    HIGHER_THAN_USUAL: "Higher than the long-term average",
+    LOWER_THAN_USUAL: "Lower than the long-term average",
+  };
+  return labels[label];
+}
+
+function recentTrendFor(readings: MileageReadingDraft[], longTermAnnualMileage: number): MileageTrend | null {
+  const segment = currentOdometerSegment(readings);
+  if (segment.length < 3) return null;
+  const period = annualizePeriod(segment[segment.length - 2], segment[segment.length - 1]);
+  if (!period) return null;
+  const label = trendLabel(period.annualMileage, longTermAnnualMileage);
+  return {
+    ...period,
+    label,
+    description: trendDescription(label),
+  };
 }
 
 function classifyConfidence({
@@ -130,13 +201,15 @@ function classifyConfidence({
   const usableSpan = spanDays(usable);
   const verifiedSpan = spanDays(verified);
   const reasonablePace = annualMileage > 0 && annualMileage <= reasonableAnnualMileageCeiling;
+  const hasDiscontinuity = hasOdometerDiscontinuity(usable);
 
   if (
     verified.length >= 3 &&
     verifiedSpan >= 180 &&
     repeatedActivity(verified) &&
     reasonablePace &&
-    !hasUnresolvedSeriousAnomaly(readings)
+    !hasUnresolvedSeriousAnomaly(readings) &&
+    !hasDiscontinuity
   ) {
     return {
       confidence: "HIGH",
@@ -149,7 +222,8 @@ function classifyConfidence({
     usableSpan >= 30 &&
     repeatedActivity(usable) &&
     reasonablePace &&
-    !hasUnresolvedSeriousAnomaly(readings)
+    !hasUnresolvedSeriousAnomaly(readings) &&
+    !hasDiscontinuity
   ) {
     return {
       confidence: "MEDIUM",
@@ -294,32 +368,44 @@ export function calculateDrivingProfile({
   const verified = readingsByStatus(readings, ["VERIFIED"], asOf);
   const imported = readingsByStatus(readings, ["IMPORTED"], asOf);
   const usable = sortMileageReadings(readings.filter((reading) => isUsableMileageReading(reading, asOf)));
+  const verifiedSegment = currentOdometerSegment(verified);
+  const importedSegment = currentOdometerSegment(imported);
+  const usableSegment = currentOdometerSegment(usable);
+  const verifiedLongTerm = verifiedSegment.length >= 2
+    ? annualizePeriod(verifiedSegment[0], verifiedSegment[verifiedSegment.length - 1])
+    : null;
+  const importedLongTerm = importedSegment.length >= 2
+    ? annualizePeriod(importedSegment[0], importedSegment[importedSegment.length - 1])
+    : null;
   let calculatedAnnualMileage = shopDefault;
-  let estimateSource: DrivingProfileEstimateSource = "SHOP_DEFAULT";
+  let calculatedSource: DrivingProfileEstimateSource = "SHOP_DEFAULT";
+  let longTermPeriod: MileagePacePeriod | undefined;
 
-  if (manualOverride) {
-    calculatedAnnualMileage = manualOverride;
-    estimateSource = "MANUAL_OVERRIDE";
-  } else if (verified.length >= 2) {
-    calculatedAnnualMileage = annualize(verified[0], verified[verified.length - 1]) ?? shopDefault;
-    estimateSource = "SHOP_VERIFIED_READINGS";
-  } else if (imported.length >= 2) {
-    calculatedAnnualMileage = annualize(imported[0], imported[imported.length - 1]) ?? shopDefault;
-    estimateSource = "IMPORTED_READINGS";
+  if (verifiedLongTerm) {
+    calculatedAnnualMileage = verifiedLongTerm.annualMileage;
+    calculatedSource = "SHOP_VERIFIED_READINGS";
+    longTermPeriod = verifiedLongTerm;
+  } else if (importedLongTerm) {
+    calculatedAnnualMileage = importedLongTerm.annualMileage;
+    calculatedSource = "IMPORTED_READINGS";
+    longTermPeriod = importedLongTerm;
   } else if (cleanAnnualMileage(customerReportedAnnualMileage)) {
     calculatedAnnualMileage = cleanAnnualMileage(customerReportedAnnualMileage) ?? shopDefault;
-    estimateSource = "CUSTOMER_REPORTED";
+    calculatedSource = "CUSTOMER_REPORTED";
   } else if (verified.length === 1) {
     calculatedAnnualMileage = shopDefault;
-    estimateSource = "VERIFIED_PLUS_DEFAULT";
+    calculatedSource = "VERIFIED_PLUS_DEFAULT";
   }
 
+  const effectiveAnnualMileage = manualOverride ?? calculatedAnnualMileage;
+  const effectiveSource: DrivingProfileEstimateSource = manualOverride ? "MANUAL_OVERRIDE" : calculatedSource;
   const confidence = manualOverride
     ? {
         confidence: "LOW" as DrivingProfileConfidence,
-        reason: "Manual override is active; review before treating the estimate as learned behavior.",
+        reason: "Temporary shop estimate is active; Maintiva keeps calculating verified mileage history in the background.",
       }
-    : classifyConfidence({ readings, annualMileage: calculatedAnnualMileage, source: estimateSource, asOf });
+    : classifyConfidence({ readings, annualMileage: calculatedAnnualMileage, source: calculatedSource, asOf });
+  const recentTrend = longTermPeriod ? recentTrendFor(usableSegment, longTermPeriod.annualMileage) ?? undefined : undefined;
 
   return {
     shopId,
@@ -328,9 +414,10 @@ export function calculateDrivingProfile({
     customerReportedAt: customerReportedAt ?? existingProfile?.customerReportedAt ?? null,
     customerReportedByUserId: customerReportedByUserId ?? existingProfile?.customerReportedByUserId ?? null,
     calculatedAnnualMileage,
-    effectiveAnnualMileage: calculatedAnnualMileage,
-    effectiveDailyMileage: calculatedAnnualMileage / 365,
-    estimateSource,
+    effectiveAnnualMileage,
+    effectiveDailyMileage: effectiveAnnualMileage / 365,
+    effectiveMonthlyMileage: effectiveAnnualMileage / 12,
+    estimateSource: effectiveSource,
     confidence: confidence.confidence,
     confidenceReason: confidence.reason,
     manualAnnualMileageOverride: existingProfile?.manualAnnualMileageOverride ?? null,
@@ -340,6 +427,10 @@ export function calculateDrivingProfile({
     manualOverrideSetByUserId: existingProfile?.manualOverrideSetByUserId ?? null,
     lastCalculatedAt: parseDate(asOf).toISOString(),
     usableReadingCount: usable.length,
+    verifiedReadingCount: verified.length,
+    timeSpanDays: spanDays(usableSegment),
+    longTermPeriod,
+    recentTrend,
     latestMileageReading: usable.at(-1),
   };
 }
