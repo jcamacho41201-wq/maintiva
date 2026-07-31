@@ -165,6 +165,10 @@ export function safeMutationOperation(value: unknown): SafeMutationOperation {
       vehicleId: safeId(payload.vehicleId),
       opportunityId: Array.isArray(payload.opportunityIds) ? safeId(payload.opportunityIds[0]) : undefined,
     },
+    importCsvRows: {
+      table: "ImportHistoryRecord",
+      operation: "INSERT",
+    },
     snoozeOpportunity: {
       table: "OutreachRecord",
       operation: "INSERT",
@@ -228,6 +232,14 @@ export function clientMutationError(error: unknown, operation: SafeMutationOpera
     return {
       code: "ADAPTIVE_MILEAGE_SCHEMA_MISSING",
       message: "The database update for adaptive mileage forecasting has not been installed.",
+      status: 500,
+    };
+  }
+
+  if (schemaCodes.has(database.code ?? "") && operation.action === "importCsvRows") {
+    return {
+      code: "IMPORT_SCHEMA_COMPATIBILITY_ERROR",
+      message: "The import could not be completed because a required application update is missing.",
       status: 500,
     };
   }
