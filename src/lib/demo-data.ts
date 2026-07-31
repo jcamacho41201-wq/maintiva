@@ -256,6 +256,17 @@ export type ImportHistoryRecord = {
   skippedRows: number;
   failedRows: number;
   errorReportUrl?: string;
+  validRows?: number;
+  processedRows?: number;
+  matchedRows?: number;
+  needsReviewRows?: number;
+  currentBatch?: number;
+  lastCompletedRow?: number;
+  batchSize?: number;
+  startedAt?: string;
+  updatedAt?: string;
+  completedAt?: string;
+  safeFailureSummary?: string;
 };
 
 export type OutreachRecord = {

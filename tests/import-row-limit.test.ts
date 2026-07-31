@@ -21,21 +21,21 @@ function makeCsv(rowCount: number, trailingLines = "") {
   ].join("\n") + trailingLines;
 }
 
-describe("temporary CSV import row limit", () => {
-  it("accepts 50 parsed data rows", () => {
-    const rows = parseCsv(makeCsv(MAINTIVA_IMPORT_ROW_LIMIT));
+describe("CSV import absolute row limit", () => {
+  it("accepts 1,000 parsed data rows", () => {
+    const rows = parseCsv(makeCsv(1_000));
 
-    expect(rows).toHaveLength(50);
+    expect(rows).toHaveLength(1_000);
     expect(isImportRowLimitExceeded(rows.length)).toBe(false);
   });
 
-  it("rejects 51 parsed data rows with the safe message", () => {
+  it("rejects rows beyond the absolute safety limit with the safe message", () => {
     const rows = parseCsv(makeCsv(MAINTIVA_IMPORT_ROW_LIMIT + 1));
 
-    expect(rows).toHaveLength(51);
+    expect(rows).toHaveLength(MAINTIVA_IMPORT_ROW_LIMIT + 1);
     expect(isImportRowLimitExceeded(rows.length)).toBe(true);
     expect(importRowLimitMessage(rows.length)).toBe(
-      "This import contains 51 rows. Maintiva currently supports up to 50 rows per import. Split the file into smaller batches and try again.",
+      "This import contains 5001 rows. Maintiva currently supports up to 5000 rows per import. Split the file into smaller batches and try again.",
     );
   });
 
@@ -47,13 +47,13 @@ describe("temporary CSV import row limit", () => {
   });
 
   it("does not count empty trailing lines", () => {
-    const rows = parseCsv(makeCsv(MAINTIVA_IMPORT_ROW_LIMIT, "\n\n\n"));
+    const rows = parseCsv(makeCsv(1_000, "\n\n\n"));
 
-    expect(rows).toHaveLength(50);
+    expect(rows).toHaveLength(1_000);
     expect(isImportRowLimitExceeded(rows.length)).toBe(false);
   });
 
-  it("enforces the server limit before reads, writes, or import history creation", () => {
+  it("enforces the legacy server limit before reads, writes, or import history creation", () => {
     const guardIndex = pilotStateSource.indexOf("if (isImportRowLimitExceeded(rowCount))");
     const stateLoadIndex = pilotStateSource.indexOf("const state = await buildPilotState(context);", guardIndex);
     const transactionIndex = pilotStateSource.indexOf("await prisma.$transaction", guardIndex);
