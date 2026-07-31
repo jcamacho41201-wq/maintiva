@@ -14,6 +14,9 @@ import {
   drivingProfiles,
   importHistory,
   mileageReadings,
+  defaultBookingSettings,
+  defaultBookingWindows,
+  defaultServiceBookingRule,
 } from "../src/lib/demo-data";
 import { getRecordStatus } from "../src/lib/demo-calculations";
 
@@ -24,8 +27,15 @@ const prisma = new PrismaClient({ adapter });
 
 async function main() {
   await prisma.auditLog.deleteMany();
+  await prisma.appointmentChangeRecord.deleteMany();
   await prisma.appointmentService.deleteMany();
   await prisma.appointment.deleteMany();
+  await prisma.customerBookingLink.deleteMany();
+  await prisma.serviceBookingWindow.deleteMany();
+  await prisma.serviceBookingRule.deleteMany();
+  await prisma.shopBookingBlackout.deleteMany();
+  await prisma.shopBookingWindow.deleteMany();
+  await prisma.shopBookingSettings.deleteMany();
   await prisma.vehicleDrivingProfile.deleteMany();
   await prisma.vehicleMileageReading.deleteMany();
   await prisma.importHistoryRecord.deleteMany();
@@ -90,6 +100,53 @@ async function main() {
       isActive: service.isActive,
     })),
   });
+
+  await prisma.shopBookingSettings.create({
+    data: {
+      ...defaultBookingSettings,
+      id: "booking-settings-demo",
+      shopId: demoShop.id,
+    },
+  });
+
+  await prisma.shopBookingWindow.createMany({
+    data: defaultBookingWindows.map((window) => ({
+      ...window,
+      id: `booking-window-demo-${window.dayOfWeek}`,
+      shopId: demoShop.id,
+    })),
+  });
+
+  for (const service of serviceDefinitions) {
+    const bookingRule = defaultServiceBookingRule(service);
+    const rule = await prisma.serviceBookingRule.create({
+      data: {
+        id: bookingRule.id,
+        shopId: bookingRule.shopId,
+        serviceDefinitionId: service.id,
+        bookingEnabled: bookingRule.bookingEnabled,
+        bookingMode: bookingRule.bookingMode,
+        estimatedDurationMinutes: bookingRule.estimatedDurationMinutes,
+        bufferBeforeMinutes: bookingRule.bufferBeforeMinutes,
+        bufferAfterMinutes: bookingRule.bufferAfterMinutes,
+        allowedIntakeType: bookingRule.allowedIntakeType,
+        minimumNoticeMinutes: bookingRule.minimumNoticeMinutes,
+        maximumAdvanceDays: bookingRule.maximumAdvanceDays,
+        maximumSimultaneousBookings: bookingRule.maximumSimultaneousBookings,
+      },
+    });
+    await prisma.serviceBookingWindow.createMany({
+      data: bookingRule.windows.map((window) => ({
+        id: window.id,
+        shopId: window.shopId,
+        serviceBookingRuleId: rule.id,
+        dayOfWeek: window.dayOfWeek,
+        startMinute: window.startMinute,
+        endMinute: window.endMinute,
+        isActive: window.isActive,
+      })),
+    });
+  }
 
   await prisma.customer.createMany({
     data: customers.map((customer) => ({
@@ -187,6 +244,10 @@ async function main() {
           outreachRecords,
           appointments,
           declinedWorkRecords,
+          bookingSettings: defaultBookingSettings,
+          bookingWindows: defaultBookingWindows,
+          bookingBlackouts: [],
+          customerBookingLinks: [],
           importHistory,
           seededAt: new Date().toISOString(),
         },

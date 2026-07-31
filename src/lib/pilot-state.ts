@@ -3,7 +3,9 @@ import { prisma } from "@/lib/prisma";
 import {
   serviceDefinitions as defaultServices,
   type Appointment,
+  type BookingMode,
   type Customer,
+  type CustomerBookingLink,
   type DeclinedWorkRecord,
   type DemoState,
   type ImportHistoryRecord,
@@ -11,10 +13,15 @@ import {
   type VehicleDrivingProfile,
   type VehicleMileageReading,
   type OutreachRecord,
+  type ServiceBookingIntakeOption,
+  type ShopBookingBlackout,
+  type ShopBookingSettings,
   type RevenueOpportunityRecord,
   type TimeIntervalUnit,
   type Vehicle,
   type VehicleMaintenanceRecord,
+  defaultBookingSettings,
+  defaultBookingWindows,
 } from "@/lib/demo-data";
 import { assertSameShop, type AuthenticatedShopContext } from "@/lib/auth";
 import { customerSchema, vehicleSchema } from "@/lib/validation";
@@ -36,6 +43,7 @@ import {
   type ImportType,
   type MaintivaField,
 } from "@/lib/csv-import";
+import { createCustomerBookingLink } from "@/lib/customer-booking";
 
 const onboardingSchema = z.object({
   shopName: z.string().min(2),
@@ -47,9 +55,49 @@ const onboardingSchema = z.object({
 });
 const timeIntervalUnitSchema = z.enum(["DAYS", "MONTHS", "YEARS"]);
 const thresholdTypeSchema = z.enum(["MILES_BEFORE_DUE", "DAYS_BEFORE_DUE", "PERCENT_REMAINING"]);
+const bookingModeSchema = z.enum(["INSTANT", "REQUEST"]);
+const bookingIntakeOptionSchema = z.enum(["WAIT_ONLY", "DROP_OFF_ONLY", "EITHER"]);
 
 const nullableNonnegativeInt = z.number().int().nonnegative().nullable().optional();
 const nullablePositiveInt = z.number().int().positive().nullable().optional();
+
+const shopBookingSettingsSchema = z.object({
+  onlineBookingEnabled: z.boolean(),
+  minimumNoticeMinutes: z.number().int().min(0).max(43_200),
+  maximumAdvanceDays: z.number().int().min(1).max(180),
+  defaultBufferBeforeMinutes: z.number().int().min(0).max(240),
+  defaultBufferAfterMinutes: z.number().int().min(0).max(240),
+  maximumSimultaneousAppointments: z.number().int().min(1).max(20),
+  cancellationCutoffMinutes: z.number().int().min(0).max(43_200),
+  reschedulingCutoffMinutes: z.number().int().min(0).max(43_200),
+  windows: z.array(z.object({
+    dayOfWeek: z.number().int().min(0).max(6),
+    startMinute: z.number().int().min(0).max(1439),
+    endMinute: z.number().int().min(1).max(1440),
+    isActive: z.boolean(),
+  }).refine((value) => value.endMinute > value.startMinute, {
+    message: "Booking window must end after it starts.",
+    path: ["endMinute"],
+  })).min(1).max(7).optional(),
+});
+
+const serviceBookingRuleSchema = z.object({
+  bookingEnabled: z.boolean(),
+  bookingMode: bookingModeSchema,
+  estimatedDurationMinutes: z.number().int().min(15).max(1440),
+  bufferBeforeMinutes: z.number().int().min(0).max(240),
+  bufferAfterMinutes: z.number().int().min(0).max(240),
+  allowedIntakeType: bookingIntakeOptionSchema,
+  minimumNoticeMinutes: z.number().int().min(0).max(43_200).nullable().optional(),
+  maximumAdvanceDays: z.number().int().min(1).max(180).nullable().optional(),
+  maximumSimultaneousBookings: z.number().int().min(1).max(20).nullable().optional(),
+  weekdays: z.array(z.number().int().min(0).max(6)).min(1).max(7),
+  startMinute: z.number().int().min(0).max(1439),
+  endMinute: z.number().int().min(1).max(1440),
+}).refine((value) => value.endMinute > value.startMinute, {
+  message: "Service booking window must end after it starts.",
+  path: ["endMinute"],
+});
 
 const serviceDefinitionSchema = z.object({
   name: z.string().min(1),
@@ -309,13 +357,14 @@ function toStateServiceDefinition(service: {
   category: string;
   defaultMileageInterval: number | null;
   defaultTimeIntervalMonths: number | null;
-  defaultTimeIntervalValue: number | null;
-  defaultTimeIntervalUnit: TimeIntervalUnit;
+  defaultTimeIntervalValue?: number | null;
+  defaultTimeIntervalUnit?: TimeIntervalUnit | null;
   defaultNotificationThreshold: number;
   estimatedLaborMinutes: number;
   defaultPriceCents: number;
   description: string | null;
   isActive: boolean;
+  bookingRule?: StateServiceDefinition["bookingRule"];
 }): MaintenanceService {
   return {
     id: service.id,
@@ -331,6 +380,28 @@ function toStateServiceDefinition(service: {
     defaultPriceCents: service.defaultPriceCents,
     description: service.description ?? "",
     isActive: service.isActive,
+    bookingRule: service.bookingRule ? {
+      id: service.bookingRule.id,
+      shopId: service.bookingRule.shopId,
+      serviceDefinitionId: service.bookingRule.serviceDefinitionId,
+      bookingEnabled: service.bookingRule.bookingEnabled,
+      bookingMode: service.bookingRule.bookingMode,
+      estimatedDurationMinutes: service.bookingRule.estimatedDurationMinutes,
+      bufferBeforeMinutes: service.bookingRule.bufferBeforeMinutes,
+      bufferAfterMinutes: service.bookingRule.bufferAfterMinutes,
+      allowedIntakeType: service.bookingRule.allowedIntakeType,
+      minimumNoticeMinutes: service.bookingRule.minimumNoticeMinutes,
+      maximumAdvanceDays: service.bookingRule.maximumAdvanceDays,
+      maximumSimultaneousBookings: service.bookingRule.maximumSimultaneousBookings,
+      windows: service.bookingRule.windows.map((window) => ({
+        id: window.id,
+        shopId: window.shopId,
+        dayOfWeek: window.dayOfWeek,
+        startMinute: window.startMinute,
+        endMinute: window.endMinute,
+        isActive: window.isActive,
+      })),
+    } : undefined,
   };
 }
 
@@ -629,6 +700,28 @@ type StateServiceDefinition = {
   defaultPriceCents: number;
   description: string | null;
   isActive: boolean;
+  bookingRule?: {
+    id: string;
+    shopId: string;
+    serviceDefinitionId: string;
+    bookingEnabled: boolean;
+    bookingMode: BookingMode;
+    estimatedDurationMinutes: number;
+    bufferBeforeMinutes: number;
+    bufferAfterMinutes: number;
+    allowedIntakeType: ServiceBookingIntakeOption;
+    minimumNoticeMinutes: number | null;
+    maximumAdvanceDays: number | null;
+    maximumSimultaneousBookings: number | null;
+    windows: Array<{
+      id: string;
+      shopId: string;
+      dayOfWeek: number;
+      startMinute: number;
+      endMinute: number;
+      isActive: boolean;
+    }>;
+  } | null;
 };
 
 type StateMaintenanceRecord = {
@@ -740,6 +833,22 @@ export function isMissingAdaptiveMileageSchema(error: unknown) {
     "defaultAnnualMileage",
     "MileageReadingSource",
     "DrivingProfileEstimateSource",
+  ].some((needle) => database.message?.includes(needle) || database.details?.includes(needle));
+}
+
+export function isMissingCustomerBookingSchema(error: unknown) {
+  const database = safeDatabaseError(error);
+  if (!["P2010", "P2021", "P2022", "42P01", "42703", "42704"].includes(database.code ?? "")) return false;
+  return [
+    "ShopBookingSettings",
+    "ShopBookingWindow",
+    "ShopBookingBlackout",
+    "ServiceBookingRule",
+    "ServiceBookingWindow",
+    "CustomerBookingLink",
+    "AppointmentChangeRecord",
+    "bookingLinkId",
+    "intakeType",
   ].some((needle) => database.message?.includes(needle) || database.details?.includes(needle));
 }
 
@@ -1038,11 +1147,12 @@ async function loadStateServiceDefinitions(shopId: string): Promise<StateService
     return await prisma.serviceDefinition.findMany({
       where: { shopId },
       orderBy: { name: "asc" },
+      include: { bookingRule: { include: { windows: true } } },
     });
   } catch (error) {
-    if (!isMissingServiceIntervalSchema(error)) throw error;
+    if (!isMissingServiceIntervalSchema(error) && !isMissingCustomerBookingSchema(error)) throw error;
 
-    console.warn("Maintiva service interval migration missing during state load; using legacy service definition columns.", {
+    console.warn("Maintiva service or booking migration missing during state load; using legacy service definition columns.", {
       database: safeDatabaseError(error),
     });
     return prisma.serviceDefinition.findMany({
@@ -1135,6 +1245,142 @@ async function loadStateDrivingProfiles(shopId: string): Promise<StateDrivingPro
     });
   } catch (error) {
     if (!isMissingAdaptiveMileageSchema(error)) throw error;
+    return [];
+  }
+}
+
+async function loadStateBookingSettings(shopId: string): Promise<ShopBookingSettings> {
+  try {
+    const settings = await prisma.shopBookingSettings.findUnique({ where: { shopId } });
+    return settings ? {
+      id: settings.id,
+      shopId: settings.shopId,
+      onlineBookingEnabled: settings.onlineBookingEnabled,
+      minimumNoticeMinutes: settings.minimumNoticeMinutes,
+      maximumAdvanceDays: settings.maximumAdvanceDays,
+      defaultBufferBeforeMinutes: settings.defaultBufferBeforeMinutes,
+      defaultBufferAfterMinutes: settings.defaultBufferAfterMinutes,
+      maximumSimultaneousAppointments: settings.maximumSimultaneousAppointments,
+      cancellationCutoffMinutes: settings.cancellationCutoffMinutes,
+      reschedulingCutoffMinutes: settings.reschedulingCutoffMinutes,
+    } : { ...defaultBookingSettings, shopId, id: `default-${shopId}` };
+  } catch (error) {
+    if (!isMissingCustomerBookingSchema(error)) throw error;
+    return { ...defaultBookingSettings, shopId, id: `default-${shopId}` };
+  }
+}
+
+async function loadStateBookingWindows(shopId: string) {
+  try {
+    const windows = await prisma.shopBookingWindow.findMany({
+      where: { shopId },
+      orderBy: [{ dayOfWeek: "asc" }, { startMinute: "asc" }],
+    });
+    return windows.length > 0 ? windows.map((window) => ({
+      id: window.id,
+      shopId: window.shopId,
+      dayOfWeek: window.dayOfWeek,
+      startMinute: window.startMinute,
+      endMinute: window.endMinute,
+      isActive: window.isActive,
+    })) : defaultBookingWindows.map((window) => ({ ...window, shopId, id: `default-${shopId}-${window.dayOfWeek}` }));
+  } catch (error) {
+    if (!isMissingCustomerBookingSchema(error)) throw error;
+    return defaultBookingWindows.map((window) => ({ ...window, shopId, id: `default-${shopId}-${window.dayOfWeek}` }));
+  }
+}
+
+async function loadStateBookingBlackouts(shopId: string): Promise<ShopBookingBlackout[]> {
+  try {
+    const blackouts = await prisma.shopBookingBlackout.findMany({
+      where: { shopId },
+      orderBy: { startsAt: "asc" },
+    });
+    return blackouts.map((blackout) => ({
+      id: blackout.id,
+      shopId: blackout.shopId,
+      startsAt: iso(blackout.startsAt),
+      endsAt: iso(blackout.endsAt),
+      reason: blackout.reason ?? undefined,
+      isFullDay: blackout.isFullDay,
+    }));
+  } catch (error) {
+    if (!isMissingCustomerBookingSchema(error)) throw error;
+    return [];
+  }
+}
+
+async function loadStateCustomerBookingLinks(shopId: string): Promise<CustomerBookingLink[]> {
+  try {
+    const links = await prisma.customerBookingLink.findMany({
+      where: { shopId },
+      orderBy: { createdAt: "desc" },
+      take: 100,
+    });
+    return links.map((link) => ({
+      id: link.id,
+      shopId: link.shopId,
+      customerId: link.customerId,
+      vehicleId: link.vehicleId,
+      opportunityId: link.opportunityId ?? undefined,
+      maintenanceRecordIds: link.maintenanceRecordIds,
+      declinedWorkRecordIds: link.declinedWorkRecordIds,
+      status: link.status,
+      expiresAt: iso(link.expiresAt),
+      revokedAt: iso(link.revokedAt) || undefined,
+      usedAt: iso(link.usedAt) || undefined,
+      lastViewedAt: iso(link.lastViewedAt) || undefined,
+      bookingCompletedAt: iso(link.bookingCompletedAt) || undefined,
+      outreachRecordId: link.outreachRecordId ?? undefined,
+      appointmentId: link.appointmentId ?? undefined,
+      createdAt: iso(link.createdAt),
+    }));
+  } catch (error) {
+    if (!isMissingCustomerBookingSchema(error)) throw error;
+    return [];
+  }
+}
+
+async function loadStateOutreachBookingLinkIds(shopId: string) {
+  try {
+    return await prisma.outreachRecord.findMany({
+      where: { shopId },
+      select: {
+        id: true,
+        bookingLinkId: true,
+      },
+    });
+  } catch (error) {
+    if (!isMissingCustomerBookingSchema(error)) throw error;
+    console.warn("Maintiva customer scheduling migration missing during outreach state load; omitting booking link references.", {
+      database: safeDatabaseError(error),
+    });
+    return [];
+  }
+}
+
+async function loadStateAppointmentBookingMetadata(shopId: string) {
+  try {
+    return await prisma.appointment.findMany({
+      where: { shopId },
+      select: {
+        id: true,
+        bookingLinkId: true,
+        intakeType: true,
+        customerNotes: true,
+        internalNotes: true,
+        requestedAt: true,
+        approvedAt: true,
+        declinedAt: true,
+        customerCancelledAt: true,
+        rescheduledAt: true,
+      },
+    });
+  } catch (error) {
+    if (!isMissingCustomerBookingSchema(error)) throw error;
+    console.warn("Maintiva customer scheduling migration missing during appointment state load; omitting booking metadata.", {
+      database: safeDatabaseError(error),
+    });
     return [];
   }
 }
@@ -1336,38 +1582,81 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
       serviceHistoryRecords: { orderBy: { completedAt: "desc" } },
       declinedWorkRecords: { orderBy: { declinedAt: "desc" } },
       revenueOpportunities: { orderBy: [{ priority: "asc" }, { updatedAt: "desc" }] },
-      outreachRecords: { orderBy: { createdAt: "desc" } },
+      outreachRecords: {
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          shopId: true,
+          customerId: true,
+          vehicleId: true,
+          message: true,
+          channel: true,
+          status: true,
+          copiedAt: true,
+          manuallySentAt: true,
+          responseStatus: true,
+          followUpDate: true,
+          appointmentId: true,
+          performedByUserId: true,
+          createdAt: true,
+        },
+      },
       importHistory: { orderBy: { importedAt: "desc" } },
       appointments: {
-        include: { services: true },
+        select: {
+          id: true,
+          shopId: true,
+          customerId: true,
+          vehicleId: true,
+          scheduledStart: true,
+          scheduledEnd: true,
+          status: true,
+          totalLaborMinutes: true,
+          totalPriceCents: true,
+          source: true,
+          attributionSource: true,
+          opportunityId: true,
+          outreachRecordId: true,
+          completedRevenueCents: true,
+          completedLaborMinutes: true,
+          notes: true,
+          completedAt: true,
+          services: true,
+        },
         orderBy: { scheduledStart: "asc" },
       },
     },
   });
   assertSameShop(context, shop.id);
-  const [serviceDefinitions, maintenanceRecords, shopDefaultAnnualMileage, mileageReadingRows, drivingProfileRows] = await Promise.all([
+  const [
+    serviceDefinitions,
+    maintenanceRecords,
+    shopDefaultAnnualMileage,
+    mileageReadingRows,
+    drivingProfileRows,
+    bookingSettings,
+    bookingWindows,
+    bookingBlackouts,
+    customerBookingLinks,
+    outreachBookingLinkIds,
+    appointmentBookingMetadata,
+  ] = await Promise.all([
     loadStateServiceDefinitions(context.shopId),
     loadStateMaintenanceRecords(context.shopId),
     loadShopDefaultAnnualMileage(context.shopId),
     loadStateMileageReadings(context.shopId),
     loadStateDrivingProfiles(context.shopId),
+    loadStateBookingSettings(context.shopId),
+    loadStateBookingWindows(context.shopId),
+    loadStateBookingBlackouts(context.shopId),
+    loadStateCustomerBookingLinks(context.shopId),
+    loadStateOutreachBookingLinkIds(context.shopId),
+    loadStateAppointmentBookingMetadata(context.shopId),
   ]);
 
-  const services: MaintenanceService[] = serviceDefinitions.map((service) => ({
-    id: service.id,
-    shopId: service.shopId,
-    name: service.name,
-    category: service.category,
-    defaultMileageInterval: service.defaultMileageInterval,
-    defaultTimeIntervalMonths: service.defaultTimeIntervalMonths,
-    defaultTimeIntervalValue: service.defaultTimeIntervalValue ?? service.defaultTimeIntervalMonths,
-    defaultTimeIntervalUnit: service.defaultTimeIntervalUnit ?? "MONTHS",
-    defaultNotificationThreshold: service.defaultNotificationThreshold,
-    estimatedLaborMinutes: service.estimatedLaborMinutes,
-    defaultPriceCents: service.defaultPriceCents,
-    description: service.description ?? "",
-    isActive: service.isActive,
-  }));
+  const services: MaintenanceService[] = serviceDefinitions.map(toStateServiceDefinition);
+  const outreachBookingLinkById = new Map(outreachBookingLinkIds.map((record) => [record.id, record.bookingLinkId]));
+  const appointmentBookingMetadataById = new Map(appointmentBookingMetadata.map((appointment) => [appointment.id, appointment]));
   const serviceById = new Map(services.map((service) => [service.id, service]));
   const readingsByVehicle = new Map<string, StateMileageReading[]>();
   for (const reading of mileageReadingRows) {
@@ -1648,32 +1937,49 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
       responseStatus: record.responseStatus,
       followUpDate: iso(record.followUpDate) || undefined,
       appointmentId: record.appointmentId ?? undefined,
+      bookingLinkId: outreachBookingLinkById.get(record.id) ?? undefined,
       performedByUserId: record.performedByUserId ?? undefined,
       status: record.status,
     })),
-    appointments: shop.appointments.map((appointment): Appointment => ({
-      id: appointment.id,
-      shopId: appointment.shopId,
-      customerId: appointment.customerId,
-      vehicleId: appointment.vehicleId,
-      maintenanceRecordIds: appointment.services
-        .map((service) => service.maintenanceRecordId)
-        .filter((id): id is string => Boolean(id)),
-      serviceNames: appointment.services.map((service) => service.serviceName),
-      scheduledStart: iso(appointment.scheduledStart),
-      scheduledEnd: iso(appointment.scheduledEnd),
-      status: appointment.status,
-      totalPriceCents: appointment.totalPriceCents,
-      totalLaborHours: appointment.totalLaborMinutes / 60,
-      source: appointment.source,
-      attributionSource: appointment.attributionSource,
-      opportunityId: appointment.opportunityId ?? undefined,
-      outreachRecordId: appointment.outreachRecordId ?? undefined,
-      completedRevenueCents: appointment.completedRevenueCents ?? undefined,
-      completedLaborHours: appointment.completedLaborMinutes ? appointment.completedLaborMinutes / 60 : undefined,
-      completedAt: iso(appointment.completedAt) || undefined,
-      notes: appointment.notes ?? "",
-    })),
+    appointments: shop.appointments.map((appointment): Appointment => {
+      const bookingMetadata = appointmentBookingMetadataById.get(appointment.id);
+      return {
+        id: appointment.id,
+        shopId: appointment.shopId,
+        customerId: appointment.customerId,
+        vehicleId: appointment.vehicleId,
+        maintenanceRecordIds: appointment.services
+          .map((service) => service.maintenanceRecordId)
+          .filter((id): id is string => Boolean(id)),
+        serviceNames: appointment.services.map((service) => service.serviceName),
+        scheduledStart: iso(appointment.scheduledStart),
+        scheduledEnd: iso(appointment.scheduledEnd),
+        status: appointment.status,
+        totalPriceCents: appointment.totalPriceCents,
+        totalLaborHours: appointment.totalLaborMinutes / 60,
+        source: appointment.source,
+        attributionSource: appointment.attributionSource,
+        opportunityId: appointment.opportunityId ?? undefined,
+        outreachRecordId: appointment.outreachRecordId ?? undefined,
+        bookingLinkId: bookingMetadata?.bookingLinkId ?? undefined,
+        intakeType: bookingMetadata?.intakeType ?? undefined,
+        customerNotes: bookingMetadata?.customerNotes ?? undefined,
+        internalNotes: bookingMetadata?.internalNotes ?? undefined,
+        completedRevenueCents: appointment.completedRevenueCents ?? undefined,
+        completedLaborHours: appointment.completedLaborMinutes ? appointment.completedLaborMinutes / 60 : undefined,
+        completedAt: iso(appointment.completedAt) || undefined,
+        requestedAt: iso(bookingMetadata?.requestedAt) || undefined,
+        approvedAt: iso(bookingMetadata?.approvedAt) || undefined,
+        declinedAt: iso(bookingMetadata?.declinedAt) || undefined,
+        customerCancelledAt: iso(bookingMetadata?.customerCancelledAt) || undefined,
+        rescheduledAt: iso(bookingMetadata?.rescheduledAt) || undefined,
+        notes: appointment.notes ?? "",
+      };
+    }),
+    bookingSettings,
+    bookingWindows,
+    bookingBlackouts,
+    customerBookingLinks,
     importHistory: shop.importHistory.map((record): ImportHistoryRecord => ({
       id: record.id,
       shopId: record.shopId,
@@ -2965,6 +3271,7 @@ export async function recordPilotOpportunityContact(
     channel: OutreachRecord["channel"];
     responseStatus: OutreachRecord["responseStatus"];
     followUpDate?: string;
+    bookingLinkId?: string;
   },
 ) {
   const targets = await loadOpenQueueTargets(context, input);
@@ -2983,11 +3290,24 @@ export async function recordPilotOpportunityContact(
         status: "MANUALLY_SENT",
         responseStatus: input.responseStatus,
         followUpDate,
+        bookingLinkId: input.bookingLinkId ?? null,
         copiedAt: input.channel === "TEXT" || input.channel === "EMAIL" ? new Date() : null,
         manuallySentAt: new Date(),
         performedByUserId: context.userId,
       },
     });
+
+    if (input.bookingLinkId) {
+      await tx.customerBookingLink.updateMany({
+        where: {
+          id: input.bookingLinkId,
+          shopId: context.shopId,
+          customerId: input.customerId,
+          vehicleId: input.vehicleId,
+        },
+        data: { outreachRecordId: outreach.id },
+      });
+    }
 
     if (targets.maintenanceRecordIds.length > 0) {
       await tx.vehicleMaintenanceRecord.updateMany({
@@ -3012,6 +3332,223 @@ export async function recordPilotOpportunityContact(
         lastActivityAt: new Date(),
       },
     });
+  });
+}
+
+export async function createPilotBookingLink(
+  context: AuthenticatedShopContext,
+  input: {
+    customerId: string;
+    vehicleId: string;
+    opportunityIds: string[];
+    appUrl: string;
+  },
+) {
+  const targets = await loadOpenQueueTargets(context, input);
+  const link = await createCustomerBookingLink({
+    context,
+    appUrl: input.appUrl,
+    customerId: input.customerId,
+    vehicleId: input.vehicleId,
+    opportunityIds: targets.opportunityIds,
+  });
+  const [customer, vehicle, shop] = await Promise.all([
+    prisma.customer.findFirst({ where: { id: input.customerId, shopId: context.shopId } }),
+    prisma.vehicle.findFirst({ where: { id: input.vehicleId, shopId: context.shopId } }),
+    prisma.shop.findFirst({ where: { id: context.shopId } }),
+  ]);
+  const serviceNames = [
+    ...targets.maintenanceRecords.map((record) => record.serviceName),
+    ...targets.declinedWorkRecords.map((record) => record.serviceName),
+  ];
+  return {
+    ...link,
+    message: `Hi ${customer?.firstName ?? "there"}, this is ${shop?.name ?? context.shopName}. Based on your ${vehicle ? `${vehicle.year} ${vehicle.make} ${vehicle.model}` : "vehicle"} service history, ${serviceNames.join(", ") || "recommended maintenance"} is ready to schedule. You can view available times and schedule here: ${link.url}`,
+  };
+}
+
+export async function savePilotBookingSettings(context: AuthenticatedShopContext, input: unknown) {
+  const parsed = shopBookingSettingsSchema.parse(input);
+  const { windows, ...settings } = parsed;
+  await prisma.$transaction(async (tx) => {
+    await tx.shopBookingSettings.upsert({
+      where: { shopId: context.shopId },
+      create: {
+        shopId: context.shopId,
+        ...settings,
+      },
+      update: settings,
+    });
+    if (windows) {
+      await tx.shopBookingWindow.deleteMany({ where: { shopId: context.shopId } });
+      await tx.shopBookingWindow.createMany({
+        data: Array.from(new Map(windows.map((window) => [window.dayOfWeek, window])).values()).map((window) => ({
+          shopId: context.shopId,
+          dayOfWeek: window.dayOfWeek,
+          startMinute: window.startMinute,
+          endMinute: window.endMinute,
+          isActive: window.isActive,
+        })),
+      });
+    }
+  });
+}
+
+export async function savePilotServiceBookingRule(
+  context: AuthenticatedShopContext,
+  serviceDefinitionId: string,
+  input: unknown,
+) {
+  const parsed = serviceBookingRuleSchema.parse(input);
+  await requireServiceDefinitionInActiveShop(context, serviceDefinitionId);
+
+  await prisma.$transaction(async (tx) => {
+    const rule = await tx.serviceBookingRule.upsert({
+      where: { serviceDefinitionId },
+      create: {
+        shopId: context.shopId,
+        serviceDefinitionId,
+        bookingEnabled: parsed.bookingEnabled,
+        bookingMode: parsed.bookingMode,
+        estimatedDurationMinutes: parsed.estimatedDurationMinutes,
+        bufferBeforeMinutes: parsed.bufferBeforeMinutes,
+        bufferAfterMinutes: parsed.bufferAfterMinutes,
+        allowedIntakeType: parsed.allowedIntakeType,
+        minimumNoticeMinutes: parsed.minimumNoticeMinutes ?? null,
+        maximumAdvanceDays: parsed.maximumAdvanceDays ?? null,
+        maximumSimultaneousBookings: parsed.maximumSimultaneousBookings ?? null,
+      },
+      update: {
+        bookingEnabled: parsed.bookingEnabled,
+        bookingMode: parsed.bookingMode,
+        estimatedDurationMinutes: parsed.estimatedDurationMinutes,
+        bufferBeforeMinutes: parsed.bufferBeforeMinutes,
+        bufferAfterMinutes: parsed.bufferAfterMinutes,
+        allowedIntakeType: parsed.allowedIntakeType,
+        minimumNoticeMinutes: parsed.minimumNoticeMinutes ?? null,
+        maximumAdvanceDays: parsed.maximumAdvanceDays ?? null,
+        maximumSimultaneousBookings: parsed.maximumSimultaneousBookings ?? null,
+      },
+    });
+    await tx.serviceBookingWindow.deleteMany({
+      where: { shopId: context.shopId, serviceBookingRuleId: rule.id },
+    });
+    await tx.serviceBookingWindow.createMany({
+      data: Array.from(new Set(parsed.weekdays)).map((dayOfWeek) => ({
+        shopId: context.shopId,
+        serviceBookingRuleId: rule.id,
+        dayOfWeek,
+        startMinute: parsed.startMinute,
+        endMinute: parsed.endMinute,
+        isActive: true,
+      })),
+    });
+  });
+}
+
+export async function approvePilotAppointmentRequest(context: AuthenticatedShopContext, appointmentId: string) {
+  const appointment = await prisma.appointment.findFirst({
+    where: { id: appointmentId, shopId: context.shopId },
+    include: { services: true },
+  });
+  if (!appointment || appointment.status !== "REQUESTED") {
+    throw new SafeActionError({
+      code: "APPOINTMENT_REQUEST_NOT_FOUND",
+      message: "Appointment request was not found.",
+      status: 404,
+      table: "Appointment",
+      operation: "UPDATE",
+    });
+  }
+
+  const maintenanceRecordIds = appointment.services
+    .map((service) => service.maintenanceRecordId)
+    .filter((id): id is string => Boolean(id));
+  const declinedWorkRecordIds = await prisma.declinedWorkRecord.findMany({
+    where: { appointmentId: appointment.id, shopId: context.shopId },
+    select: { id: true },
+  });
+  await prisma.$transaction(async (tx) => {
+    await tx.appointment.update({
+      where: { id: appointment.id },
+      data: { status: "CONFIRMED", approvedAt: new Date() },
+    });
+    if (appointment.bookingLinkId) {
+      await tx.customerBookingLink.updateMany({
+        where: { id: appointment.bookingLinkId, shopId: context.shopId },
+        data: {
+          status: "COMPLETED",
+          bookingCompletedAt: new Date(),
+          appointmentId: appointment.id,
+        },
+      });
+    }
+    await tx.vehicleMaintenanceRecord.updateMany({
+      where: { id: { in: maintenanceRecordIds }, shopId: context.shopId },
+      data: { outreachStatus: "SCHEDULED", appointmentId: appointment.id, updatedByUserId: context.userId },
+    });
+    await tx.declinedWorkRecord.updateMany({
+      where: { appointmentId: appointment.id, shopId: context.shopId },
+      data: { status: "BOOKED", outreachStatus: "SCHEDULED" },
+    });
+    await tx.maintenanceRevenueOpportunity.updateMany({
+      where: {
+        shopId: context.shopId,
+        OR: [
+          appointment.opportunityId ? { id: appointment.opportunityId } : undefined,
+          maintenanceRecordIds.length ? { maintenanceRecordId: { in: maintenanceRecordIds } } : undefined,
+          declinedWorkRecordIds.length ? { declinedWorkRecordId: { in: declinedWorkRecordIds.map((record) => record.id) } } : undefined,
+        ].filter((item): item is Exclude<typeof item, undefined> => Boolean(item)),
+      },
+      data: { stage: "BOOKED", lastActivityAt: new Date() },
+    });
+  });
+}
+
+export async function declinePilotAppointmentRequest(
+  context: AuthenticatedShopContext,
+  appointmentId: string,
+  input: unknown,
+) {
+  const parsed = z.object({ reason: z.string().optional() }).parse(input ?? {});
+  const appointment = await prisma.appointment.findFirst({
+    where: { id: appointmentId, shopId: context.shopId },
+  });
+  if (!appointment || appointment.status !== "REQUESTED") {
+    throw new SafeActionError({
+      code: "APPOINTMENT_REQUEST_NOT_FOUND",
+      message: "Appointment request was not found.",
+      status: 404,
+      table: "Appointment",
+      operation: "UPDATE",
+    });
+  }
+  await prisma.$transaction(async (tx) => {
+    await tx.appointment.update({
+      where: { id: appointment.id },
+      data: {
+        status: "CANCELLED",
+        declinedAt: new Date(),
+        internalNotes: parsed.reason ?? appointment.internalNotes,
+      },
+    });
+    await tx.appointmentChangeRecord.create({
+      data: {
+        shopId: context.shopId,
+        appointmentId: appointment.id,
+        bookingLinkId: appointment.bookingLinkId,
+        action: "SHOP_DECLINED_REQUEST",
+        previousStart: appointment.scheduledStart,
+        previousEnd: appointment.scheduledEnd,
+        reason: parsed.reason,
+      },
+    });
+    if (appointment.opportunityId) {
+      await tx.maintenanceRevenueOpportunity.updateMany({
+        where: { id: appointment.opportunityId, shopId: context.shopId },
+        data: { stage: "RESPONDED", lastActivityAt: new Date() },
+      });
+    }
   });
 }
 

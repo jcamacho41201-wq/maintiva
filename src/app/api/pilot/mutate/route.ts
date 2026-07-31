@@ -12,9 +12,12 @@ import {
   addPilotMaintenanceItem,
   addPilotServiceDefinition,
   addPilotVehicle,
+  approvePilotAppointmentRequest,
   bookPilotAppointment,
   buildPilotState,
   completePilotAppointment,
+  createPilotBookingLink,
+  declinePilotAppointmentRequest,
   deactivatePilotMaintenanceItem,
   endPilotOpportunitySnooze,
   importPilotCsvRows,
@@ -26,6 +29,8 @@ import {
   reviewPilotMileageReading,
   setPilotCustomerReportedMileage,
   setPilotManualMileageOverride,
+  savePilotBookingSettings,
+  savePilotServiceBookingRule,
   snoozePilotOpportunity,
   updatePilotMaintenanceItem,
   updatePilotCustomer,
@@ -56,6 +61,12 @@ const mutationSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("addServiceDefinition"), payload: z.unknown() }),
   z.object({
     action: z.literal("updateServiceDefinition"),
+    id: z.string().min(1),
+    payload: z.unknown(),
+  }),
+  z.object({ action: z.literal("saveBookingSettings"), payload: z.unknown() }),
+  z.object({
+    action: z.literal("saveServiceBookingRule"),
     id: z.string().min(1),
     payload: z.unknown(),
   }),
@@ -115,6 +126,15 @@ const mutationSchema = z.discriminatedUnion("action", [
         "DO_NOT_CONTACT",
       ]),
       followUpDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().or(z.literal("")),
+      bookingLinkId: z.string().min(1).optional(),
+    }),
+  }),
+  z.object({
+    action: z.literal("createBookingLink"),
+    payload: z.object({
+      customerId: z.string().min(1),
+      vehicleId: z.string().min(1),
+      opportunityIds: z.array(z.string().min(1)).min(1),
     }),
   }),
   z.object({
@@ -165,6 +185,15 @@ const mutationSchema = z.discriminatedUnion("action", [
       completedAt: z.string().min(8),
       notes: z.string().optional(),
     }),
+  }),
+  z.object({
+    action: z.literal("approveAppointmentRequest"),
+    id: z.string().min(1),
+  }),
+  z.object({
+    action: z.literal("declineAppointmentRequest"),
+    id: z.string().min(1),
+    payload: z.object({ reason: z.string().optional() }).optional(),
   }),
   z.object({
     action: z.literal("importCsvRows"),
@@ -224,6 +253,7 @@ export async function POST(request: Request) {
     context = await requireActiveShopMembership();
     const body = mutationSchema.parse(json);
     operation = safeMutationOperation(body);
+    let bookingLink: Awaited<ReturnType<typeof createPilotBookingLink>> | undefined;
 
     switch (body.action) {
       case "addCustomer":
@@ -243,6 +273,12 @@ export async function POST(request: Request) {
         break;
       case "updateServiceDefinition":
         await updatePilotServiceDefinition(context, body.id, body.payload);
+        break;
+      case "saveBookingSettings":
+        await savePilotBookingSettings(context, body.payload);
+        break;
+      case "saveServiceBookingRule":
+        await savePilotServiceBookingRule(context, body.id, body.payload);
         break;
       case "addMaintenanceItem":
         await addPilotMaintenanceItem(context, body.payload);
@@ -280,6 +316,12 @@ export async function POST(request: Request) {
       case "recordOpportunityContact":
         await recordPilotOpportunityContact(context, body.payload);
         break;
+      case "createBookingLink":
+        bookingLink = await createPilotBookingLink(context, {
+          ...body.payload,
+          appUrl: request.headers.get("origin") ?? process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000",
+        });
+        break;
       case "bookAppointment":
         await bookPilotAppointment(context, body.payload);
         break;
@@ -292,12 +334,18 @@ export async function POST(request: Request) {
       case "completeAppointment":
         await completePilotAppointment(context, body.payload);
         break;
+      case "approveAppointmentRequest":
+        await approvePilotAppointmentRequest(context, body.id);
+        break;
+      case "declineAppointmentRequest":
+        await declinePilotAppointmentRequest(context, body.id, body.payload);
+        break;
       case "importCsvRows":
         await importPilotCsvRows(context, body.payload);
         break;
     }
 
-    return NextResponse.json({ state: await buildPilotState(context) });
+    return NextResponse.json({ state: await buildPilotState(context), bookingLink });
   } catch (error) {
     logPilotMutationFailure({ error, context, payload: json, operation });
     if (error instanceof OnboardingRequiredError) {

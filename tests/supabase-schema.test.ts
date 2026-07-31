@@ -17,6 +17,11 @@ const intervalCatchupMigrationPath = path.join(
   "supabase/migrations/20260729143000_service_interval_schema_catchup.sql",
 );
 const intervalCatchupMigrationSql = fs.readFileSync(intervalCatchupMigrationPath, "utf8");
+const customerSchedulingMigrationPath = path.join(
+  process.cwd(),
+  "supabase/migrations/20260731101500_customer_self_scheduling_foundation.sql",
+);
+const customerSchedulingMigrationSql = fs.readFileSync(customerSchedulingMigrationPath, "utf8");
 
 describe("Supabase production schema migration", () => {
   it("creates the app tables used for shop creation, membership, customers, vehicles, imports, and customer queries", () => {
@@ -143,5 +148,32 @@ describe("Supabase production schema migration", () => {
     expect(intervalCatchupMigrationSql).not.toContain("DISABLE ROW LEVEL SECURITY");
     expect(intervalCatchupMigrationSql).not.toContain("WITH CHECK (true)");
     expect(intervalCatchupMigrationSql).not.toContain("USING (true)");
+  });
+
+  it("adds customer self-scheduling tables and guarded tenant policies without loosening RLS", () => {
+    [
+      'CREATE TYPE public."BookingMode"',
+      'CREATE TYPE public."BookingIntakeType"',
+      'CREATE TYPE public."ServiceBookingIntakeOption"',
+      'CREATE TYPE public."CustomerBookingLinkStatus"',
+      'CREATE TABLE IF NOT EXISTS public."ShopBookingSettings"',
+      'CREATE TABLE IF NOT EXISTS public."ShopBookingWindow"',
+      'CREATE TABLE IF NOT EXISTS public."ShopBookingBlackout"',
+      'CREATE TABLE IF NOT EXISTS public."ServiceBookingRule"',
+      'CREATE TABLE IF NOT EXISTS public."ServiceBookingWindow"',
+      'CREATE TABLE IF NOT EXISTS public."CustomerBookingLink"',
+      'CREATE TABLE IF NOT EXISTS public."AppointmentChangeRecord"',
+      'ADD COLUMN IF NOT EXISTS "bookingLinkId"',
+      'ADD COLUMN IF NOT EXISTS "intakeType"',
+      'ALTER TABLE public."CustomerBookingLink" ENABLE ROW LEVEL SECURITY',
+      'WITH CHECK (public.maintiva_is_shop_member("shopId"))',
+      'GRANT USAGE ON TYPE public."BookingMode" TO authenticated',
+    ].forEach((identifier) => {
+      expect(customerSchedulingMigrationSql).toContain(identifier);
+    });
+
+    expect(customerSchedulingMigrationSql).not.toContain("DISABLE ROW LEVEL SECURITY");
+    expect(customerSchedulingMigrationSql).not.toContain("WITH CHECK (true)");
+    expect(customerSchedulingMigrationSql).not.toContain("USING (true)");
   });
 });

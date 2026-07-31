@@ -26,7 +26,11 @@ import { cn } from "@/lib/utils";
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const { state, resetDemoData, ready } = useDemoStore();
+  const { state, resetDemoData, ready, loadError } = useDemoStore();
+  if (pathname.startsWith("/book/")) {
+    return <div className="min-h-screen bg-zinc-50 text-zinc-950">{children}</div>;
+  }
+
   const showDemoReset = process.env.NEXT_PUBLIC_MAINTIVA_ENABLE_DEMO_RESET === "true";
   const authConfigured = isBrowserSupabaseConfigured();
   const canResetLocalDemo = state.shop.isDemo && !authConfigured && showDemoReset;
@@ -70,7 +74,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <p className="text-xs font-medium uppercase tracking-wide text-zinc-500">
             Current shop
           </p>
-          <p className="mt-1 font-semibold">{ready ? state.shop.name : "Loading shop"}</p>
+          <p className="mt-1 font-semibold">
+            {loadError ? "Shop load error" : ready ? state.shop.name : "Loading shop"}
+          </p>
           {state.shop.isDemo && (
             <span className="mt-2 inline-flex rounded-full border border-violet-200 bg-violet-50 px-2.5 py-1 text-xs font-semibold text-violet-700">
               Demo tenant
@@ -102,7 +108,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </nav>
         <div className="border-t border-zinc-100 p-4">
           <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-3">
-            <p className="text-sm font-semibold">{currentUser?.name ?? (ready ? "Team member" : "Loading user")}</p>
+            <p className="text-sm font-semibold">{currentUser?.name ?? (loadError ? "Sign in again" : ready ? "Team member" : "Loading user")}</p>
             <p className="text-xs text-zinc-500">{currentUser?.role ?? ""}</p>
           </div>
         </div>
