@@ -154,6 +154,7 @@ function stageFor(input: {
       ? ("LOST" as const)
       : ("RESPONDED" as const);
   }
+  if (input.outreachStatus === "SNOOZED") return "CONTACTED" as const;
   if (["MANUALLY_SENT", "RESPONDED", "SCHEDULED"].includes(input.outreachStatus)) {
     return "CONTACTED" as const;
   }
@@ -205,6 +206,35 @@ function lastOutreachForOpportunity(state: DemoState, opportunity: RevenueOpport
     )
     .sort((a, b) => (a.manuallySentAt ?? a.sentAt).localeCompare(b.manuallySentAt ?? b.sentAt))
     .at(-1);
+}
+
+function isActiveSnooze(record: ReturnType<typeof lastOutreachForOpportunity>) {
+  if (!record || record.status !== "SNOOZED" || !record.followUpDate) return false;
+  return new Date(record.followUpDate).getTime() > Date.now();
+}
+
+function effectiveOutreachStatus({
+  lastOutreach,
+  sourceStatus,
+}: {
+  lastOutreach: ReturnType<typeof lastOutreachForOpportunity>;
+  sourceStatus?: string;
+}) {
+  if (isActiveSnooze(lastOutreach)) return "SNOOZED";
+  if (lastOutreach?.status === "SNOOZED") return sourceStatus === "SNOOZED" ? "NEEDS_OUTREACH" : sourceStatus ?? "NEEDS_OUTREACH";
+  return lastOutreach?.status ?? sourceStatus ?? "NEEDS_OUTREACH";
+}
+
+function effectiveStage({
+  stage,
+  lastOutreach,
+}: {
+  stage: RevenueStage;
+  lastOutreach: ReturnType<typeof lastOutreachForOpportunity>;
+}) {
+  if (isActiveSnooze(lastOutreach)) return "CONTACTED" as const;
+  if (lastOutreach?.status === "SNOOZED" && stage === "CONTACTED") return "IDENTIFIED" as const;
+  return stage;
 }
 
 function opportunityServiceName(
@@ -267,6 +297,8 @@ function buildPersistedRevenueOpportunities(state: DemoState): RevenueOpportunit
         estimatedLaborHours: opportunity.estimatedLaborHours,
         appointmentStatus: "UNSCHEDULED",
       } as RevenueOpportunity);
+      const sourceOutreachStatus = declinedWorkRecord?.outreachStatus ?? maintenanceRecord?.outreachStatus ?? "NEEDS_OUTREACH";
+      const displayStage = effectiveStage({ stage: opportunity.stage, lastOutreach });
 
       return {
         id: opportunity.id,
@@ -295,7 +327,10 @@ function buildPersistedRevenueOpportunities(state: DemoState): RevenueOpportunit
         milesOverdue: opportunity.milesOverdue,
         estimatedRevenueCents: opportunity.estimatedRevenueCents,
         estimatedLaborHours: opportunity.estimatedLaborHours,
-        outreachStatus: lastOutreach?.status ?? declinedWorkRecord?.outreachStatus ?? maintenanceRecord?.outreachStatus ?? "NEEDS_OUTREACH",
+        outreachStatus: effectiveOutreachStatus({
+          lastOutreach,
+          sourceStatus: sourceOutreachStatus,
+        }),
         appointmentStatus: appointmentForOpportunity(state, {
           ...opportunity,
           customerName: "",
@@ -310,9 +345,9 @@ function buildPersistedRevenueOpportunities(state: DemoState): RevenueOpportunit
           appointmentStatus: "",
           lastActivityAt: opportunity.lastActivityAt ?? opportunity.createdAt,
         } as RevenueOpportunity)?.status ?? "UNSCHEDULED",
-        stage: opportunity.stage,
+        stage: displayStage,
         createdAt: opportunity.createdAt,
-        lastActivityAt: lastOutreach?.manuallySentAt ?? lastOutreach?.sentAt ?? opportunity.lastActivityAt ?? opportunity.createdAt,
+        lastActivityAt: lastOutreach?.followUpDate ?? lastOutreach?.manuallySentAt ?? lastOutreach?.sentAt ?? opportunity.lastActivityAt ?? opportunity.createdAt,
       };
     })
     .filter((item): item is RevenueOpportunity => item !== null)
@@ -499,7 +534,7 @@ export function groupRevenueOpportunities(opportunities: RevenueOpportunity[]): 
         .map((item) => item.lastActivityAt)
         .sort()
         .at(-1),
-      nextAction: booked ? "Complete appointment" : contacted ? "Record response" : "Generate message",
+      nextAction: booked ? "Complete appointment" : contacted ? "Record response" : "Contact customer",
     };
   });
 }

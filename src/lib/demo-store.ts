@@ -1128,6 +1128,323 @@ export function useDemoStore() {
         });
         return outreachId;
       },
+      async recordOpportunityContact(input: {
+        customerId: string;
+        vehicleId: string;
+        opportunityIds: string[];
+        maintenanceRecordIds: string[];
+        declinedWorkRecordIds: string[];
+        message: string;
+        channel: OutreachRecord["channel"];
+        responseStatus: OutreachRecord["responseStatus"];
+        followUpDate?: string;
+      }) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "recordOpportunityContact", payload: input });
+        }
+
+        const outreachId = `outreach-${Date.now()}`;
+        const sourceStatus = input.responseStatus === "DECLINED" || input.responseStatus === "DO_NOT_CONTACT"
+          ? "DECLINED"
+          : input.responseStatus !== "NO_RESPONSE"
+            ? "RESPONDED"
+            : "MANUALLY_SENT";
+        const stage = input.responseStatus === "DECLINED" || input.responseStatus === "DO_NOT_CONTACT"
+          ? "LOST"
+          : input.responseStatus !== "NO_RESPONSE"
+            ? "RESPONDED"
+            : "CONTACTED";
+
+        update((draft) => {
+          const selected = draft.maintenanceRecords.filter((record) =>
+            input.maintenanceRecordIds.includes(record.id),
+          );
+          const declined = draft.declinedWorkRecords.filter((record) =>
+            input.declinedWorkRecordIds.includes(record.id),
+          );
+          return {
+            ...draft,
+            outreachRecords: [
+              ...draft.outreachRecords,
+              {
+                id: outreachId,
+                shopId: draft.shop.id,
+                customerId: input.customerId,
+                vehicleId: input.vehicleId,
+                maintenanceRecordIds: input.maintenanceRecordIds,
+                serviceNames: [
+                  ...selected.map((record) => record.serviceName),
+                  ...declined.map((record) => record.serviceName),
+                ],
+                message: input.message,
+                channel: input.channel,
+                sentAt: new Date().toISOString(),
+                copiedAt: ["TEXT", "EMAIL"].includes(input.channel) ? new Date().toISOString() : undefined,
+                manuallySentAt: new Date().toISOString(),
+                responseStatus: input.responseStatus,
+                followUpDate: input.followUpDate ? new Date(`${input.followUpDate}T12:00:00`).toISOString() : undefined,
+                performedByUserId: actorUserId(draft),
+                status: "MANUALLY_SENT",
+              },
+            ],
+            maintenanceRecords: draft.maintenanceRecords.map((record) =>
+              input.maintenanceRecordIds.includes(record.id)
+                ? {
+                    ...record,
+                    outreachStatus: sourceStatus,
+                    outreachRecordId: outreachId,
+                  }
+                : record,
+            ),
+            declinedWorkRecords: draft.declinedWorkRecords.map((record) =>
+              input.declinedWorkRecordIds.includes(record.id)
+                ? { ...record, outreachStatus: sourceStatus }
+                : record,
+            ),
+            revenueOpportunities: draft.revenueOpportunities.map((opportunity) =>
+              input.opportunityIds.includes(opportunity.id)
+                ? {
+                    ...opportunity,
+                    stage,
+                    lastActivityAt: new Date().toISOString(),
+                  }
+                : opportunity,
+            ),
+          };
+        });
+        return { ok: true, message: undefined };
+      },
+      async snoozeOpportunity(input: {
+        customerId: string;
+        vehicleId: string;
+        opportunityIds: string[];
+        maintenanceRecordIds: string[];
+        declinedWorkRecordIds: string[];
+        snoozedUntil: string;
+        reason: string;
+        notes?: string;
+      }) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "snoozeOpportunity", payload: input });
+        }
+
+        const selectedDate = new Date(`${input.snoozedUntil}T00:00:00`);
+        const today = new Date(`${new Date().toISOString().slice(0, 10)}T00:00:00`);
+        if (Number.isNaN(selectedDate.getTime()) || selectedDate <= today) {
+          return { ok: false, message: "Choose a future snooze date." };
+        }
+
+        const outreachId = `outreach-snooze-${Date.now()}`;
+        update((draft) => {
+          const selected = draft.maintenanceRecords.filter((record) =>
+            input.maintenanceRecordIds.includes(record.id),
+          );
+          const declined = draft.declinedWorkRecords.filter((record) =>
+            input.declinedWorkRecordIds.includes(record.id),
+          );
+          return {
+            ...draft,
+            outreachRecords: [
+              ...draft.outreachRecords,
+              {
+                id: outreachId,
+                shopId: draft.shop.id,
+                customerId: input.customerId,
+                vehicleId: input.vehicleId,
+                maintenanceRecordIds: input.maintenanceRecordIds,
+                serviceNames: [
+                  ...selected.map((record) => record.serviceName),
+                  ...declined.map((record) => record.serviceName),
+                ],
+                message: [
+                  `Snoozed until ${input.snoozedUntil}.`,
+                  `Reason: ${input.reason}.`,
+                  input.notes?.trim() ? `Notes: ${input.notes.trim()}` : "",
+                ].filter(Boolean).join("\n"),
+                channel: "OTHER",
+                sentAt: new Date().toISOString(),
+                responseStatus: "NOT_NOW",
+                followUpDate: new Date(`${input.snoozedUntil}T12:00:00`).toISOString(),
+                performedByUserId: actorUserId(draft),
+                status: "SNOOZED",
+              },
+            ],
+            maintenanceRecords: draft.maintenanceRecords.map((record) =>
+              input.maintenanceRecordIds.includes(record.id)
+                ? {
+                    ...record,
+                    outreachStatus: "SNOOZED",
+                    outreachRecordId: outreachId,
+                  }
+                : record,
+            ),
+            declinedWorkRecords: draft.declinedWorkRecords.map((record) =>
+              input.declinedWorkRecordIds.includes(record.id)
+                ? { ...record, status: "SNOOZED", outreachStatus: "SNOOZED" }
+                : record,
+            ),
+            revenueOpportunities: draft.revenueOpportunities.map((opportunity) =>
+              input.opportunityIds.includes(opportunity.id)
+                ? {
+                    ...opportunity,
+                    stage: "CONTACTED",
+                    lastActivityAt: new Date().toISOString(),
+                  }
+                : opportunity,
+            ),
+          };
+        });
+        return { ok: true, message: undefined };
+      },
+      async endOpportunitySnooze(input: {
+        customerId: string;
+        vehicleId: string;
+        opportunityIds: string[];
+        maintenanceRecordIds: string[];
+        declinedWorkRecordIds: string[];
+      }) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "endOpportunitySnooze", payload: input });
+        }
+
+        const outreachId = `outreach-unsnooze-${Date.now()}`;
+        update((draft) => ({
+          ...draft,
+          outreachRecords: [
+            ...draft.outreachRecords,
+            {
+              id: outreachId,
+              shopId: draft.shop.id,
+              customerId: input.customerId,
+              vehicleId: input.vehicleId,
+              maintenanceRecordIds: input.maintenanceRecordIds,
+              serviceNames: draft.maintenanceRecords
+                .filter((record) => input.maintenanceRecordIds.includes(record.id))
+                .map((record) => record.serviceName),
+              message: "Snooze ended now. Opportunity returned to Needs Attention.",
+              channel: "OTHER",
+              sentAt: new Date().toISOString(),
+              responseStatus: "NO_RESPONSE",
+              performedByUserId: actorUserId(draft),
+              status: "NEEDS_OUTREACH",
+            },
+          ],
+          maintenanceRecords: draft.maintenanceRecords.map((record) =>
+            input.maintenanceRecordIds.includes(record.id)
+              ? { ...record, outreachStatus: "NEEDS_OUTREACH", outreachRecordId: outreachId }
+              : record,
+          ),
+          declinedWorkRecords: draft.declinedWorkRecords.map((record) =>
+            input.declinedWorkRecordIds.includes(record.id)
+              ? { ...record, status: "OPEN", outreachStatus: "NEEDS_OUTREACH" }
+              : record,
+          ),
+          revenueOpportunities: draft.revenueOpportunities.map((opportunity) =>
+            input.opportunityIds.includes(opportunity.id)
+              ? {
+                  ...opportunity,
+                  stage: "IDENTIFIED",
+                  lastActivityAt: new Date().toISOString(),
+                }
+              : opportunity,
+          ),
+        }));
+        return { ok: true, message: undefined };
+      },
+      async bookQueueAppointment(input: {
+        customerId: string;
+        vehicleId: string;
+        opportunityIds: string[];
+        maintenanceRecordIds: string[];
+        declinedWorkRecordIds: string[];
+        date: string;
+        time: string;
+        status: Appointment["status"];
+        notes?: string;
+      }) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "bookAppointment", payload: input });
+        }
+
+        let blocked = "";
+        update((draft) => {
+          const scheduledStart = new Date(`${input.date}T${input.time}:00`).toISOString();
+          if (
+            hasActiveVehicleAppointmentAt(draft.appointments, {
+              vehicleId: input.vehicleId,
+              scheduledStart,
+            })
+          ) {
+            blocked = "This vehicle already has an appointment at that time.";
+            return draft;
+          }
+
+          const records = draft.maintenanceRecords.filter((record) =>
+            input.maintenanceRecordIds.includes(record.id),
+          );
+          const declined = draft.declinedWorkRecords.filter((record) =>
+            input.declinedWorkRecordIds.includes(record.id),
+          );
+          const totalLaborHours = records.reduce((sum, record) => sum + record.laborHours, 0) +
+            declined.reduce((sum, record) => sum + record.laborHours, 0);
+          const totalPriceCents = records.reduce((sum, record) => sum + record.priceCents, 0) +
+            declined.reduce((sum, record) => sum + record.recommendedPriceCents, 0);
+          const appointment: Appointment = {
+            id: `appt-${Date.now()}`,
+            shopId: draft.shop.id,
+            customerId: input.customerId,
+            vehicleId: input.vehicleId,
+            maintenanceRecordIds: input.maintenanceRecordIds,
+            serviceNames: [
+              ...records.map((record) => record.serviceName),
+              ...declined.map((record) => record.serviceName),
+            ],
+            scheduledStart,
+            scheduledEnd: new Date(new Date(scheduledStart).getTime() + Math.max(totalLaborHours, 0.5) * 60 * 60 * 1000).toISOString(),
+            status: input.status,
+            totalPriceCents,
+            totalLaborHours,
+            source: "AUTOMATION",
+            attributionSource: "MAINTIVA_OUTREACH",
+            opportunityId: input.opportunityIds[0],
+            notes: input.notes ?? "",
+          };
+
+          return {
+            ...draft,
+            appointments: [...draft.appointments, appointment],
+            maintenanceRecords: draft.maintenanceRecords.map((record) =>
+              input.maintenanceRecordIds.includes(record.id)
+                ? {
+                    ...record,
+                    outreachStatus: "SCHEDULED",
+                    appointmentId: appointment.id,
+                  }
+                : record,
+            ),
+            declinedWorkRecords: draft.declinedWorkRecords.map((record) =>
+              input.declinedWorkRecordIds.includes(record.id)
+                ? {
+                    ...record,
+                    status: "BOOKED",
+                    outreachStatus: "SCHEDULED",
+                    appointmentId: appointment.id,
+                  }
+                : record,
+            ),
+            revenueOpportunities: draft.revenueOpportunities.map((opportunity) =>
+              input.opportunityIds.includes(opportunity.id)
+                ? {
+                    ...opportunity,
+                    stage: "BOOKED",
+                    lastActivityAt: new Date().toISOString(),
+                  }
+                : opportunity,
+            ),
+          };
+        });
+        return blocked ? { ok: false, message: blocked } : { ok: true, message: undefined };
+      },
       addImportHistory(input: Omit<ImportHistoryRecord, "id" | "shopId" | "userId" | "importedAt">) {
         update((draft) => ({
           ...draft,

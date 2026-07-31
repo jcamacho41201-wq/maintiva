@@ -144,6 +144,51 @@ describe("revenue queue synchronization guardrails", () => {
     expect(automationPageSource).not.toContain("Appointment attribution");
   });
 
+  it("uses distinct queue action modals instead of the recommendation workflow", () => {
+    expect(automationPageSource).not.toContain("RecommendationModal");
+    expect(automationPageSource).not.toContain("Generate message");
+    expect(automationPageSource).toContain("ContactCustomerModal");
+    expect(automationPageSource).toContain('title="Contact customer"');
+    expect(automationPageSource).toContain("Mark ${channel.toLowerCase()} as sent");
+    expect(automationPageSource).toContain("BookAppointmentModal");
+    expect(automationPageSource).toContain('title="Book appointment"');
+    expect(automationPageSource).toContain("Create appointment");
+    expect(automationPageSource).toContain("SnoozeOpportunityModal");
+    expect(automationPageSource).toContain('title="Snooze opportunity"');
+    expect(automationPageSource).toContain("End snooze now");
+  });
+
+  it("adds queue-specific server mutations for contact, booking, snooze, and unsnooze", () => {
+    const mutateRouteSource = readFileSync(join(process.cwd(), "src/app/api/pilot/mutate/route.ts"), "utf8");
+
+    expect(mutateRouteSource).toContain('action: z.literal("recordOpportunityContact")');
+    expect(mutateRouteSource).toContain("recordPilotOpportunityContact(context, body.payload)");
+    expect(mutateRouteSource).toContain('action: z.literal("snoozeOpportunity")');
+    expect(mutateRouteSource).toContain("snoozePilotOpportunity(context, body.payload)");
+    expect(mutateRouteSource).toContain('action: z.literal("endOpportunitySnooze")');
+    expect(mutateRouteSource).toContain("endPilotOpportunitySnooze(context, body.payload)");
+    expect(mutateRouteSource).toContain("opportunityIds: z.array");
+  });
+
+  it("persists snooze state as outreach history and expires it back to Needs Attention", () => {
+    expect(pilotStateSource).toContain("export async function snoozePilotOpportunity");
+    expect(pilotStateSource).toContain('status: "SNOOZED"');
+    expect(pilotStateSource).toContain("followUpDate: snoozedUntil");
+    expect(pilotStateSource).toContain('stage: "CONTACTED"');
+    expect(pilotStateSource).toContain("expirePastQueueSnoozes(context)");
+    expect(pilotStateSource).toContain('outreachStatus: "NEEDS_OUTREACH"');
+    expect(pilotStateSource).toContain("export async function endPilotOpportunitySnooze");
+  });
+
+  it("keeps contact and booking separate in persisted workflows", () => {
+    expect(pilotStateSource).toContain("export async function recordPilotOpportunityContact");
+    expect(pilotStateSource).toContain("await tx.outreachRecord.create");
+    expect(pilotStateSource).toContain("responseOpportunityStage");
+    expect(pilotStateSource).toContain("export async function bookPilotAppointment");
+    expect(pilotStateSource).toContain("opportunityId: targets?.opportunityIds[0]");
+    expect(pilotStateSource).toContain('stage: "BOOKED"');
+  });
+
   it("keeps missing last-completed mileage null in the client and shows explicit copy", () => {
     expect(pilotStateSource).toContain("lastCompletedMileage: record.lastCompletedMileage");
     expect(vehiclePageSource).toContain("Last completed mileage not entered");

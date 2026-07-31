@@ -12,6 +12,8 @@ export type SafeMutationOperation = {
   table?: string;
   operation?: "SELECT" | "INSERT" | "UPDATE" | "DELETE";
   vehicleId?: string;
+  customerId?: string;
+  opportunityId?: string;
   serviceDefinitionId?: string;
   maintenanceRecordId?: string;
   targetVehicleShopId?: string;
@@ -148,6 +150,34 @@ export function safeMutationOperation(value: unknown): SafeMutationOperation {
     reviewMileageReading: {
       table: "VehicleMileageReading",
       operation: "UPDATE",
+    },
+    recordOpportunityContact: {
+      table: "OutreachRecord",
+      operation: "INSERT",
+      customerId: safeId(payload.customerId),
+      vehicleId: safeId(payload.vehicleId),
+      opportunityId: Array.isArray(payload.opportunityIds) ? safeId(payload.opportunityIds[0]) : undefined,
+    },
+    bookAppointment: {
+      table: "Appointment",
+      operation: "INSERT",
+      customerId: safeId(payload.customerId),
+      vehicleId: safeId(payload.vehicleId),
+      opportunityId: Array.isArray(payload.opportunityIds) ? safeId(payload.opportunityIds[0]) : undefined,
+    },
+    snoozeOpportunity: {
+      table: "OutreachRecord",
+      operation: "INSERT",
+      customerId: safeId(payload.customerId),
+      vehicleId: safeId(payload.vehicleId),
+      opportunityId: Array.isArray(payload.opportunityIds) ? safeId(payload.opportunityIds[0]) : undefined,
+    },
+    endOpportunitySnooze: {
+      table: "MaintenanceRevenueOpportunity",
+      operation: "UPDATE",
+      customerId: safeId(payload.customerId),
+      vehicleId: safeId(payload.vehicleId),
+      opportunityId: Array.isArray(payload.opportunityIds) ? safeId(payload.opportunityIds[0]) : undefined,
     },
   };
 
