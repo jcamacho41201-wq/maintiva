@@ -7,6 +7,8 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import {
   buildImportErrorCsv,
   detectColumnMapping,
+  importRowLimitMessage,
+  isImportRowLimitExceeded,
   maintivaCsvTemplate,
   parseCsv,
   previewImport,
@@ -87,6 +89,8 @@ export default function ImportPage() {
     () => summarizeImport(preview.rows, duplicateMode, rowActions),
     [preview.rows, duplicateMode, rowActions],
   );
+  const rowLimitExceeded = isImportRowLimitExceeded(summary.totalRows);
+  const rowLimitError = rowLimitExceeded ? importRowLimitMessage(summary.totalRows) : "";
 
   async function handleFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -99,10 +103,16 @@ export default function ImportPage() {
     setMapping(detected);
     setRowActions({});
     setCompleted(false);
-    setSaveError("");
+    setSaveError(isImportRowLimitExceeded(parsed.length) ? importRowLimitMessage(parsed.length) : "");
   }
 
   async function confirmImport() {
+    if (rowLimitExceeded) {
+      setCompleted(false);
+      setSaveError(rowLimitError);
+      return;
+    }
+
     setSaving(true);
     setSaveError("");
     setCompleted(false);
@@ -290,7 +300,7 @@ export default function ImportPage() {
               </button>
               <button
                 onClick={confirmImport}
-                disabled={saving || summary.totalRows === 0 || summary.successfulRows + summary.updatedRows === 0}
+                disabled={saving || rowLimitExceeded || summary.totalRows === 0 || summary.successfulRows + summary.updatedRows === 0}
                 className="rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {completed ? "Import complete" : saving ? "Importing..." : "Confirm import"}

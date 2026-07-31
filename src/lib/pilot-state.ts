@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
 import {
   serviceDefinitions as defaultServices,
@@ -36,6 +37,9 @@ import { currentDateInTimeZone } from "@/lib/utils";
 import { safeDatabaseError, SafeActionError } from "@/lib/server-diagnostics";
 import { isCustomerBookingEnabled } from "@/lib/feature-flags";
 import {
+  MAINTIVA_IMPORT_ROW_LIMIT,
+  importRowLimitMessage,
+  isImportRowLimitExceeded,
   previewImport,
   summarizeImport,
   type CsvRow,
@@ -61,6 +65,47 @@ const bookingIntakeOptionSchema = z.enum(["WAIT_ONLY", "DROP_OFF_ONLY", "EITHER"
 
 const nullableNonnegativeInt = z.number().int().nonnegative().nullable().optional();
 const nullablePositiveInt = z.number().int().positive().nullable().optional();
+
+const baselineAppointmentServiceSelect = {
+  id: true,
+  shopId: true,
+  appointmentId: true,
+  serviceDefinitionId: true,
+  maintenanceRecordId: true,
+  serviceName: true,
+  laborMinutes: true,
+  priceCents: true,
+  createdAt: true,
+} satisfies Prisma.AppointmentServiceSelect;
+
+const baselineAppointmentSelect = {
+  id: true,
+  shopId: true,
+  customerId: true,
+  vehicleId: true,
+  scheduledStart: true,
+  scheduledEnd: true,
+  status: true,
+  totalLaborMinutes: true,
+  totalPriceCents: true,
+  source: true,
+  attributionSource: true,
+  opportunityId: true,
+  outreachRecordId: true,
+  completedRevenueCents: true,
+  completedLaborMinutes: true,
+  notes: true,
+  completedAt: true,
+} satisfies Prisma.AppointmentSelect;
+
+const baselineAppointmentWithServicesSelect = {
+  ...baselineAppointmentSelect,
+  services: { select: baselineAppointmentServiceSelect },
+} satisfies Prisma.AppointmentSelect;
+
+const duplicateAppointmentSelect = {
+  id: true,
+} satisfies Prisma.AppointmentSelect;
 
 const shopBookingSettingsSchema = z.object({
   onlineBookingEnabled: z.boolean(),
@@ -1645,26 +1690,7 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
       },
       importHistory: { orderBy: { importedAt: "desc" } },
       appointments: {
-        select: {
-          id: true,
-          shopId: true,
-          customerId: true,
-          vehicleId: true,
-          scheduledStart: true,
-          scheduledEnd: true,
-          status: true,
-          totalLaborMinutes: true,
-          totalPriceCents: true,
-          source: true,
-          attributionSource: true,
-          opportunityId: true,
-          outreachRecordId: true,
-          completedRevenueCents: true,
-          completedLaborMinutes: true,
-          notes: true,
-          completedAt: true,
-          services: true,
-        },
+        select: baselineAppointmentWithServicesSelect,
         orderBy: { scheduledStart: "asc" },
       },
     },
@@ -3795,6 +3821,7 @@ export async function bookPilotAppointment(
         notIn: ["CANCELLED", "NO_SHOW"],
       },
     },
+    select: duplicateAppointmentSelect,
   });
 
   if (duplicateAppointment) {
@@ -3876,7 +3903,7 @@ export async function completePilotAppointment(
 ) {
   const appointment = await prisma.appointment.findUnique({
     where: { id: input.appointmentId },
-    include: { services: true },
+    select: baselineAppointmentWithServicesSelect,
   });
   assertSameShop(context, appointment?.shopId);
   if (!appointment) {
@@ -3938,6 +3965,18 @@ export async function importPilotCsvRows(
     mapping: Record<string, MaintivaField>;
   },
 ) {
+  const rowCount = input.rows.length;
+  if (isImportRowLimitExceeded(rowCount)) {
+    throw new SafeActionError({
+      code: "IMPORT_ROW_LIMIT_EXCEEDED",
+      message: importRowLimitMessage(rowCount),
+      status: 400,
+      table: "ImportHistoryRecord",
+      operation: "INSERT",
+      details: `rowCount=${rowCount}; limit=${MAINTIVA_IMPORT_ROW_LIMIT}`,
+    });
+  }
+
   const state = await buildPilotState(context);
   const preview = previewImport({
     rows: input.rows,
@@ -4246,6 +4285,7 @@ export async function importPilotCsvRows(
             scheduledStart,
             status: { notIn: ["CANCELLED", "NO_SHOW"] },
           },
+          select: duplicateAppointmentSelect,
         });
         if (!duplicateAppointment) {
           await tx.appointment.create({

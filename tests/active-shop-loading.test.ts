@@ -10,7 +10,7 @@ describe("active shop loading", () => {
     expect(pilotStateSource).toContain("loadStateAppointmentBookingMetadata");
     expect(pilotStateSource).toContain("loadStateOutreachBookingLinkIds");
     expect(pilotStateSource).toContain("isMissingCustomerBookingSchema(error)");
-    expect(pilotStateSource).toMatch(/appointments:\s*\{\s*select:[\s\S]+services: true/);
+    expect(pilotStateSource).toContain("select: baselineAppointmentWithServicesSelect");
     expect(pilotStateSource).toMatch(/outreachRecords:\s*\{\s*orderBy:[\s\S]+select:/);
   });
 
