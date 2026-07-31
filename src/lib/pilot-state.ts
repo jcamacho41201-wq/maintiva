@@ -1341,6 +1341,50 @@ async function loadStateCustomerBookingLinks(shopId: string): Promise<CustomerBo
   }
 }
 
+async function loadStateOutreachBookingLinkIds(shopId: string) {
+  try {
+    return await prisma.outreachRecord.findMany({
+      where: { shopId },
+      select: {
+        id: true,
+        bookingLinkId: true,
+      },
+    });
+  } catch (error) {
+    if (!isMissingCustomerBookingSchema(error)) throw error;
+    console.warn("Maintiva customer scheduling migration missing during outreach state load; omitting booking link references.", {
+      database: safeDatabaseError(error),
+    });
+    return [];
+  }
+}
+
+async function loadStateAppointmentBookingMetadata(shopId: string) {
+  try {
+    return await prisma.appointment.findMany({
+      where: { shopId },
+      select: {
+        id: true,
+        bookingLinkId: true,
+        intakeType: true,
+        customerNotes: true,
+        internalNotes: true,
+        requestedAt: true,
+        approvedAt: true,
+        declinedAt: true,
+        customerCancelledAt: true,
+        rescheduledAt: true,
+      },
+    });
+  } catch (error) {
+    if (!isMissingCustomerBookingSchema(error)) throw error;
+    console.warn("Maintiva customer scheduling migration missing during appointment state load; omitting booking metadata.", {
+      database: safeDatabaseError(error),
+    });
+    return [];
+  }
+}
+
 export async function seedDefaultServicesForShop(shopId: string) {
   await prisma.serviceDefinition.createMany({
     data: defaultServices.map((service) => ({
@@ -1538,10 +1582,47 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
       serviceHistoryRecords: { orderBy: { completedAt: "desc" } },
       declinedWorkRecords: { orderBy: { declinedAt: "desc" } },
       revenueOpportunities: { orderBy: [{ priority: "asc" }, { updatedAt: "desc" }] },
-      outreachRecords: { orderBy: { createdAt: "desc" } },
+      outreachRecords: {
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          shopId: true,
+          customerId: true,
+          vehicleId: true,
+          message: true,
+          channel: true,
+          status: true,
+          copiedAt: true,
+          manuallySentAt: true,
+          responseStatus: true,
+          followUpDate: true,
+          appointmentId: true,
+          performedByUserId: true,
+          createdAt: true,
+        },
+      },
       importHistory: { orderBy: { importedAt: "desc" } },
       appointments: {
-        include: { services: true },
+        select: {
+          id: true,
+          shopId: true,
+          customerId: true,
+          vehicleId: true,
+          scheduledStart: true,
+          scheduledEnd: true,
+          status: true,
+          totalLaborMinutes: true,
+          totalPriceCents: true,
+          source: true,
+          attributionSource: true,
+          opportunityId: true,
+          outreachRecordId: true,
+          completedRevenueCents: true,
+          completedLaborMinutes: true,
+          notes: true,
+          completedAt: true,
+          services: true,
+        },
         orderBy: { scheduledStart: "asc" },
       },
     },
@@ -1557,6 +1638,8 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
     bookingWindows,
     bookingBlackouts,
     customerBookingLinks,
+    outreachBookingLinkIds,
+    appointmentBookingMetadata,
   ] = await Promise.all([
     loadStateServiceDefinitions(context.shopId),
     loadStateMaintenanceRecords(context.shopId),
@@ -1567,9 +1650,13 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
     loadStateBookingWindows(context.shopId),
     loadStateBookingBlackouts(context.shopId),
     loadStateCustomerBookingLinks(context.shopId),
+    loadStateOutreachBookingLinkIds(context.shopId),
+    loadStateAppointmentBookingMetadata(context.shopId),
   ]);
 
   const services: MaintenanceService[] = serviceDefinitions.map(toStateServiceDefinition);
+  const outreachBookingLinkById = new Map(outreachBookingLinkIds.map((record) => [record.id, record.bookingLinkId]));
+  const appointmentBookingMetadataById = new Map(appointmentBookingMetadata.map((appointment) => [appointment.id, appointment]));
   const serviceById = new Map(services.map((service) => [service.id, service]));
   const readingsByVehicle = new Map<string, StateMileageReading[]>();
   for (const reading of mileageReadingRows) {
@@ -1850,42 +1937,45 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
       responseStatus: record.responseStatus,
       followUpDate: iso(record.followUpDate) || undefined,
       appointmentId: record.appointmentId ?? undefined,
-      bookingLinkId: record.bookingLinkId ?? undefined,
+      bookingLinkId: outreachBookingLinkById.get(record.id) ?? undefined,
       performedByUserId: record.performedByUserId ?? undefined,
       status: record.status,
     })),
-    appointments: shop.appointments.map((appointment): Appointment => ({
-      id: appointment.id,
-      shopId: appointment.shopId,
-      customerId: appointment.customerId,
-      vehicleId: appointment.vehicleId,
-      maintenanceRecordIds: appointment.services
-        .map((service) => service.maintenanceRecordId)
-        .filter((id): id is string => Boolean(id)),
-      serviceNames: appointment.services.map((service) => service.serviceName),
-      scheduledStart: iso(appointment.scheduledStart),
-      scheduledEnd: iso(appointment.scheduledEnd),
-      status: appointment.status,
-      totalPriceCents: appointment.totalPriceCents,
-      totalLaborHours: appointment.totalLaborMinutes / 60,
-      source: appointment.source,
-      attributionSource: appointment.attributionSource,
-      opportunityId: appointment.opportunityId ?? undefined,
-      outreachRecordId: appointment.outreachRecordId ?? undefined,
-      bookingLinkId: appointment.bookingLinkId ?? undefined,
-      intakeType: appointment.intakeType ?? undefined,
-      customerNotes: appointment.customerNotes ?? undefined,
-      internalNotes: appointment.internalNotes ?? undefined,
-      completedRevenueCents: appointment.completedRevenueCents ?? undefined,
-      completedLaborHours: appointment.completedLaborMinutes ? appointment.completedLaborMinutes / 60 : undefined,
-      completedAt: iso(appointment.completedAt) || undefined,
-      requestedAt: iso(appointment.requestedAt) || undefined,
-      approvedAt: iso(appointment.approvedAt) || undefined,
-      declinedAt: iso(appointment.declinedAt) || undefined,
-      customerCancelledAt: iso(appointment.customerCancelledAt) || undefined,
-      rescheduledAt: iso(appointment.rescheduledAt) || undefined,
-      notes: appointment.notes ?? "",
-    })),
+    appointments: shop.appointments.map((appointment): Appointment => {
+      const bookingMetadata = appointmentBookingMetadataById.get(appointment.id);
+      return {
+        id: appointment.id,
+        shopId: appointment.shopId,
+        customerId: appointment.customerId,
+        vehicleId: appointment.vehicleId,
+        maintenanceRecordIds: appointment.services
+          .map((service) => service.maintenanceRecordId)
+          .filter((id): id is string => Boolean(id)),
+        serviceNames: appointment.services.map((service) => service.serviceName),
+        scheduledStart: iso(appointment.scheduledStart),
+        scheduledEnd: iso(appointment.scheduledEnd),
+        status: appointment.status,
+        totalPriceCents: appointment.totalPriceCents,
+        totalLaborHours: appointment.totalLaborMinutes / 60,
+        source: appointment.source,
+        attributionSource: appointment.attributionSource,
+        opportunityId: appointment.opportunityId ?? undefined,
+        outreachRecordId: appointment.outreachRecordId ?? undefined,
+        bookingLinkId: bookingMetadata?.bookingLinkId ?? undefined,
+        intakeType: bookingMetadata?.intakeType ?? undefined,
+        customerNotes: bookingMetadata?.customerNotes ?? undefined,
+        internalNotes: bookingMetadata?.internalNotes ?? undefined,
+        completedRevenueCents: appointment.completedRevenueCents ?? undefined,
+        completedLaborHours: appointment.completedLaborMinutes ? appointment.completedLaborMinutes / 60 : undefined,
+        completedAt: iso(appointment.completedAt) || undefined,
+        requestedAt: iso(bookingMetadata?.requestedAt) || undefined,
+        approvedAt: iso(bookingMetadata?.approvedAt) || undefined,
+        declinedAt: iso(bookingMetadata?.declinedAt) || undefined,
+        customerCancelledAt: iso(bookingMetadata?.customerCancelledAt) || undefined,
+        rescheduledAt: iso(bookingMetadata?.rescheduledAt) || undefined,
+        notes: appointment.notes ?? "",
+      };
+    }),
     bookingSettings,
     bookingWindows,
     bookingBlackouts,

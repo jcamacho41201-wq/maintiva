@@ -24,8 +24,26 @@ import { formatCurrency } from "@/lib/utils";
 export default function DashboardPage() {
   const router = useRouter();
   const store = useDemoStore();
-  const { state } = store;
+  const { state, ready, loadError } = store;
   const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
+
+  if (!ready) {
+    return (
+      <div className="rounded-lg border border-zinc-200 bg-white p-6 text-sm font-medium text-zinc-600">
+        Loading shop…
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="rounded-lg border border-red-200 bg-red-50 p-6 text-sm text-red-800">
+        <p className="font-semibold">We could not load your shop.</p>
+        <p className="mt-1">Refresh the page or sign in again.</p>
+      </div>
+    );
+  }
+
   const legacyMetrics = getDashboardMetrics(state);
   const metrics = getRevenueRecoveryMetrics(state);
   const opportunities = groupRevenueOpportunities(buildRevenueOpportunities(state));
