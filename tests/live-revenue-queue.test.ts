@@ -113,6 +113,9 @@ describe("live revenue queue data source", () => {
 describe("revenue queue synchronization guardrails", () => {
   const pilotStateSource = readFileSync(join(process.cwd(), "src/lib/pilot-state.ts"), "utf8");
   const automationPageSource = readFileSync(join(process.cwd(), "src/app/automation/page.tsx"), "utf8");
+  const dashboardPageSource = readFileSync(join(process.cwd(), "src/app/page.tsx"), "utf8");
+  const contactModalSource = readFileSync(join(process.cwd(), "src/components/contact-customer-modal.tsx"), "utf8");
+  const contactWorkflowSource = readFileSync(join(process.cwd(), "src/lib/contact-workflow.ts"), "utf8");
   const vehiclePageSource = readFileSync(join(process.cwd(), "src/app/vehicles/[vehicleId]/page.tsx"), "utf8");
 
   it("recalculates persisted maintenance opportunities from effective intervals", () => {
@@ -144,18 +147,38 @@ describe("revenue queue synchronization guardrails", () => {
     expect(automationPageSource).not.toContain("Appointment attribution");
   });
 
-  it("uses distinct queue action modals instead of the recommendation workflow", () => {
+  it("uses the canonical contact workflow instead of the recommendation workflow", () => {
     expect(automationPageSource).not.toContain("RecommendationModal");
     expect(automationPageSource).not.toContain("Generate message");
     expect(automationPageSource).toContain("ContactCustomerModal");
-    expect(automationPageSource).toContain('title="Contact customer"');
-    expect(automationPageSource).toContain("Mark ${channel.toLowerCase()} as sent");
+    expect(automationPageSource).not.toContain("function ContactCustomerModal");
+    expect(dashboardPageSource).not.toContain("RecommendationModal");
+    expect(dashboardPageSource).not.toContain("Generate message");
+    expect(dashboardPageSource).not.toContain("canRecommend");
+    expect(dashboardPageSource).toContain("canContactCustomerForDraft(customer)");
+    expect(dashboardPageSource).toContain("ContactCustomerModal");
+    expect(contactModalSource).toContain('title="Contact customer"');
+    expect(contactModalSource).toContain("defaultContactChannel(customer)");
+    expect(contactModalSource).toContain("Mark ${channel.toLowerCase()} as sent");
     expect(automationPageSource).toContain("BookAppointmentModal");
     expect(automationPageSource).toContain('title="Book appointment"');
     expect(automationPageSource).toContain("Create appointment");
     expect(automationPageSource).toContain("SnoozeOpportunityModal");
     expect(automationPageSource).toContain('title="Snooze opportunity"');
     expect(automationPageSource).toContain("End snooze now");
+  });
+
+  it("keeps drafting separate from recorded outreach", () => {
+    const copyBlock = contactModalSource.slice(
+      contactModalSource.indexOf("async function copyText"),
+      contactModalSource.indexOf("async function saveContact"),
+    );
+    const saveBlock = contactModalSource.slice(contactModalSource.indexOf("async function saveContact"));
+
+    expect(copyBlock).not.toContain("onSave");
+    expect(copyBlock).not.toContain("recordOpportunityContact");
+    expect(saveBlock).toContain("onSave({");
+    expect(contactWorkflowSource).not.toContain("lastContact");
   });
 
   it("adds queue-specific server mutations for contact, booking, snooze, and unsnooze", () => {
@@ -183,6 +206,7 @@ describe("revenue queue synchronization guardrails", () => {
   it("keeps contact and booking separate in persisted workflows", () => {
     expect(pilotStateSource).toContain("export async function recordPilotOpportunityContact");
     expect(pilotStateSource).toContain("await tx.outreachRecord.create");
+    expect(pilotStateSource).toContain("select: baselineOutreachRecordSelect");
     expect(pilotStateSource).toContain("responseOpportunityStage");
     expect(pilotStateSource).toContain("export async function bookPilotAppointment");
     expect(pilotStateSource).toContain("opportunityId: targets?.opportunityIds[0]");
@@ -193,5 +217,48 @@ describe("revenue queue synchronization guardrails", () => {
     expect(pilotStateSource).toContain("lastCompletedMileage: record.lastCompletedMileage");
     expect(vehiclePageSource).toContain("Last completed mileage not entered");
     expect(vehiclePageSource).not.toContain("lastCompletedMileage: record.lastCompletedMileage ?? 0");
+  });
+});
+
+describe("revenue queue contact timestamps", () => {
+  it("does not use imported opportunity activity as last contact", () => {
+    const state = asLiveShop(createInitialDemoState());
+    state.outreachRecords = [];
+    state.revenueOpportunities = [
+      opportunity({
+        id: "imported-activity",
+        lastActivityAt: "2026-07-31T15:00:00.000Z",
+        createdAt: "2026-07-31T15:00:00.000Z",
+      }),
+    ];
+
+    const [group] = groupRevenueOpportunities(buildRevenueOpportunities(state));
+
+    expect(group.lastContactedAt).toBeUndefined();
+  });
+
+  it("preserves real outreach as last contact", () => {
+    const state = asLiveShop(createInitialDemoState());
+    state.outreachRecords = [
+      {
+        id: "outreach-real",
+        shopId: "shop-live",
+        customerId: "cust-justin",
+        vehicleId: "veh-jeep",
+        maintenanceRecordIds: ["item-veh-jeep-brake-pads"],
+        serviceNames: ["Brake Pads"],
+        message: "Brake pads are ready to schedule.",
+        channel: "EMAIL",
+        sentAt: "2026-07-30T16:00:00.000Z",
+        manuallySentAt: "2026-07-30T16:05:00.000Z",
+        responseStatus: "NO_RESPONSE",
+        status: "MANUALLY_SENT",
+      },
+    ];
+    state.revenueOpportunities = [opportunity({ id: "with-outreach" })];
+
+    const [group] = groupRevenueOpportunities(buildRevenueOpportunities(state));
+
+    expect(group.lastContactedAt).toBe("2026-07-30T16:05:00.000Z");
   });
 });

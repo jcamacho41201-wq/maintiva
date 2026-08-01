@@ -127,6 +127,7 @@ const mutationSchema = z.discriminatedUnion("action", [
       ]),
       followUpDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().or(z.literal("")),
       bookingLinkId: z.string().min(1).optional(),
+      idempotencyKey: z.string().regex(/^[a-zA-Z0-9_-]{8,120}$/).optional(),
     }),
   }),
   z.object({
@@ -155,6 +156,7 @@ const mutationSchema = z.discriminatedUnion("action", [
         "NO_SHOW",
       ]),
       notes: z.string().optional(),
+      idempotencyKey: z.string().regex(/^[a-zA-Z0-9_-]{8,120}$/).optional(),
     }),
   }),
   z.object({
@@ -246,6 +248,7 @@ export async function POST(request: Request) {
   let context: AuthenticatedShopContext | undefined;
   let json: unknown;
   let operation = safeMutationOperation(undefined);
+  let mutationCommitted = false;
   try {
     json = await request.json();
     rejectBrowserShopId(json);
@@ -258,94 +261,141 @@ export async function POST(request: Request) {
     switch (body.action) {
       case "addCustomer":
         await addPilotCustomer(context, body.payload);
+        mutationCommitted = true;
         break;
       case "updateCustomer":
         await updatePilotCustomer(context, body.id, body.payload);
+        mutationCommitted = true;
         break;
       case "addVehicle":
         await addPilotVehicle(context, body.payload);
+        mutationCommitted = true;
         break;
       case "updateVehicle":
         await updatePilotVehicle(context, body.id, body.payload);
+        mutationCommitted = true;
         break;
       case "addServiceDefinition":
         await addPilotServiceDefinition(context, body.payload);
+        mutationCommitted = true;
         break;
       case "updateServiceDefinition":
         await updatePilotServiceDefinition(context, body.id, body.payload);
+        mutationCommitted = true;
         break;
       case "saveBookingSettings":
         await savePilotBookingSettings(context, body.payload);
+        mutationCommitted = true;
         break;
       case "saveServiceBookingRule":
         await savePilotServiceBookingRule(context, body.id, body.payload);
+        mutationCommitted = true;
         break;
       case "addMaintenanceItem":
         await addPilotMaintenanceItem(context, body.payload);
+        mutationCommitted = true;
         break;
       case "updateMaintenanceItem":
         await updatePilotMaintenanceItem(context, body.id, body.payload);
+        mutationCommitted = true;
         break;
       case "deactivateMaintenanceItem":
         await deactivatePilotMaintenanceItem(context, body.id);
+        mutationCommitted = true;
         break;
       case "markMaintenanceServiceComplete":
         await markPilotMaintenanceServiceComplete(context, body.payload);
+        mutationCommitted = true;
         break;
       case "recordInspection":
         await recordPilotInspection(context, body.payload);
+        mutationCommitted = true;
         break;
       case "updateVehicleMileage":
         await updatePilotVehicleMileage(context, body.payload);
+        mutationCommitted = true;
         break;
       case "setCustomerReportedMileage":
         await setPilotCustomerReportedMileage(context, body.payload);
+        mutationCommitted = true;
         break;
       case "setManualMileageOverride":
         await setPilotManualMileageOverride(context, body.payload);
+        mutationCommitted = true;
         break;
       case "resetManualMileageOverride":
         await resetPilotManualMileageOverride(context, body.payload);
+        mutationCommitted = true;
         break;
       case "reviewMileageReading":
         await reviewPilotMileageReading(context, body.payload);
+        mutationCommitted = true;
         break;
       case "markOutreachManuallySent":
         await markPilotOutreachManuallySent(context, body.payload);
+        mutationCommitted = true;
         break;
       case "recordOpportunityContact":
         await recordPilotOpportunityContact(context, body.payload);
+        mutationCommitted = true;
         break;
       case "createBookingLink":
         bookingLink = await createPilotBookingLink(context, {
           ...body.payload,
           appUrl: request.headers.get("origin") ?? process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000",
         });
+        mutationCommitted = true;
         break;
       case "bookAppointment":
         await bookPilotAppointment(context, body.payload);
+        mutationCommitted = true;
         break;
       case "snoozeOpportunity":
         await snoozePilotOpportunity(context, body.payload);
+        mutationCommitted = true;
         break;
       case "endOpportunitySnooze":
         await endPilotOpportunitySnooze(context, body.payload);
+        mutationCommitted = true;
         break;
       case "completeAppointment":
         await completePilotAppointment(context, body.payload);
+        mutationCommitted = true;
         break;
       case "approveAppointmentRequest":
         await approvePilotAppointmentRequest(context, body.id);
+        mutationCommitted = true;
         break;
       case "declineAppointmentRequest":
         await declinePilotAppointmentRequest(context, body.id, body.payload);
+        mutationCommitted = true;
         break;
       case "importCsvRows":
         await importPilotCsvRows(context, body.payload);
+        mutationCommitted = true;
         break;
     }
 
-    return NextResponse.json({ state: await buildPilotState(context), bookingLink });
+    try {
+      return NextResponse.json({ state: await buildPilotState(context), bookingLink });
+    } catch (refreshError) {
+      if (mutationCommitted) {
+        console.error("Maintiva pilot mutation committed but state refresh failed", {
+          auth: {
+            userId: context.userId.length > 14 ? `${context.userId.slice(0, 8)}...${context.userId.slice(-4)}` : context.userId,
+            shopId: context.shopId.length > 14 ? `${context.shopId.slice(0, 8)}...${context.shopId.slice(-4)}` : context.shopId,
+            membershipActive: true,
+            role: context.role,
+          },
+          operation,
+        });
+        return NextResponse.json(
+          { code: "STATE_REFRESH_FAILED_AFTER_MUTATION", committed: true, message: "The customer was contacted, but the opportunity could not be refreshed." },
+          { status: 202 },
+        );
+      }
+      throw refreshError;
+    }
   } catch (error) {
     logPilotMutationFailure({ error, context, payload: json, operation });
     if (error instanceof OnboardingRequiredError) {

@@ -3,6 +3,7 @@ import {
   type Appointment,
   type DeclinedWorkRecord,
   type DemoState,
+  type OutreachRecord,
   type RevenueOpportunityRecord,
   type VehicleMaintenanceRecord,
 } from "@/lib/demo-data";
@@ -56,6 +57,7 @@ export type RevenueOpportunity = {
   stage: RevenueStage;
   createdAt: string;
   lastActivityAt: string;
+  lastContactedAt?: string;
 };
 
 export type RevenueQueueGroup = {
@@ -208,6 +210,11 @@ function lastOutreachForOpportunity(state: DemoState, opportunity: RevenueOpport
     .at(-1);
 }
 
+function outreachContactedAt(record?: OutreachRecord) {
+  if (!record || record.status === "DRAFTED") return undefined;
+  return record.manuallySentAt ?? record.sentAt;
+}
+
 function isActiveSnooze(record: ReturnType<typeof lastOutreachForOpportunity>) {
   if (!record || record.status !== "SNOOZED" || !record.followUpDate) return false;
   return new Date(record.followUpDate).getTime() > Date.now();
@@ -347,6 +354,7 @@ function buildPersistedRevenueOpportunities(state: DemoState): RevenueOpportunit
         } as RevenueOpportunity)?.status ?? "UNSCHEDULED",
         stage: displayStage,
         createdAt: opportunity.createdAt,
+        lastContactedAt: outreachContactedAt(lastOutreach),
         lastActivityAt: lastOutreach?.followUpDate ?? lastOutreach?.manuallySentAt ?? lastOutreach?.sentAt ?? opportunity.lastActivityAt ?? opportunity.createdAt,
       };
     })
@@ -418,6 +426,7 @@ function buildDerivedDemoRevenueOpportunities(state: DemoState): RevenueOpportun
         responseStatus: outreach?.responseStatus,
       }),
       createdAt: record.lastCompletedDate ?? asOfDate.toISOString(),
+      lastContactedAt: outreachContactedAt(outreach),
       lastActivityAt: outreach?.sentAt ?? appointment?.scheduledStart ?? record.lastCompletedDate ?? asOfDate.toISOString(),
     };
   });
@@ -467,6 +476,7 @@ function buildDerivedDemoRevenueOpportunities(state: DemoState): RevenueOpportun
         responseStatus: outreach?.responseStatus,
       }),
       createdAt: record.declinedAt,
+      lastContactedAt: outreachContactedAt(outreach),
       lastActivityAt: appointment?.scheduledStart ?? outreach?.sentAt ?? record.declinedAt,
     };
   });
@@ -531,7 +541,8 @@ export function groupRevenueOpportunities(opportunities: RevenueOpportunity[]): 
       outreachStatus: booked ? "Booked" : contacted ? "Contacted" : "Needs outreach",
       appointmentStatus: booked ? "Booked" : "Unscheduled",
       lastContactedAt: items
-        .map((item) => item.lastActivityAt)
+        .map((item) => item.lastContactedAt)
+        .filter((value): value is string => Boolean(value))
         .sort()
         .at(-1),
       nextAction: booked ? "Complete appointment" : contacted ? "Record response" : "Contact customer",

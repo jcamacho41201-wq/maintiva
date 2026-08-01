@@ -18,6 +18,16 @@ export function formatHours(minutes: number) {
   return `${Number.isInteger(hours) ? hours : hours.toFixed(1)} hr`;
 }
 
+export function formatLaborHours(hours: number) {
+  const totalMinutes = Math.round(hours * 60);
+  if (!Number.isFinite(totalMinutes) || totalMinutes <= 0) return "0 min";
+  const wholeHours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (minutes === 0) return `${wholeHours} hr`;
+  if (wholeHours === 0) return `${minutes} min`;
+  return `${wholeHours} hr ${minutes} min`;
+}
+
 export function formatDate(date: string | Date) {
   const value = typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date)
     ? `${date}T12:00:00`

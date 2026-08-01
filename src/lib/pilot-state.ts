@@ -107,6 +107,23 @@ const duplicateAppointmentSelect = {
   id: true,
 } satisfies Prisma.AppointmentSelect;
 
+const baselineOutreachRecordSelect = {
+  id: true,
+  shopId: true,
+  customerId: true,
+  vehicleId: true,
+  message: true,
+  channel: true,
+  status: true,
+  copiedAt: true,
+  manuallySentAt: true,
+  responseStatus: true,
+  followUpDate: true,
+  appointmentId: true,
+  performedByUserId: true,
+  createdAt: true,
+} satisfies Prisma.OutreachRecordSelect;
+
 const shopBookingSettingsSchema = z.object({
   onlineBookingEnabled: z.boolean(),
   minimumNoticeMinutes: z.number().int().min(0).max(43_200),
@@ -959,6 +976,35 @@ function responseOpportunityStage(responseStatus?: OutreachRecord["responseStatu
   return "CONTACTED" as const;
 }
 
+function outreachIdFromIdempotencyKey(idempotencyKey?: string) {
+  if (!idempotencyKey) return undefined;
+  const normalized = idempotencyKey.trim();
+  if (!/^[a-zA-Z0-9_-]{8,120}$/.test(normalized)) {
+    throw queueActionError({
+      code: "INVALID_OUTREACH_IDEMPOTENCY_KEY",
+      message: "Refresh the page and try recording the outreach again.",
+      status: 400,
+      operation: "INSERT",
+    });
+  }
+  return `outreach-${normalized}`;
+}
+
+function appointmentIdFromIdempotencyKey(idempotencyKey?: string) {
+  if (!idempotencyKey) return undefined;
+  const normalized = idempotencyKey.trim();
+  if (!/^[a-zA-Z0-9_-]{8,120}$/.test(normalized)) {
+    throw new SafeActionError({
+      code: "INVALID_APPOINTMENT_IDEMPOTENCY_KEY",
+      message: "Refresh the page and try creating the appointment again.",
+      status: 400,
+      table: "Appointment",
+      operation: "INSERT",
+    });
+  }
+  return `appt-${normalized}`;
+}
+
 function startOfLocalDate(value: string) {
   return new Date(`${value}T00:00:00`);
 }
@@ -1671,22 +1717,7 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
       revenueOpportunities: { orderBy: [{ priority: "asc" }, { updatedAt: "desc" }] },
       outreachRecords: {
         orderBy: { createdAt: "desc" },
-        select: {
-          id: true,
-          shopId: true,
-          customerId: true,
-          vehicleId: true,
-          message: true,
-          channel: true,
-          status: true,
-          copiedAt: true,
-          manuallySentAt: true,
-          responseStatus: true,
-          followUpDate: true,
-          appointmentId: true,
-          performedByUserId: true,
-          createdAt: true,
-        },
+        select: baselineOutreachRecordSelect,
       },
       importHistory: { orderBy: { importedAt: "desc" } },
       appointments: {
@@ -3306,6 +3337,7 @@ export async function markPilotOutreachManuallySent(
         manuallySentAt: new Date(),
         performedByUserId: context.userId,
       },
+      select: baselineOutreachRecordSelect,
     });
     await tx.vehicleMaintenanceRecord.updateMany({
       where: { id: { in: input.maintenanceRecordIds }, shopId: context.shopId },
@@ -3340,16 +3372,39 @@ export async function recordPilotOpportunityContact(
     responseStatus: OutreachRecord["responseStatus"];
     followUpDate?: string;
     bookingLinkId?: string;
+    idempotencyKey?: string;
   },
 ) {
   const targets = await loadOpenQueueTargets(context, input);
   const sourceStatus = responseOutreachStatus(input.responseStatus);
   const stage = responseOpportunityStage(input.responseStatus);
   const followUpDate = input.followUpDate ? dateFromDateOnly(input.followUpDate) : null;
+  const outreachId = outreachIdFromIdempotencyKey(input.idempotencyKey);
 
   await prisma.$transaction(async (tx) => {
-    const outreach = await tx.outreachRecord.create({
+    const existingOutreach = outreachId
+      ? await tx.outreachRecord.findUnique({
+          where: { id: outreachId },
+          select: baselineOutreachRecordSelect,
+        })
+      : null;
+    if (existingOutreach) {
+      if (
+        existingOutreach.shopId !== context.shopId ||
+        existingOutreach.customerId !== input.customerId ||
+        existingOutreach.vehicleId !== input.vehicleId
+      ) {
+        throw queueActionError({
+          code: "OUTREACH_IDEMPOTENCY_CONFLICT",
+          message: "Refresh the page and try recording the outreach again.",
+          status: 409,
+          operation: "INSERT",
+        });
+      }
+    }
+    const outreach = existingOutreach ?? await tx.outreachRecord.create({
       data: {
+        ...(outreachId ? { id: outreachId } : {}),
         shopId: context.shopId,
         customerId: input.customerId,
         vehicleId: input.vehicleId,
@@ -3358,14 +3413,14 @@ export async function recordPilotOpportunityContact(
         status: "MANUALLY_SENT",
         responseStatus: input.responseStatus,
         followUpDate,
-        bookingLinkId: input.bookingLinkId ?? null,
         copiedAt: input.channel === "TEXT" || input.channel === "EMAIL" ? new Date() : null,
         manuallySentAt: new Date(),
         performedByUserId: context.userId,
       },
+      select: baselineOutreachRecordSelect,
     });
 
-    if (input.bookingLinkId) {
+    if (input.bookingLinkId && isCustomerBookingEnabled()) {
       await tx.customerBookingLink.updateMany({
         where: {
           id: input.bookingLinkId,
@@ -3665,6 +3720,7 @@ export async function snoozePilotOpportunity(
         followUpDate: snoozedUntil,
         performedByUserId: context.userId,
       },
+      select: baselineOutreachRecordSelect,
     });
 
     if (targets.maintenanceRecordIds.length > 0) {
@@ -3718,6 +3774,7 @@ export async function endPilotOpportunitySnooze(
         responseStatus: "NO_RESPONSE",
         performedByUserId: context.userId,
       },
+      select: baselineOutreachRecordSelect,
     });
 
     if (targets.maintenanceRecordIds.length > 0) {
@@ -3760,6 +3817,7 @@ export async function bookPilotAppointment(
     time: string;
     status: Appointment["status"];
     notes?: string;
+    idempotencyKey?: string;
   },
 ) {
   const targets = input.opportunityIds?.length
@@ -3812,9 +3870,11 @@ export async function bookPilotAppointment(
   const totalPriceCents = serviceItems.reduce((sum, item) => sum + item.priceCents, 0);
   const scheduledStart = new Date(`${input.date}T${input.time}:00`);
   const scheduledEnd = new Date(scheduledStart.getTime() + Math.max(totalLaborMinutes, 30) * 60 * 1000);
+  const appointmentId = appointmentIdFromIdempotencyKey(input.idempotencyKey);
   const duplicateAppointment = await prisma.appointment.findFirst({
     where: {
       shopId: context.shopId,
+      ...(appointmentId ? { id: { not: appointmentId } } : {}),
       vehicleId: input.vehicleId,
       scheduledStart,
       status: {
@@ -3825,14 +3885,42 @@ export async function bookPilotAppointment(
   });
 
   if (duplicateAppointment) {
-    throw new Error("This vehicle already has an appointment at that time.");
+    throw new SafeActionError({
+      code: "APPOINTMENT_SLOT_UNAVAILABLE",
+      message: "That time is no longer available. Choose another appointment time.",
+      status: 409,
+      table: "Appointment",
+      operation: "INSERT",
+    });
   }
 
   await prisma.$transaction(async (tx) => {
     const maintenanceRecordIds = targets?.maintenanceRecordIds ?? input.maintenanceRecordIds;
     const synced = targets ? [] : await syncMaintenanceRevenueOpportunities(tx, context, maintenanceRecordIds);
-    const appointment = await tx.appointment.create({
+    const existingAppointment = appointmentId
+      ? await tx.appointment.findUnique({
+          where: { id: appointmentId },
+          select: baselineAppointmentSelect,
+        })
+      : null;
+    if (
+      existingAppointment &&
+      (existingAppointment.shopId !== context.shopId ||
+        existingAppointment.customerId !== input.customerId ||
+        existingAppointment.vehicleId !== input.vehicleId ||
+        existingAppointment.scheduledStart.getTime() !== scheduledStart.getTime())
+    ) {
+      throw new SafeActionError({
+        code: "APPOINTMENT_RETRY_CONFLICT",
+        message: "Refresh the page and try creating the appointment again.",
+        status: 409,
+        table: "Appointment",
+        operation: "INSERT",
+      });
+    }
+    const appointment = existingAppointment ?? await tx.appointment.create({
       data: {
+        ...(appointmentId ? { id: appointmentId } : {}),
         shopId: context.shopId,
         customerId: input.customerId,
         vehicleId: input.vehicleId,
@@ -3856,6 +3944,7 @@ export async function bookPilotAppointment(
           })),
         },
       },
+      select: baselineAppointmentSelect,
     });
     if (maintenanceRecordIds.length > 0) {
       await tx.vehicleMaintenanceRecord.updateMany({
@@ -3923,6 +4012,7 @@ export async function completePilotAppointment(
         completedAt: new Date(input.completedAt),
         notes: input.notes ?? appointment.notes,
       },
+      select: baselineAppointmentSelect,
     });
     await tx.vehicleMaintenanceRecord.updateMany({
       where: {
@@ -4311,6 +4401,7 @@ export async function importPilotCsvRows(
                 },
               },
             },
+            select: duplicateAppointmentSelect,
           });
         }
       }

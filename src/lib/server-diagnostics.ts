@@ -17,6 +17,8 @@ export type SafeMutationOperation = {
   serviceDefinitionId?: string;
   maintenanceRecordId?: string;
   targetVehicleShopId?: string;
+  channel?: string;
+  outreachStage?: string;
 };
 
 export class SafeActionError extends Error {
@@ -151,12 +153,22 @@ export function safeMutationOperation(value: unknown): SafeMutationOperation {
       table: "VehicleMileageReading",
       operation: "UPDATE",
     },
+    markOutreachManuallySent: {
+      table: "OutreachRecord",
+      operation: "INSERT",
+      customerId: safeId(payload.customerId),
+      vehicleId: safeId(payload.vehicleId),
+      channel: typeof payload.channel === "string" ? payload.channel : undefined,
+      outreachStage: typeof payload.responseStatus === "string" ? payload.responseStatus : undefined,
+    },
     recordOpportunityContact: {
       table: "OutreachRecord",
       operation: "INSERT",
       customerId: safeId(payload.customerId),
       vehicleId: safeId(payload.vehicleId),
       opportunityId: Array.isArray(payload.opportunityIds) ? safeId(payload.opportunityIds[0]) : undefined,
+      channel: typeof payload.channel === "string" ? payload.channel : undefined,
+      outreachStage: typeof payload.responseStatus === "string" ? payload.responseStatus : undefined,
     },
     bookAppointment: {
       table: "Appointment",
@@ -175,6 +187,8 @@ export function safeMutationOperation(value: unknown): SafeMutationOperation {
       customerId: safeId(payload.customerId),
       vehicleId: safeId(payload.vehicleId),
       opportunityId: Array.isArray(payload.opportunityIds) ? safeId(payload.opportunityIds[0]) : undefined,
+      channel: "OTHER",
+      outreachStage: "SNOOZED",
     },
     endOpportunitySnooze: {
       table: "MaintenanceRevenueOpportunity",
@@ -240,6 +254,22 @@ export function clientMutationError(error: unknown, operation: SafeMutationOpera
     return {
       code: "IMPORT_SCHEMA_COMPATIBILITY_ERROR",
       message: "The import could not be completed because a required application update is missing.",
+      status: 500,
+    };
+  }
+
+  if (schemaCodes.has(database.code ?? "") && operation.action === "bookAppointment") {
+    return {
+      code: "APPOINTMENT_SCHEMA_COMPATIBILITY_ERROR",
+      message: "The appointment could not be created because a required application update is missing.",
+      status: 500,
+    };
+  }
+
+  if (schemaCodes.has(database.code ?? "") && ["recordOpportunityContact", "markOutreachManuallySent", "snoozeOpportunity"].includes(operation.action ?? "")) {
+    return {
+      code: "OUTREACH_SCHEMA_COMPATIBILITY_ERROR",
+      message: "The outreach could not be recorded because a required application update is missing.",
       status: 500,
     };
   }

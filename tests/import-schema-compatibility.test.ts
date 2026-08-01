@@ -54,8 +54,12 @@ describe("import production schema compatibility", () => {
     const completeBody = bodyOf("completePilotAppointment");
 
     expect(bookBody).toContain("select: duplicateAppointmentSelect");
+    expect(bookBody).toContain("select: baselineAppointmentSelect");
+    expect(bookBody).toContain("appointmentIdFromIdempotencyKey");
+    expect(bookBody).toContain("APPOINTMENT_SLOT_UNAVAILABLE");
     expect(bookBody).not.toContain("bookingLinkId");
     expect(completeBody).toContain("select: baselineAppointmentWithServicesSelect");
+    expect(completeBody).toContain("select: baselineAppointmentSelect");
     expect(completeBody).not.toContain("include: { services: true }");
     expect(completeBody).not.toContain("bookingLinkId");
   });
@@ -70,6 +74,13 @@ describe("import production schema compatibility", () => {
     expect(diagnosticsSource).toContain("importCsvRows");
     expect(diagnosticsSource).toContain("IMPORT_SCHEMA_COMPATIBILITY_ERROR");
     expect(diagnosticsSource).toContain("The import could not be completed because a required application update is missing.");
+    expect(diagnosticsSource).not.toContain("Appointment.bookingLinkId");
+  });
+
+  it("returns a safe appointment-specific schema compatibility error", () => {
+    expect(diagnosticsSource).toContain("bookAppointment");
+    expect(diagnosticsSource).toContain("APPOINTMENT_SCHEMA_COMPATIBILITY_ERROR");
+    expect(diagnosticsSource).toContain("The appointment could not be created because a required application update is missing.");
     expect(diagnosticsSource).not.toContain("Appointment.bookingLinkId");
   });
 });
