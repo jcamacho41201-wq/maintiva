@@ -261,6 +261,7 @@ export async function mutatePilotState(body: unknown): Promise<MutationResult> {
       state?: DemoState;
       message?: string;
       bookingLink?: BookingLinkResult;
+      committed?: boolean;
     };
 
     if (response.status === 409 && data.code === "ONBOARDING_REQUIRED") {
@@ -271,6 +272,10 @@ export async function mutatePilotState(body: unknown): Promise<MutationResult> {
     if (response.status === 401 && data.code === "AUTH_REQUIRED") {
       window.location.href = "/login";
       return { ok: false, message: data.message ?? "Authentication is required." };
+    }
+
+    if (response.ok && data.committed) {
+      return { ok: true, message: data.message };
     }
 
     if (!response.ok || !data.state) {
@@ -1298,12 +1303,13 @@ export function useDemoStore() {
         responseStatus: OutreachRecord["responseStatus"];
         followUpDate?: string;
         bookingLinkId?: string;
+        idempotencyKey?: string;
       }) {
         if (!shouldUseLocalDemoPersistence()) {
           return mutatePilotState({ action: "recordOpportunityContact", payload: input });
         }
 
-        const outreachId = `outreach-${Date.now()}`;
+        const outreachId = input.idempotencyKey ? `outreach-${input.idempotencyKey}` : `outreach-${Date.now()}`;
         const sourceStatus = input.responseStatus === "DECLINED" || input.responseStatus === "DO_NOT_CONTACT"
           ? "DECLINED"
           : input.responseStatus !== "NO_RESPONSE"
@@ -1325,7 +1331,7 @@ export function useDemoStore() {
           return {
             ...draft,
             outreachRecords: [
-              ...draft.outreachRecords,
+              ...draft.outreachRecords.filter((record) => record.id !== outreachId),
               {
                 id: outreachId,
                 shopId: draft.shop.id,

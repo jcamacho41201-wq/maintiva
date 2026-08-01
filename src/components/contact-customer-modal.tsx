@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type React from "react";
 import { CalendarCheck, CheckCircle2, Clipboard, Mail, MessageSquare, Phone, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -116,6 +116,7 @@ export function ContactCustomerModal({
     responseStatus: CustomerResponseStatus;
     followUpDate?: string;
     bookingLinkId?: string;
+    idempotencyKey?: string;
   }) => Promise<{ ok: boolean; message?: string }>;
   onCreateBookingLink: (input: {
     customerId: string;
@@ -139,6 +140,7 @@ export function ContactCustomerModal({
   const [saving, setSaving] = useState(false);
   const [creatingLink, setCreatingLink] = useState(false);
   const [bookingLink, setBookingLink] = useState<{ id: string; url: string; expiresAt: string } | null>(null);
+  const idempotencyKeyRef = useRef<string | null>(null);
   const rows = serviceRows(group, records);
   const selectedChannelAvailable = channels.some((item) => item.channel === channel && item.available);
   const canSaveContact = selectedChannelAvailable && !saving && !saved;
@@ -201,6 +203,9 @@ export function ContactCustomerModal({
       setError("Choose a callback date.");
       return;
     }
+    idempotencyKeyRef.current ??= typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     setSaving(true);
     const result = await onSave({
       ...queuePayload(group),
@@ -209,6 +214,7 @@ export function ContactCustomerModal({
       responseStatus,
       followUpDate: followUpDate || undefined,
       bookingLinkId: bookingLink?.id,
+      idempotencyKey: idempotencyKeyRef.current,
     });
     setSaving(false);
     if (!result.ok) {

@@ -206,6 +206,7 @@ describe("revenue queue synchronization guardrails", () => {
   it("keeps contact and booking separate in persisted workflows", () => {
     expect(pilotStateSource).toContain("export async function recordPilotOpportunityContact");
     expect(pilotStateSource).toContain("await tx.outreachRecord.create");
+    expect(pilotStateSource).toContain("select: baselineOutreachRecordSelect");
     expect(pilotStateSource).toContain("responseOpportunityStage");
     expect(pilotStateSource).toContain("export async function bookPilotAppointment");
     expect(pilotStateSource).toContain("opportunityId: targets?.opportunityIds[0]");

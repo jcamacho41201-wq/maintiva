@@ -107,6 +107,23 @@ const duplicateAppointmentSelect = {
   id: true,
 } satisfies Prisma.AppointmentSelect;
 
+const baselineOutreachRecordSelect = {
+  id: true,
+  shopId: true,
+  customerId: true,
+  vehicleId: true,
+  message: true,
+  channel: true,
+  status: true,
+  copiedAt: true,
+  manuallySentAt: true,
+  responseStatus: true,
+  followUpDate: true,
+  appointmentId: true,
+  performedByUserId: true,
+  createdAt: true,
+} satisfies Prisma.OutreachRecordSelect;
+
 const shopBookingSettingsSchema = z.object({
   onlineBookingEnabled: z.boolean(),
   minimumNoticeMinutes: z.number().int().min(0).max(43_200),
@@ -959,6 +976,20 @@ function responseOpportunityStage(responseStatus?: OutreachRecord["responseStatu
   return "CONTACTED" as const;
 }
 
+function outreachIdFromIdempotencyKey(idempotencyKey?: string) {
+  if (!idempotencyKey) return undefined;
+  const normalized = idempotencyKey.trim();
+  if (!/^[a-zA-Z0-9_-]{8,120}$/.test(normalized)) {
+    throw queueActionError({
+      code: "INVALID_OUTREACH_IDEMPOTENCY_KEY",
+      message: "Refresh the page and try recording the outreach again.",
+      status: 400,
+      operation: "INSERT",
+    });
+  }
+  return `outreach-${normalized}`;
+}
+
 function startOfLocalDate(value: string) {
   return new Date(`${value}T00:00:00`);
 }
@@ -1671,22 +1702,7 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
       revenueOpportunities: { orderBy: [{ priority: "asc" }, { updatedAt: "desc" }] },
       outreachRecords: {
         orderBy: { createdAt: "desc" },
-        select: {
-          id: true,
-          shopId: true,
-          customerId: true,
-          vehicleId: true,
-          message: true,
-          channel: true,
-          status: true,
-          copiedAt: true,
-          manuallySentAt: true,
-          responseStatus: true,
-          followUpDate: true,
-          appointmentId: true,
-          performedByUserId: true,
-          createdAt: true,
-        },
+        select: baselineOutreachRecordSelect,
       },
       importHistory: { orderBy: { importedAt: "desc" } },
       appointments: {
@@ -3306,6 +3322,7 @@ export async function markPilotOutreachManuallySent(
         manuallySentAt: new Date(),
         performedByUserId: context.userId,
       },
+      select: baselineOutreachRecordSelect,
     });
     await tx.vehicleMaintenanceRecord.updateMany({
       where: { id: { in: input.maintenanceRecordIds }, shopId: context.shopId },
@@ -3340,16 +3357,39 @@ export async function recordPilotOpportunityContact(
     responseStatus: OutreachRecord["responseStatus"];
     followUpDate?: string;
     bookingLinkId?: string;
+    idempotencyKey?: string;
   },
 ) {
   const targets = await loadOpenQueueTargets(context, input);
   const sourceStatus = responseOutreachStatus(input.responseStatus);
   const stage = responseOpportunityStage(input.responseStatus);
   const followUpDate = input.followUpDate ? dateFromDateOnly(input.followUpDate) : null;
+  const outreachId = outreachIdFromIdempotencyKey(input.idempotencyKey);
 
   await prisma.$transaction(async (tx) => {
-    const outreach = await tx.outreachRecord.create({
+    const existingOutreach = outreachId
+      ? await tx.outreachRecord.findUnique({
+          where: { id: outreachId },
+          select: baselineOutreachRecordSelect,
+        })
+      : null;
+    if (existingOutreach) {
+      if (
+        existingOutreach.shopId !== context.shopId ||
+        existingOutreach.customerId !== input.customerId ||
+        existingOutreach.vehicleId !== input.vehicleId
+      ) {
+        throw queueActionError({
+          code: "OUTREACH_IDEMPOTENCY_CONFLICT",
+          message: "Refresh the page and try recording the outreach again.",
+          status: 409,
+          operation: "INSERT",
+        });
+      }
+    }
+    const outreach = existingOutreach ?? await tx.outreachRecord.create({
       data: {
+        ...(outreachId ? { id: outreachId } : {}),
         shopId: context.shopId,
         customerId: input.customerId,
         vehicleId: input.vehicleId,
@@ -3358,14 +3398,14 @@ export async function recordPilotOpportunityContact(
         status: "MANUALLY_SENT",
         responseStatus: input.responseStatus,
         followUpDate,
-        bookingLinkId: input.bookingLinkId ?? null,
         copiedAt: input.channel === "TEXT" || input.channel === "EMAIL" ? new Date() : null,
         manuallySentAt: new Date(),
         performedByUserId: context.userId,
       },
+      select: baselineOutreachRecordSelect,
     });
 
-    if (input.bookingLinkId) {
+    if (input.bookingLinkId && isCustomerBookingEnabled()) {
       await tx.customerBookingLink.updateMany({
         where: {
           id: input.bookingLinkId,
@@ -3665,6 +3705,7 @@ export async function snoozePilotOpportunity(
         followUpDate: snoozedUntil,
         performedByUserId: context.userId,
       },
+      select: baselineOutreachRecordSelect,
     });
 
     if (targets.maintenanceRecordIds.length > 0) {
@@ -3718,6 +3759,7 @@ export async function endPilotOpportunitySnooze(
         responseStatus: "NO_RESPONSE",
         performedByUserId: context.userId,
       },
+      select: baselineOutreachRecordSelect,
     });
 
     if (targets.maintenanceRecordIds.length > 0) {
