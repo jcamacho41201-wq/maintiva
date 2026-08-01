@@ -183,7 +183,7 @@ export type ServiceRecord = {
   vehicleId: string;
   serviceName: string;
   completedAt: string;
-  mileage: number;
+  mileage: number | null;
   priceCents: number;
   notes: string;
 };

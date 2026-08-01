@@ -48,6 +48,7 @@ import {
   type ImportRowAction,
   type ImportType,
   type MaintivaField,
+  type NormalizedCsvValue,
 } from "@/lib/csv-import";
 import { createCustomerBookingLink } from "@/lib/customer-booking";
 
@@ -294,13 +295,18 @@ function dateFromDateOnly(value: string) {
   return new Date(`${value}T12:00:00Z`);
 }
 
-function stringValue(record: Record<string, string | number>, key: string) {
+function stringValue(record: Record<string, NormalizedCsvValue>, key: string) {
   return String(record[key] ?? "").trim();
 }
 
-function numberValue(record: Record<string, string | number>, key: string) {
+function numberValue(record: Record<string, NormalizedCsvValue>, key: string) {
   const value = record[key];
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function nullableNumberValue(record: Record<string, NormalizedCsvValue>, key: string) {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function appointmentDateTime(date: string, time: string) {
@@ -2014,7 +2020,7 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
       vehicleId: record.vehicleId,
       serviceName: record.serviceName,
       completedAt: dateOnly(record.completedAt),
-      mileage: record.mileage ?? 0,
+      mileage: record.mileage,
       priceCents: record.priceCents,
       notes: record.notes ?? "",
     })),
@@ -4139,6 +4145,8 @@ export async function importPilotCsvRows(
       const lastName = stringValue(normalized, "customerLastName");
       const vin = stringValue(normalized, "vin").toUpperCase();
       const action = rowAction(row);
+      const currentMileage = nullableNumberValue(normalized, "currentMileage");
+      const serviceMileage = nullableNumberValue(normalized, "serviceMileage");
 
       let customer = row.entities.customer.key ? customerByKey.get(row.entities.customer.key) ?? null : null;
       customer ??= await tx.customer.findFirst({
@@ -4191,6 +4199,9 @@ export async function importPilotCsvRows(
       vehicle ??= existingVinVehicle;
 
       if (vehicle) {
+        const nextCurrentMileage = currentMileage ?? (
+          stringValue(normalized, "serviceDate") && serviceMileage !== null ? serviceMileage : null
+        );
         vehicle = await tx.vehicle.update({
           where: { id: vehicle.id },
           data: {
@@ -4198,7 +4209,7 @@ export async function importPilotCsvRows(
             year: numberValue(normalized, "vehicleYear") || vehicle.year,
             make: stringValue(normalized, "vehicleMake") || vehicle.make,
             model: stringValue(normalized, "vehicleModel") || vehicle.model,
-            currentMileage: numberValue(normalized, "currentMileage") || vehicle.currentMileage,
+            currentMileage: nextCurrentMileage ?? vehicle.currentMileage,
             licensePlate: stringValue(normalized, "licensePlate") || vehicle.licensePlate,
             lastServiceDate: new Date(),
           },
@@ -4208,6 +4219,9 @@ export async function importPilotCsvRows(
         stringValue(normalized, "vehicleModel") &&
         numberValue(normalized, "vehicleYear")
       ) {
+        const initialCurrentMileage = currentMileage ?? (
+          stringValue(normalized, "serviceDate") && serviceMileage !== null ? serviceMileage : null
+        );
         vehicle = await tx.vehicle.create({
           data: {
             shopId: context.shopId,
@@ -4217,7 +4231,7 @@ export async function importPilotCsvRows(
             model: stringValue(normalized, "vehicleModel"),
             vin: vehicleVin,
             licensePlate: stringValue(normalized, "licensePlate") || null,
-            currentMileage: numberValue(normalized, "currentMileage"),
+            currentMileage: initialCurrentMileage ?? 0,
             estimatedAnnualMileage: 12_000,
             lastServiceDate: new Date(),
           },
@@ -4227,6 +4241,37 @@ export async function importPilotCsvRows(
       }
       if (row.entities.vehicle.key) vehicleByKey.set(row.entities.vehicle.key, vehicle);
       touchedVehicleIds.add(vehicle.id);
+
+      if (currentMileage !== null) {
+        const currentMileageDate = stringValue(normalized, "serviceDate") || currentDateInTimeZone(context.shopTimezone);
+        const currentMileageKey = `${vehicle.id}|${currentMileageDate}|${currentMileage}`;
+        const existingCurrentMileageReading = await tx.vehicleMileageReading.findFirst({
+          where: {
+            shopId: context.shopId,
+            vehicleId: vehicle.id,
+            readingDate: dateFromDateOnly(currentMileageDate),
+            readingMileage: currentMileage,
+          },
+        });
+        if (!existingCurrentMileageReading && !importedMileageKeys.has(currentMileageKey)) {
+          importedMileageKeys.add(currentMileageKey);
+          await tx.vehicleMileageReading.create({
+            data: {
+              shopId: context.shopId,
+              vehicleId: vehicle.id,
+              readingMileage: currentMileage,
+              readingDate: dateFromDateOnly(currentMileageDate),
+              source: "SERVICE_HISTORY_IMPORT",
+              verificationStatus: "IMPORTED",
+              anomalyStatus: "NONE",
+              includedInForecast: true,
+              sourceReferenceType: "ImportRowRecord",
+              recordedByUserId: context.userId,
+            },
+          });
+          await recalculatePersistedDrivingProfile({ tx, context, vehicleId: vehicle.id });
+        }
+      }
 
       const serviceName = stringValue(normalized, "serviceName") || stringValue(normalized, "services");
       const priceCents = numberValue(normalized, "price");
@@ -4276,7 +4321,7 @@ export async function importPilotCsvRows(
             lastCompletedDate: importsCompletedService && stringValue(normalized, "serviceDate")
               ? new Date(stringValue(normalized, "serviceDate"))
               : undefined,
-            lastCompletedMileage: importsCompletedService ? numberValue(normalized, "serviceMileage") || undefined : undefined,
+            lastCompletedMileage: importsCompletedService ? serviceMileage ?? undefined : undefined,
             priceOverrideCents: priceCents,
             laborMinutesOverride: laborMinutes,
             priceCents,
@@ -4296,9 +4341,7 @@ export async function importPilotCsvRows(
             && importsCompletedService
             ? new Date(stringValue(normalized, "serviceDate"))
             : null,
-          lastCompletedMileage: importsCompletedService
-            ? numberValue(normalized, "serviceMileage") || numberValue(normalized, "currentMileage") || null
-            : null,
+          lastCompletedMileage: importsCompletedService ? serviceMileage : null,
           recommendedMileageInterval: null,
           recommendedTimeIntervalMonths: null,
           mileageIntervalOverride: null,
@@ -4323,7 +4366,6 @@ export async function importPilotCsvRows(
 
       if (importsCompletedService && stringValue(normalized, "serviceDate")) {
         const serviceDate = stringValue(normalized, "serviceDate");
-        const serviceMileage = numberValue(normalized, "serviceMileage") || numberValue(normalized, "currentMileage");
         const serviceHistory = await tx.serviceHistoryRecord.create({
           data: {
             shopId: context.shopId,
@@ -4338,8 +4380,8 @@ export async function importPilotCsvRows(
             notes: "Imported from CSV.",
           },
         });
-        const mileageKey = `${vehicle.id}|${serviceDate}|${serviceMileage}`;
-        const existingReading = serviceMileage > 0
+        const mileageKey = `${vehicle.id}|${serviceDate}|${serviceMileage ?? "missing"}`;
+        const existingReading = serviceMileage !== null
           ? await tx.vehicleMileageReading.findFirst({
             where: {
               shopId: context.shopId,
@@ -4349,7 +4391,7 @@ export async function importPilotCsvRows(
             },
           })
           : null;
-        if (serviceMileage > 0 && !existingReading && !importedMileageKeys.has(mileageKey)) {
+        if (serviceMileage !== null && !existingReading && !importedMileageKeys.has(mileageKey)) {
           importedMileageKeys.add(mileageKey);
           await tx.vehicleMileageReading.create({
             data: {

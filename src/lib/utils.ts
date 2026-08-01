@@ -31,6 +31,16 @@ export function formatLaborHours(hours: number) {
   return formatLaborMinutes(hours * 60);
 }
 
+export function formatMileage(value: number | null | undefined) {
+  if (value === null || value === undefined) return "Not entered";
+  return `${value.toLocaleString()} mi`;
+}
+
+export function formatServiceMileage(value: number | null | undefined) {
+  if (value === null || value === undefined) return "Mileage not entered";
+  return `${value.toLocaleString()} mi`;
+}
+
 export function formatDate(date: string | Date) {
   const value = typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date)
     ? `${date}T12:00:00`

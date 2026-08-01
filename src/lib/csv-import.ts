@@ -40,6 +40,7 @@ export type MaintivaField =
   | "services";
 
 export type CsvRow = Record<string, string>;
+export type NormalizedCsvValue = string | number | null;
 
 export const MAINTIVA_IMPORT_ROW_LIMIT = 50;
 
@@ -61,7 +62,7 @@ export type EntityImportResult = {
 export type ImportPreviewRow = {
   rowNumber: number;
   raw: CsvRow;
-  normalized: Record<string, string | number>;
+  normalized: Record<string, NormalizedCsvValue>;
   status: "VALID" | "INVALID" | "DUPLICATE" | "HELD" | "SKIPPED";
   action: ImportRowAction;
   duplicateReason?: string;
@@ -146,15 +147,15 @@ function normalizeHeader(value: string) {
   return value.trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
 }
 
-function normalizeText(value: string | number | undefined) {
+function normalizeText(value: NormalizedCsvValue | undefined) {
   return String(value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 }
 
-function normalizePhone(value: string | number | undefined) {
+function normalizePhone(value: NormalizedCsvValue | undefined) {
   return String(value ?? "").replace(/\D/g, "");
 }
 
-function normalizeVin(value: string | number | undefined) {
+function normalizeVin(value: NormalizedCsvValue | undefined) {
   return String(value ?? "").trim().toUpperCase();
 }
 
@@ -223,8 +224,8 @@ function cents(value: string) {
   return Number.isFinite(number) ? Math.round(number * 100) : NaN;
 }
 
-function nonNegativeInteger(value: string) {
-  if (!value) return 0;
+function nullableNonNegativeInteger(value: string) {
+  if (!value.trim()) return null;
   const number = Number(value.replace(/,/g, ""));
   return Number.isInteger(number) && number >= 0 ? number : NaN;
 }
@@ -249,7 +250,7 @@ function validatePhone(value: string) {
   return !value || value.replace(/\D/g, "").length >= 10;
 }
 
-function displayDate(value: string | number | undefined) {
+function displayDate(value: NormalizedCsvValue | undefined) {
   const date = validDate(String(value ?? ""));
   if (!date) return String(value ?? "").trim() || "an unrecorded date";
   return new Intl.DateTimeFormat("en-US", {
@@ -259,11 +260,11 @@ function displayDate(value: string | number | undefined) {
   }).format(new Date(`${date}T12:00:00`));
 }
 
-function includesDeclinedStatus(value: string | number | undefined) {
+function includesDeclinedStatus(value: NormalizedCsvValue | undefined) {
   return normalizeText(value).includes("declin");
 }
 
-function includesCompletedStatus(value: string | number | undefined) {
+function includesCompletedStatus(value: NormalizedCsvValue | undefined) {
   const status = normalizeText(value);
   return ["complete", "completed", "done", "performed", "paid", "closed"].some((token) => status.includes(token));
 }
@@ -278,7 +279,7 @@ export type ImportRowEventClassification = {
 
 export function classifyImportRowEvent(
   importType: ImportType,
-  normalized: Record<string, string | number>,
+  normalized: Record<string, NormalizedCsvValue>,
 ): ImportRowEventClassification {
   const serviceName = String(normalized.serviceName || normalized.services || "").trim();
   const serviceDate = String(normalized.serviceDate ?? "");
@@ -323,7 +324,7 @@ export function classifyImportRowEvent(
   };
 }
 
-function customerKey(normalized: Record<string, string | number>) {
+function customerKey(normalized: Record<string, NormalizedCsvValue>) {
   const external = normalizeText(normalized.customerExternalId);
   const email = normalizeText(normalized.customerEmail);
   const phone = normalizePhone(normalized.customerPhone);
@@ -334,7 +335,7 @@ function customerKey(normalized: Record<string, string | number>) {
   return `name:${name}`;
 }
 
-function vehicleKey(normalized: Record<string, string | number>, resolvedCustomerKey: string) {
+function vehicleKey(normalized: Record<string, NormalizedCsvValue>, resolvedCustomerKey: string) {
   const external = normalizeText(normalized.vehicleExternalId);
   const vin = normalizeVin(normalized.vin);
   if (external) return `external:${external}`;
@@ -344,7 +345,7 @@ function vehicleKey(normalized: Record<string, string | number>, resolvedCustome
 
 function childKind(
   importType: ImportType,
-  normalized: Record<string, string | number>,
+  normalized: Record<string, NormalizedCsvValue>,
   classification = classifyImportRowEvent(importType, normalized),
 ) {
   if (classification.importsAppointment) return "Appointment" as const;
@@ -352,7 +353,7 @@ function childKind(
   return "Service" as const;
 }
 
-function childKey(kind: EntityImportResult["entity"], vehicleKeyValue: string, normalized: Record<string, string | number>) {
+function childKey(kind: EntityImportResult["entity"], vehicleKeyValue: string, normalized: Record<string, NormalizedCsvValue>) {
   const serviceName = normalizeText(normalized.serviceName || normalized.services);
   if (kind === "Appointment") {
     return `appointment:${vehicleKeyValue}|${normalized.appointmentDate}|${normalized.appointmentTime}|${serviceName}`;
@@ -363,7 +364,7 @@ function childKey(kind: EntityImportResult["entity"], vehicleKeyValue: string, n
   return `service:${vehicleKeyValue}|${serviceName}|${normalized.serviceDate}|${normalized.serviceMileage}`;
 }
 
-function existingCustomerResult(state: DemoState, normalized: Record<string, string | number>) {
+function existingCustomerResult(state: DemoState, normalized: Record<string, NormalizedCsvValue>) {
   const email = normalizeText(normalized.customerEmail);
   const phone = normalizePhone(normalized.customerPhone);
   const first = normalizeText(normalized.customerFirstName);
@@ -376,7 +377,7 @@ function existingCustomerResult(state: DemoState, normalized: Record<string, str
   return match ? { match, key: `existing:${match.id}` } : undefined;
 }
 
-function existingVehicleResult(state: DemoState, normalized: Record<string, string | number>, customerId?: string) {
+function existingVehicleResult(state: DemoState, normalized: Record<string, NormalizedCsvValue>, customerId?: string) {
   const vin = normalizeVin(normalized.vin);
   const year = Number(normalized.vehicleYear);
   const make = normalizeText(normalized.vehicleMake);
@@ -388,7 +389,7 @@ function existingVehicleResult(state: DemoState, normalized: Record<string, stri
   return match ? { match, key: `existing:${match.id}` } : undefined;
 }
 
-function existingChildResult(state: DemoState, kind: EntityImportResult["entity"], vehicleId: string | undefined, normalized: Record<string, string | number>) {
+function existingChildResult(state: DemoState, kind: EntityImportResult["entity"], vehicleId: string | undefined, normalized: Record<string, NormalizedCsvValue>) {
   if (!vehicleId) return undefined;
   const serviceName = normalizeText(normalized.serviceName || normalized.services);
   if (kind === "Appointment") {
@@ -408,11 +409,14 @@ function existingChildResult(state: DemoState, kind: EntityImportResult["entity"
     );
     return match ? { key: `declined:${match.id}` } : undefined;
   }
+  const serviceMileage = typeof normalized.serviceMileage === "number" && !Number.isNaN(normalized.serviceMileage)
+    ? normalized.serviceMileage
+    : null;
   const match = state.serviceRecords.find((record) =>
     record.vehicleId === vehicleId &&
     normalizeText(record.serviceName) === serviceName &&
     record.completedAt.slice(0, 10) === String(normalized.serviceDate ?? "").slice(0, 10) &&
-    record.mileage === Number(normalized.serviceMileage || 0),
+    record.mileage === serviceMileage,
   );
   return match ? { key: `service:${match.id}` } : undefined;
 }
@@ -448,10 +452,10 @@ export function previewImport({
       vehicleMake: mapped(row, mapping, "vehicleMake"),
       vehicleModel: mapped(row, mapping, "vehicleModel"),
       licensePlate: mapped(row, mapping, "licensePlate"),
-      currentMileage: nonNegativeInteger(mapped(row, mapping, "currentMileage")),
+      currentMileage: nullableNonNegativeInteger(mapped(row, mapping, "currentMileage")),
       serviceName: mapped(row, mapping, "serviceName"),
       serviceDate: validDate(mapped(row, mapping, "serviceDate")),
-      serviceMileage: nonNegativeInteger(mapped(row, mapping, "serviceMileage")),
+      serviceMileage: nullableNonNegativeInteger(mapped(row, mapping, "serviceMileage")),
       price: cents(mapped(row, mapping, "price")),
       laborHours: positiveHours(mapped(row, mapping, "laborHours")),
       status: mapped(row, mapping, "status"),
@@ -473,6 +477,7 @@ export function previewImport({
       if (!normalized.vehicleMake || !normalized.vehicleModel) errors.push("Vehicle make and model are required.");
       if (!Number.isInteger(normalized.vehicleYear) || normalized.vehicleYear < 1900 || normalized.vehicleYear > 2100) errors.push("Vehicle year is invalid.");
       if (Number.isNaN(normalized.currentMileage)) errors.push("Mileage must be non-negative.");
+      if (Number.isNaN(normalized.serviceMileage)) errors.push("Service mileage must be non-negative.");
       if (normalized.vin && String(normalized.vin).length !== 17) errors.push("VIN must be 17 characters.");
     }
     if (["SERVICE_HISTORY", "DECLINED_WORK", "APPOINTMENTS", "COMBINED"].includes(importType)) {
@@ -485,7 +490,10 @@ export function previewImport({
       ["SERVICE_HISTORY", "COMBINED"].includes(importType) &&
       eventClassification.importsCompletedService &&
       (normalized.serviceName || normalized.services) &&
-      (normalized.serviceMileage > 0 || normalized.currentMileage > 0) &&
+      (
+        (typeof normalized.serviceMileage === "number" && normalized.serviceMileage > 0) ||
+        (typeof normalized.currentMileage === "number" && normalized.currentMileage > 0)
+      ) &&
       !normalized.serviceDate
     ) {
       errors.push("Reading Date is required when importing mileage history.");
@@ -527,7 +535,7 @@ export function previewImport({
           entity: kind,
           status: "DUPLICATE",
           message: kind === "Service"
-            ? `Matched existing customer and vehicle. This service appears to have already been imported for ${normalized.serviceDate || "that date"} at ${normalized.serviceMileage || 0} miles.`
+            ? `Matched existing customer and vehicle. This service appears to have already been imported for ${normalized.serviceDate || "that date"}${normalized.serviceMileage === null ? " with no mileage entered" : ` at ${normalized.serviceMileage} miles`}.`
             : `${kind} appears to have already been imported and will follow the selected row action.`,
           key,
         }

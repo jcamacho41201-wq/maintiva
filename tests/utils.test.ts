@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatDate, formatHours, formatLaborHours, formatLaborMinutes } from "@/lib/utils";
+import { formatDate, formatHours, formatLaborHours, formatLaborMinutes, formatMileage, formatServiceMileage } from "@/lib/utils";
 
 describe("formatDate", () => {
   it("formats date-only values without shifting to the previous local day", () => {
@@ -18,5 +18,18 @@ describe("formatLaborHours", () => {
     expect(formatLaborMinutes(61)).toBe("1 hr 1 min");
     expect(formatHours(61)).toBe("1 hr 1 min");
     expect(formatLaborHours(61 / 60)).toBe("1 hr 1 min");
+  });
+});
+
+describe("mileage formatting", () => {
+  it("distinguishes missing mileage from explicit zero", () => {
+    expect(formatMileage(null)).toBe("Not entered");
+    expect(formatMileage(undefined)).toBe("Not entered");
+    expect(formatMileage(0)).toBe("0 mi");
+    expect(formatMileage(58_420)).toBe("58,420 mi");
+    expect(formatServiceMileage(null)).toBe("Mileage not entered");
+    expect(formatServiceMileage(undefined)).toBe("Mileage not entered");
+    expect(formatServiceMileage(0)).toBe("0 mi");
+    expect(formatServiceMileage(58_420)).toBe("58,420 mi");
   });
 });

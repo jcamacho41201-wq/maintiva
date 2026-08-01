@@ -19,6 +19,87 @@ describe("CSV import workflow", () => {
     expect(mapping.Email).toBe("customerEmail");
   });
 
+  it("preserves missing mileage separately from explicit zero and valid mileage", () => {
+    const rows = parseCsv(
+      [
+        "First Name,Last Name,Email,VIN,Year,Make,Model,Current Mileage,Service Name,Service Date,Service Mileage,Price,Labor Hours,Status",
+        "Blank,Mileage,blank@example.com,WA1EAAF45LA100001,2021,Honda,CR-V,,Check Engine Diagnostic,2026-07-02,,160,1,Completed",
+        "Whitespace,Mileage,space@example.com,WA1EAAF45LA100002,2021,Honda,CR-V,   ,Check Engine Diagnostic,2026-07-02,   ,160,1,Completed",
+        "Zero,Mileage,zero@example.com,WA1EAAF45LA100003,2021,Honda,CR-V,0,Check Engine Diagnostic,2026-07-02,0,160,1,Completed",
+        "Valid,Mileage,valid@example.com,WA1EAAF45LA100004,2021,Honda,CR-V,\"58,420\",Check Engine Diagnostic,2026-07-02,\"58,420\",160,1,Completed",
+      ].join("\n"),
+    );
+    const preview = previewImport({
+      rows,
+      mapping: detectColumnMapping(Object.keys(rows[0])),
+      importType: "COMBINED",
+      state: createInitialDemoState(),
+    });
+
+    expect(preview.rows[0].normalized.currentMileage).toBeNull();
+    expect(preview.rows[0].normalized.serviceMileage).toBeNull();
+    expect(preview.rows[1].normalized.currentMileage).toBeNull();
+    expect(preview.rows[1].normalized.serviceMileage).toBeNull();
+    expect(preview.rows[2].normalized.currentMileage).toBe(0);
+    expect(preview.rows[2].normalized.serviceMileage).toBe(0);
+    expect(preview.rows[3].normalized.currentMileage).toBe(58_420);
+    expect(preview.rows[3].normalized.serviceMileage).toBe(58_420);
+  });
+
+  it("marks invalid mileage without coercing it to zero", () => {
+    const rows = parseCsv(
+      "First Name,Last Name,Email,VIN,Year,Make,Model,Current Mileage,Service Name,Service Date,Service Mileage,Price,Labor Hours,Status\nInvalid,Mileage,invalid@example.com,WA1EAAF45LA100001,2021,Honda,CR-V,ABC,Check Engine Diagnostic,2026-07-02,ABC,160,1,Completed",
+    );
+    const preview = previewImport({
+      rows,
+      mapping: detectColumnMapping(Object.keys(rows[0])),
+      importType: "COMBINED",
+      state: createInitialDemoState(),
+    });
+
+    expect(preview.rows[0].status).toBe("INVALID");
+    expect(preview.rows[0].errors).toEqual(expect.arrayContaining([
+      "Mileage must be non-negative.",
+      "Service mileage must be non-negative.",
+    ]));
+    expect(Number.isNaN(preview.rows[0].normalized.currentMileage)).toBe(true);
+    expect(Number.isNaN(preview.rows[0].normalized.serviceMileage)).toBe(true);
+  });
+
+  it("does not match missing service mileage to an existing zero-mile service", () => {
+    const state = createInitialDemoState();
+    state.serviceRecords.push({
+      id: "hist-jeep-zero-mile-diagnostic",
+      shopId: state.shop.id,
+      customerId: "cust-justin",
+      vehicleId: "veh-jeep",
+      serviceName: "Check Engine Diagnostic",
+      completedAt: "2026-07-02",
+      mileage: 0,
+      priceCents: 16000,
+      notes: "Explicit zero-mile QA fixture.",
+    });
+    const rows = parseCsv(
+      [
+        "First Name,Last Name,Email,VIN,Year,Make,Model,Current Mileage,Service Name,Service Date,Service Mileage,Price,Labor Hours,Status",
+        "Justin,Camacho,justin@example.com,1J4FA49S03P123456,2003,Jeep,Wrangler,,Check Engine Diagnostic,2026-07-02,,160,1,Completed",
+        "Justin,Camacho,justin@example.com,1J4FA49S03P123456,2003,Jeep,Wrangler,0,Check Engine Diagnostic,2026-07-02,0,160,1,Completed",
+      ].join("\n"),
+    );
+
+    const preview = previewImport({
+      rows,
+      mapping: detectColumnMapping(Object.keys(rows[0])),
+      importType: "COMBINED",
+      state,
+    });
+
+    expect(preview.rows[0].normalized.serviceMileage).toBeNull();
+    expect(preview.rows[0].entities.child.status).toBe("CREATE");
+    expect(preview.rows[1].normalized.serviceMileage).toBe(0);
+    expect(preview.rows[1].entities.child.status).toBe("DUPLICATE");
+  });
+
   it("validates customers, vehicles, service values, and VIN length", () => {
     const rows = parseCsv(
       "Full Name,Email,Phone,VIN,Year,Make,Model,Current Mileage,Service Name,Price,Labor Hours\nBad Email,bad-email,404,SHORT,1800,Honda,Accord,-1,Oil Change,-5,0",

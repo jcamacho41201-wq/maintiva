@@ -33,6 +33,7 @@ import {
   type ImportRowAction,
   type ImportType,
   type MaintivaField,
+  type NormalizedCsvValue,
 } from "@/lib/csv-import";
 import { calculateDrivingProfile } from "@/lib/adaptive-mileage";
 import { currentDateInTimeZone } from "@/lib/utils";
@@ -310,12 +311,16 @@ function subscribe(callback: () => void) {
   };
 }
 
-function text(value: string | number | undefined) {
+function text(value: NormalizedCsvValue | undefined) {
   return String(value ?? "").trim();
 }
 
-function numeric(value: string | number | undefined) {
+function numeric(value: NormalizedCsvValue | undefined) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function nullableNumeric(value: NormalizedCsvValue | undefined) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function serviceSlug(name: string) {
@@ -1701,10 +1706,15 @@ export function useDemoStore() {
             const serviceName = text(normalized.serviceName) || text(normalized.services);
             const priceCents = numeric(normalized.price);
             const laborHours = numeric(normalized.laborHours);
+            const currentMileage = nullableNumeric(normalized.currentMileage);
+            const serviceMileage = nullableNumeric(normalized.serviceMileage);
             const importEvent = classifyImportRowEvent(input.importType, normalized);
             if (importEvent.ambiguousConflict) return;
             const importsCompletedService = importEvent.importsCompletedService;
             const importsDeclinedWork = importEvent.importsDeclinedWork;
+            const effectiveVehicleMileage = currentMileage ?? (
+              importsCompletedService && serviceMileage !== null ? serviceMileage : null
+            );
             const customer = {
               id: customerId,
               shopId: draft.shop.id,
@@ -1735,7 +1745,7 @@ export function useDemoStore() {
               engine: "",
               trim: "",
               vehicleType: "Passenger vehicle",
-              currentMileage: numeric(normalized.currentMileage),
+              currentMileage: effectiveVehicleMileage ?? 0,
               estimatedAnnualMileage: 12_000,
               overallHealth: 76,
               lastServiceDate: text(normalized.serviceDate) || new Date().toISOString().slice(0, 10),
@@ -1744,12 +1754,12 @@ export function useDemoStore() {
             if (!customers.some((item) => item.id === customerId)) customers.push(customer);
             vehicleId = vehicle.id;
             if (!vehicles.some((item) => item.id === vehicleId)) vehicles.push(vehicle);
-            if (numeric(normalized.currentMileage) > 0) {
+            if (currentMileage !== null) {
               mileageReadings.push({
                 id: `mile-import-current-${now}-${index}`,
                 shopId: draft.shop.id,
                 vehicleId,
-                readingMileage: numeric(normalized.currentMileage),
+                readingMileage: currentMileage,
                 readingDate: text(normalized.serviceDate) || new Date().toISOString().slice(0, 10),
                 source: "SERVICE_HISTORY_IMPORT",
                 verificationStatus: "IMPORTED",
@@ -1769,7 +1779,7 @@ export function useDemoStore() {
               serviceId: "svc-imported",
               serviceName,
               lastCompletedDate: importsCompletedService ? text(normalized.serviceDate) || new Date().toISOString().slice(0, 10) : null,
-              lastCompletedMileage: importsCompletedService ? numeric(normalized.serviceMileage) || vehicle.currentMileage : null,
+              lastCompletedMileage: importsCompletedService ? serviceMileage : null,
               recommendedMileageInterval: 12_000,
               recommendedTimeIntervalMonths: 12,
               mileageIntervalOverride: null,
@@ -1788,12 +1798,12 @@ export function useDemoStore() {
               updatedByUserId: actorUserId(draft),
             });
             if (importsCompletedService && text(normalized.serviceDate)) {
-              if (numeric(normalized.serviceMileage) > 0 && numeric(normalized.serviceMileage) !== numeric(normalized.currentMileage)) {
+              if (serviceMileage !== null && serviceMileage !== currentMileage) {
                 mileageReadings.push({
                   id: `mile-import-service-${now}-${index}`,
                   shopId: draft.shop.id,
                   vehicleId,
-                  readingMileage: numeric(normalized.serviceMileage),
+                  readingMileage: serviceMileage,
                   readingDate: text(normalized.serviceDate),
                   source: "SERVICE_HISTORY_IMPORT",
                   verificationStatus: "IMPORTED",
@@ -1809,7 +1819,7 @@ export function useDemoStore() {
                 vehicleId,
                 serviceName,
                 completedAt: text(normalized.serviceDate),
-                mileage: numeric(normalized.serviceMileage),
+                mileage: serviceMileage,
                 priceCents,
                 notes: "Imported from CSV.",
               });

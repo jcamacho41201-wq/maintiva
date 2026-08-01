@@ -138,6 +138,7 @@ describe("revenue queue synchronization guardrails", () => {
   const contactModalSource = readFileSync(join(process.cwd(), "src/components/contact-customer-modal.tsx"), "utf8");
   const contactWorkflowSource = readFileSync(join(process.cwd(), "src/lib/contact-workflow.ts"), "utf8");
   const vehiclePageSource = readFileSync(join(process.cwd(), "src/app/vehicles/[vehicleId]/page.tsx"), "utf8");
+  const customerPageSource = readFileSync(join(process.cwd(), "src/app/customers/[customerId]/page.tsx"), "utf8");
   const importPageSource = readFileSync(join(process.cwd(), "src/app/import/page.tsx"), "utf8");
 
   it("recalculates persisted maintenance opportunities from effective intervals", () => {
@@ -249,6 +250,14 @@ describe("revenue queue synchronization guardrails", () => {
     expect(importPageSource).toContain("Needs review");
     expect(pilotStateSource).toMatch(/row.status === "INVALID" \|\| row.status === "HELD"[\s\S]+return override === "SKIP"/);
     expect(pilotStateSource).toMatch(/row.status !== "INVALID" &&[\s\S]+row.status !== "HELD"/);
+  });
+
+  it("uses shared missing-mileage display helpers for customer and vehicle pages", () => {
+    expect(customerPageSource).toContain("formatMileage(vehicleMileageDisplayValue(state, vehicle))");
+    expect(customerPageSource).toContain("formatServiceMileage(record.mileage)");
+    expect(vehiclePageSource).toContain("formatMileage(displayedCurrentMileage)");
+    expect(vehiclePageSource).toContain("formatServiceMileage(record.mileage)");
+    expect(vehiclePageSource).toContain("Last completed mileage not entered");
   });
 });
 

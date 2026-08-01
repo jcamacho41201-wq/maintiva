@@ -16,7 +16,7 @@ import {
 import { getOpenRevenueOpportunitiesForCustomer, type RevenueOpportunity } from "@/lib/revenue-recovery";
 import { useDemoStore } from "@/lib/demo-store";
 import { type Customer, type Vehicle } from "@/lib/demo-data";
-import { currentDateInTimeZone, formatCurrency, formatDate, formatLaborHours } from "@/lib/utils";
+import { currentDateInTimeZone, formatCurrency, formatDate, formatLaborHours, formatMileage, formatServiceMileage } from "@/lib/utils";
 
 function editableCustomerFields(customer: Customer) {
   return {
@@ -52,6 +52,11 @@ function opportunityStatusLabel(stage: RevenueOpportunity["stage"]) {
     LOST: "Declined",
   };
   return labels[stage];
+}
+
+function vehicleMileageDisplayValue(state: ReturnType<typeof useDemoStore>["state"], vehicle: Vehicle) {
+  const hasMileageFact = vehicle.currentMileage !== 0 || state.mileageReadings.some((reading) => reading.vehicleId === vehicle.id);
+  return hasMileageFact ? vehicle.currentMileage : null;
 }
 
 export default function CustomerDetailPage() {
@@ -294,7 +299,7 @@ export default function CustomerDetailPage() {
                   <div className="rounded-lg border border-zinc-200 p-3">
                     <Gauge className="mb-2 h-4 w-4 text-violet-900" />
                     <p className="text-zinc-500">Current mileage</p>
-                    <p className="font-semibold">{vehicle.currentMileage.toLocaleString()} mi</p>
+                    <p className="font-semibold">{formatMileage(vehicleMileageDisplayValue(state, vehicle))}</p>
                   </div>
                   <div className="rounded-lg border border-zinc-200 p-3">
                     <ClipboardCheck className="mb-2 h-4 w-4 text-violet-900" />
@@ -341,7 +346,7 @@ export default function CustomerDetailPage() {
       </div>
 
       <div className="grid gap-6 lg:grid-cols-3">
-        <RelatedList title="Recent service records" items={recentRecords.map((record) => `${formatDate(record.completedAt)} · ${record.serviceName} · ${record.mileage.toLocaleString()} mi`)} />
+        <RelatedList title="Recent service records" items={recentRecords.map((record) => `${formatDate(record.completedAt)} · ${record.serviceName} · ${formatServiceMileage(record.mileage)}`)} />
         <RelatedList title="Recommended maintenance" items={getRecommendedRecords(state).filter(({ record }) => vehicles.some((vehicle) => vehicle.id === record.vehicleId)).map(({ record, calculation }) => `${record.serviceName} · ${calculation.dueText}`)} />
         <RelatedList title="Upcoming appointments" items={appointments.map((appointment) => `${formatDate(appointment.scheduledStart)} · ${appointment.serviceNames.join(", ")}`)} />
         <RelatedList title="Outreach history" items={outreach.map((record) => `${formatDate(record.sentAt)} · ${record.serviceNames.join(", ")} · ${record.channel}`)} />

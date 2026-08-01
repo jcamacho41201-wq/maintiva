@@ -30,7 +30,7 @@ import { type MaintenanceItemInput, useDemoStore } from "@/lib/demo-store";
 import { calculateDrivingProfile, estimateServiceDueDate, validateMileageReading } from "@/lib/adaptive-mileage";
 import { buildRevenueOpportunities, isOpenRevenueStage } from "@/lib/revenue-recovery";
 import { formatInterval, resolveMaintenanceInterval } from "@/lib/service-intervals";
-import { currentDateInTimeZone, formatCurrency, formatDate, formatDateTime, formatHours } from "@/lib/utils";
+import { currentDateInTimeZone, formatCurrency, formatDate, formatDateTime, formatHours, formatMileage, formatServiceMileage } from "@/lib/utils";
 
 type PlanFormState = {
   serviceDefinitionId: string;
@@ -88,6 +88,11 @@ function readableReviewCondition(value: string) {
     ON_REVIEW_DATE: "On review date",
   };
   return labels[value] ?? value;
+}
+
+function vehicleMileageDisplayValue(vehicle: Vehicle, readings: VehicleMileageReading[]) {
+  const hasMileageFact = vehicle.currentMileage !== 0 || readings.some((reading) => reading.vehicleId === vehicle.id);
+  return hasMileageFact ? vehicle.currentMileage : null;
 }
 
 function mileageHistoryStats(readings: VehicleMileageReading[]) {
@@ -526,7 +531,7 @@ function DrivingProfilePanel({
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid grid-cols-2 gap-3">
-            <DetailTile label="Current mileage" value={`${vehicle.currentMileage.toLocaleString()} mi`} />
+            <DetailTile label="Current mileage" value={formatMileage(vehicleMileageDisplayValue(vehicle, readings))} />
             <DetailTile label="Last reading date" value={latestReading ? formatDate(latestReading.readingDate) : "Not recorded"} />
             <DetailTile label="Estimated annual mileage" value={`${profile.calculatedAnnualMileage.toLocaleString()} mi`} />
             <DetailTile label="Confidence" value={profile.confidence} />
@@ -1494,6 +1499,7 @@ export default function VehicleMaintenancePage() {
     .filter((record) => !historyFilter || record.serviceName === historyFilter)
     .sort((a, b) => b.completedAt.localeCompare(a.completedAt));
   const mileageReadings = state.mileageReadings.filter((reading) => reading.vehicleId === vehicle.id);
+  const displayedCurrentMileage = vehicleMileageDisplayValue(vehicle, mileageReadings);
   const persistedProfile = state.drivingProfiles.find((profile) => profile.vehicleId === vehicle.id);
   const calculatedProfile = calculateDrivingProfile({
     shopId: state.shop.id,
@@ -1564,7 +1570,7 @@ export default function VehicleMaintenancePage() {
 
       <section className="grid gap-4 md:grid-cols-4">
         {[
-          ["Current mileage", `${vehicle.currentMileage.toLocaleString()} mi`],
+          ["Current mileage", formatMileage(displayedCurrentMileage)],
           ["Plan items", `${maintenance.length}`],
           ["Vehicle health", `${vehicle.overallHealth}%`],
           ["Open follow-ups", `${openRecommended.length + openDeclinedFollowUps.length}`],
@@ -1622,7 +1628,7 @@ export default function VehicleMaintenancePage() {
                     <Badge variant={effective.usesShopDefault ? "purple" : "neutral"}>{effective.sourceLabel}</Badge>
                   </div>
                   <p className="mt-1 text-sm text-zinc-500">
-                    Last completed {record.lastCompletedDate ? formatDate(record.lastCompletedDate) : "not recorded"} · {record.lastCompletedMileage === null ? "Last completed mileage not entered" : `${record.lastCompletedMileage.toLocaleString()} mi`}
+                    Last completed {record.lastCompletedDate ? formatDate(record.lastCompletedDate) : "not recorded"} · {record.lastCompletedMileage === null ? "Last completed mileage not entered" : formatMileage(record.lastCompletedMileage)}
                   </p>
                 </div>
                 <Badge variant={statusVariant(effective.status)}>
@@ -1640,8 +1646,8 @@ export default function VehicleMaintenancePage() {
 
               <div className="mt-4 grid grid-cols-2 gap-3">
                 <DetailTile label="Effective interval" value={formatInterval(effective.mileageInterval, effective.timeIntervalValue, effective.timeIntervalUnit)} />
-                <DetailTile label="Current mileage" value={`${vehicle.currentMileage.toLocaleString()} mi`} />
-                <DetailTile label="Next due mileage" value={effective.nextDueMileage ? `${effective.nextDueMileage.toLocaleString()} mi` : "Not calculated"} />
+                <DetailTile label="Current mileage" value={formatMileage(displayedCurrentMileage)} />
+                <DetailTile label="Next due mileage" value={effective.nextDueMileage !== null ? formatMileage(effective.nextDueMileage) : "Not calculated"} />
                 <DetailTile label="Next due date" value={effective.nextDueDate ? formatDate(effective.nextDueDate) : "Not calculated"} />
                 <DetailTile label="Price" value={formatCurrency(effective.priceCents)} />
                 <DetailTile label="Labor" value={formatHours(effective.laborMinutes)} />
@@ -1657,7 +1663,7 @@ export default function VehicleMaintenancePage() {
                   <div className="mt-4 rounded-lg border border-zinc-200 p-3 text-sm">
                     <p className="font-semibold">Forecast preview</p>
                     <div className="mt-2 grid gap-2 sm:grid-cols-3">
-                      <DetailTile label="Remaining miles" value={preview.remainingMiles === null ? "Unknown" : `${preview.remainingMiles.toLocaleString()} mi`} />
+                      <DetailTile label="Remaining miles" value={preview.remainingMiles === null ? "Unknown" : formatMileage(preview.remainingMiles)} />
                       <DetailTile label="Mileage date" value={preview.mileageBasedDueDate ? formatDate(preview.mileageBasedDueDate) : "Unknown"} />
                       <DetailTile label="First due" value={preview.firstDueDate ? `${formatDate(preview.firstDueDate)} by ${preview.firstTrigger}` : "Unknown"} />
                     </div>
@@ -1722,7 +1728,7 @@ export default function VehicleMaintenancePage() {
             <div key={record.id} className="rounded-lg border border-zinc-200 p-4 text-sm">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <p className="font-semibold">{formatDate(record.completedAt)}</p>
-                <Badge>{record.mileage ? `${record.mileage.toLocaleString()} mi` : "No mileage"}</Badge>
+                <Badge>{formatServiceMileage(record.mileage)}</Badge>
               </div>
               {record.notes && (
                 <p className="mt-2 whitespace-pre-line text-zinc-600">
@@ -1762,7 +1768,7 @@ export default function VehicleMaintenancePage() {
               <div>
                 <p className="font-semibold">{record.serviceName}</p>
                 <p className="mt-1 text-sm text-zinc-500">
-                  {formatDate(record.completedAt)} · {record.mileage.toLocaleString()} mi
+                  {formatDate(record.completedAt)} · {formatServiceMileage(record.mileage)}
                 </p>
                 {record.notes && <p className="mt-1 text-sm text-zinc-600">{record.notes}</p>}
               </div>
