@@ -1,15 +1,23 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type React from "react";
-import { CalendarCheck, CheckCircle2, Clipboard, Mail, MessageSquare, Phone, X } from "lucide-react";
+import { CalendarCheck, CheckCircle2, Clipboard, Mail, MessageSquare, Phone, RotateCcw, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import {
   availableContactChannels,
   defaultContactChannel,
   type ContactWorkflowChannel,
 } from "@/lib/contact-workflow";
-import type { Customer, CustomerResponseStatus, OutreachChannel, Vehicle, VehicleMaintenanceRecord } from "@/lib/demo-data";
+import type { Customer, CustomerResponseStatus, OutreachChannel, Shop, Vehicle, VehicleMaintenanceRecord } from "@/lib/demo-data";
+import {
+  buildOutreachDraft,
+  outreachTemplateReasons,
+  outreachTemplateVariables,
+  templateReasonForGroup,
+  unresolvedTemplateTokens,
+  type OutreachTemplateReason,
+} from "@/lib/outreach-templates";
 import type { RevenueQueueGroup } from "@/lib/revenue-recovery";
 import { formatCurrency, formatDate, formatLaborHours } from "@/lib/utils";
 
@@ -92,6 +100,7 @@ export function ContactCustomerModal({
   group,
   customer,
   vehicle,
+  shop,
   records,
   onClose,
   onBook,
@@ -102,6 +111,7 @@ export function ContactCustomerModal({
   group: RevenueQueueGroup;
   customer: Customer;
   vehicle: Vehicle;
+  shop: Pick<Shop, "name" | "phone" | "email">;
   records: VehicleMaintenanceRecord[];
   onClose: () => void;
   onBook: () => void;
@@ -127,10 +137,25 @@ export function ContactCustomerModal({
 }) {
   const channels = availableContactChannels(customer);
   const initialChannel = defaultContactChannel(customer) ?? "EMAIL";
+  const initialTemplateReason = templateReasonForGroup(group);
+  const initialVariables = outreachTemplateVariables({
+    customer,
+    vehicle,
+    shop,
+    group,
+  });
+  const initialDraft = buildOutreachDraft({
+    channel: initialChannel === "TEXT" ? "TEXT" : "EMAIL",
+    reason: initialTemplateReason,
+    variables: initialVariables,
+    includeBookingLink: false,
+  });
   const [channel, setChannel] = useState<ContactWorkflowChannel>(initialChannel);
-  const [message, setMessage] = useState(
-    `Hi ${customer.firstName}, this is Maintiva with ${group.recommendedServices.join(", ")} recommended for your ${group.vehicleLabel}. Reply here or call us to choose a time.`,
-  );
+  const [templateReason, setTemplateReason] = useState<OutreachTemplateReason>(initialTemplateReason);
+  const [includeBookingLink, setIncludeBookingLink] = useState(false);
+  const [subject, setSubject] = useState(initialDraft.subject);
+  const [message, setMessage] = useState(initialDraft.body);
+  const [draftEdited, setDraftEdited] = useState(false);
   const [responseStatus, setResponseStatus] = useState<CustomerResponseStatus>("NO_RESPONSE");
   const [followUpDate, setFollowUpDate] = useState("");
   const [notes, setNotes] = useState("");
@@ -144,6 +169,47 @@ export function ContactCustomerModal({
   const rows = serviceRows(group, records);
   const selectedChannelAvailable = channels.some((item) => item.channel === channel && item.available);
   const canSaveContact = selectedChannelAvailable && !saving && !saved;
+  const templateVariables = useMemo(() => outreachTemplateVariables({
+    customer,
+    vehicle,
+    shop,
+    group,
+    bookingUrl: bookingLink?.url,
+  }), [bookingLink?.url, customer, group, shop, vehicle]);
+  const unresolvedTokens = unresolvedTemplateTokens(channel === "EMAIL" ? `${subject}\n${message}` : message);
+  const smsCharacterCount = message.length;
+
+  function replaceDraft(
+    nextChannel: ContactWorkflowChannel,
+    nextReason = templateReason,
+    nextIncludeBookingLink = includeBookingLink,
+    nextBookingUrl = bookingLink?.url,
+  ) {
+    if (nextChannel === "CALL") {
+      setChannel(nextChannel);
+      return;
+    }
+    const variables = nextBookingUrl === bookingLink?.url
+      ? templateVariables
+      : outreachTemplateVariables({ customer, vehicle, shop, group, bookingUrl: nextBookingUrl });
+    const draft = buildOutreachDraft({
+      channel: nextChannel === "TEXT" ? "TEXT" : "EMAIL",
+      reason: nextReason,
+      variables,
+      includeBookingLink: nextIncludeBookingLink && Boolean(nextBookingUrl),
+    });
+    setChannel(nextChannel);
+    setTemplateReason(nextReason);
+    setIncludeBookingLink(nextIncludeBookingLink && Boolean(nextBookingUrl));
+    setSubject(draft.subject);
+    setMessage(draft.body);
+    setDraftEdited(false);
+    setCopied(false);
+  }
+
+  function confirmReplaceDraft() {
+    return !draftEdited || window.confirm("Replace the current edited draft with the selected template?");
+  }
 
   async function createLink() {
     if (!customerBookingEnabled) {
@@ -164,9 +230,12 @@ export function ContactCustomerModal({
     setBookingLink(result.bookingLink);
     if (channel === "CALL") {
       const writtenChannel = channels.find((item) => item.available && item.channel !== "CALL")?.channel;
-      if (writtenChannel) setChannel(writtenChannel);
+      if (writtenChannel) {
+        replaceDraft(writtenChannel, templateReason, true, result.bookingLink.url);
+      }
+    } else if (!draftEdited) {
+      replaceDraft(channel, templateReason, true, result.bookingLink.url);
     }
-    setMessage(result.bookingLink.message ?? `${message.trim()}\n\nSchedule here: ${result.bookingLink.url}`);
     setCopied(false);
   }
 
@@ -175,8 +244,12 @@ export function ContactCustomerModal({
       setError("Choose an available contact channel first.");
       return;
     }
+    if (channel !== "CALL" && unresolvedTokens.length > 0) {
+      setError("This message contains information that still needs to be completed.");
+      return;
+    }
     try {
-      await navigator.clipboard.writeText(channel === "CALL" ? notes : message);
+      await navigator.clipboard.writeText(channel === "CALL" ? notes : channel === "EMAIL" ? `Subject: ${subject}\n\n${message}` : message);
       setCopied(true);
       setError("");
     } catch {
@@ -194,9 +267,15 @@ export function ContactCustomerModal({
           `Call outcome: ${responseStatus.replaceAll("_", " ").toLowerCase()}.`,
           notes.trim() ? `Notes: ${notes.trim()}` : "",
         ].filter(Boolean).join("\n")
-      : message.trim();
+      : channel === "EMAIL"
+        ? `Subject: ${subject.trim()}\n\n${message.trim()}`
+        : message.trim();
     if (body.length < 3) {
       setError(channel === "CALL" ? "Add call notes or choose an outcome." : "Add a message before marking outreach sent.");
+      return;
+    }
+    if (channel !== "CALL" && unresolvedTokens.length > 0) {
+      setError("This message contains information that still needs to be completed.");
       return;
     }
     if (responseStatus === "WANTS_CALLBACK" && !followUpDate) {
@@ -257,7 +336,7 @@ export function ContactCustomerModal({
               <button
                 key={value}
                 onClick={() => {
-                  if (available) setChannel(value);
+                  if (available && confirmReplaceDraft()) replaceDraft(value);
                 }}
                 disabled={!available}
                 className={`flex h-11 items-center justify-center gap-2 rounded-lg border text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50 ${
@@ -273,16 +352,68 @@ export function ContactCustomerModal({
           })}
         </div>
 
-        {customerBookingEnabled && (
+        <div className="grid gap-4 sm:grid-cols-[1fr_auto] sm:items-end">
+          <label className="text-sm font-medium">
+            Template
+            <select
+              value={templateReason}
+              onChange={(event) => {
+                const nextReason = event.target.value as OutreachTemplateReason;
+                if (confirmReplaceDraft()) replaceDraft(channel, nextReason);
+              }}
+              disabled={channel === "CALL"}
+              className="mt-2 h-10 w-full rounded-lg border border-zinc-200 px-3 outline-none focus:border-violet-500 disabled:bg-zinc-50"
+            >
+              {outreachTemplateReasons.map((reason) => (
+                <option key={reason.value} value={reason.value}>{reason.label}</option>
+              ))}
+            </select>
+          </label>
           <button
-            onClick={createLink}
-            disabled={creatingLink || saving || Boolean(bookingLink)}
-            className="inline-flex items-center gap-2 rounded-lg border border-violet-200 px-4 py-2 text-sm font-semibold text-violet-950 disabled:opacity-60"
+            onClick={() => replaceDraft(channel)}
+            disabled={channel === "CALL"}
+            className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-zinc-200 px-4 text-sm font-semibold text-zinc-800 disabled:opacity-50"
           >
-            <CalendarCheck className="h-4 w-4" />
-            {creatingLink ? "Creating link..." : bookingLink ? "Booking link created" : "Create booking link"}
+            <RotateCcw className="h-4 w-4" />
+            Reset
           </button>
+        </div>
+
+        {group.lastContactedAt && (
+          <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-800">
+            Last contacted {formatDate(group.lastContactedAt)}. Review the draft before sending another follow-up.
+          </p>
         )}
+
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-zinc-200 p-3">
+          <label className="inline-flex items-center gap-2 text-sm font-medium text-zinc-700">
+            <input
+              type="checkbox"
+              checked={includeBookingLink}
+              disabled={!bookingLink || channel === "CALL"}
+              onChange={(event) => {
+                if (confirmReplaceDraft()) replaceDraft(channel, templateReason, event.target.checked);
+              }}
+              className="h-4 w-4 rounded border-zinc-300 text-violet-950 focus:ring-violet-500"
+            />
+            Include booking link
+          </label>
+          {customerBookingEnabled && (
+            <button
+              onClick={createLink}
+              disabled={creatingLink || saving || Boolean(bookingLink)}
+              className="inline-flex items-center gap-2 rounded-lg border border-violet-200 px-4 py-2 text-sm font-semibold text-violet-950 disabled:opacity-60"
+            >
+              <CalendarCheck className="h-4 w-4" />
+              {creatingLink ? "Creating link..." : bookingLink ? "Booking link created" : "Create booking link"}
+            </button>
+          )}
+          {!bookingLink && (
+            <span className="text-sm text-zinc-500">
+              {customerBookingEnabled ? "No booking link has been created for this message." : "Booking links are not available for this shop yet."}
+            </span>
+          )}
+        </div>
 
         {channel === "CALL" ? (
           <label className="block text-sm font-semibold">
@@ -290,10 +421,44 @@ export function ContactCustomerModal({
             <textarea value={notes} onChange={(event) => setNotes(event.target.value)} rows={4} className="mt-2 w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm font-normal outline-none focus:border-violet-500" />
           </label>
         ) : (
-          <label className="block text-sm font-semibold">
-            Editable {channel.toLowerCase()} message
-            <textarea value={message} onChange={(event) => setMessage(event.target.value)} rows={5} className="mt-2 w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm font-normal outline-none focus:border-violet-500" />
-          </label>
+          <div className="space-y-4">
+            {channel === "EMAIL" && (
+              <label className="block text-sm font-semibold">
+                Email subject
+                <input
+                  value={subject}
+                  onChange={(event) => {
+                    setSubject(event.target.value);
+                    setDraftEdited(true);
+                  }}
+                  className="mt-2 h-10 w-full rounded-lg border border-zinc-200 px-3 text-sm font-normal outline-none focus:border-violet-500"
+                />
+              </label>
+            )}
+            <label className="block text-sm font-semibold">
+              Editable {channel.toLowerCase()} message
+              <textarea
+                value={message}
+                onChange={(event) => {
+                  setMessage(event.target.value);
+                  setDraftEdited(true);
+                }}
+                rows={channel === "EMAIL" ? 7 : 5}
+                className="mt-2 w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm font-normal outline-none focus:border-violet-500"
+              />
+            </label>
+            {channel === "TEXT" && <p className="text-sm text-zinc-500">{smsCharacterCount} SMS characters</p>}
+            {unresolvedTokens.length > 0 && (
+              <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">
+                Complete these placeholders before sending: {unresolvedTokens.join(", ")}
+              </p>
+            )}
+            <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-4 text-sm">
+              <p className="font-semibold text-zinc-800">Final preview</p>
+              {channel === "EMAIL" && <p className="mt-3 font-medium text-zinc-700">Subject: {subject}</p>}
+              <p className="mt-3 whitespace-pre-wrap text-zinc-700">{message}</p>
+            </div>
+          </div>
         )}
 
         <div className="grid gap-4 sm:grid-cols-2">

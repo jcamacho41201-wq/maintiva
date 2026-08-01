@@ -156,6 +156,7 @@ const mutationSchema = z.discriminatedUnion("action", [
         "NO_SHOW",
       ]),
       notes: z.string().optional(),
+      idempotencyKey: z.string().regex(/^[a-zA-Z0-9_-]{8,120}$/).optional(),
     }),
   }),
   z.object({

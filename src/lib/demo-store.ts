@@ -1531,6 +1531,7 @@ export function useDemoStore() {
         time: string;
         status: Appointment["status"];
         notes?: string;
+        idempotencyKey?: string;
       }) {
         if (!shouldUseLocalDemoPersistence()) {
           return mutatePilotState({ action: "bookAppointment", payload: input });
@@ -1559,8 +1560,9 @@ export function useDemoStore() {
             declined.reduce((sum, record) => sum + record.laborHours, 0);
           const totalPriceCents = records.reduce((sum, record) => sum + record.priceCents, 0) +
             declined.reduce((sum, record) => sum + record.recommendedPriceCents, 0);
+          const appointmentId = input.idempotencyKey ? `appt-${input.idempotencyKey}` : `appt-${Date.now()}`;
           const appointment: Appointment = {
-            id: `appt-${Date.now()}`,
+            id: appointmentId,
             shopId: draft.shop.id,
             customerId: input.customerId,
             vehicleId: input.vehicleId,

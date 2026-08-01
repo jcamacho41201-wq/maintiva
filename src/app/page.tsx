@@ -291,6 +291,7 @@ export default function DashboardPage() {
           group={selectedOpportunity}
           customer={selectedCustomer}
           vehicle={selectedVehicle}
+          shop={state.shop}
           records={selectedRecords}
           onClose={() => setSelectedVehicleId(null)}
           onBook={() => router.push("/automation")}

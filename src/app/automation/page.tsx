@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type React from "react";
 import {
   CalendarCheck,
@@ -396,6 +396,7 @@ export default function AutomationPage() {
           group={activeGroup}
           customer={state.customers.find((customer) => customer.id === activeGroup.customerId)!}
           vehicle={state.vehicles.find((vehicle) => vehicle.id === activeGroup.vehicleId)!}
+          shop={state.shop}
           records={activeRecords}
           onClose={() => setQueueModal(null)}
           onBook={() => setQueueModal({ kind: "book", vehicleId: activeGroup.vehicleId })}
@@ -510,6 +511,7 @@ function BookAppointmentModal({
     time: string;
     status: Appointment["status"];
     notes?: string;
+    idempotencyKey?: string;
   }) => Promise<{ ok: boolean; message?: string }>;
 }) {
   const [date, setDate] = useState("");
@@ -520,12 +522,16 @@ function BookAppointmentModal({
   const rows = serviceRows(group, records);
   const totalPrice = rows.reduce((sum, row) => sum + row.priceCents, 0);
   const totalLabor = rows.reduce((sum, row) => sum + row.laborHours, 0);
+  const idempotencyKeyRef = useRef<string | null>(null);
 
   async function createAppointment() {
     if (!date || !time) {
       setError("Choose an appointment date and time.");
       return;
     }
+    idempotencyKeyRef.current ??= typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     setSaving(true);
     const result = await onSave({
       ...queuePayload(group),
@@ -533,6 +539,7 @@ function BookAppointmentModal({
       time,
       status: "CONFIRMED",
       notes,
+      idempotencyKey: idempotencyKeyRef.current,
     });
     setSaving(false);
     if (!result.ok) {

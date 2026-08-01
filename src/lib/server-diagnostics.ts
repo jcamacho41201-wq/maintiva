@@ -258,6 +258,14 @@ export function clientMutationError(error: unknown, operation: SafeMutationOpera
     };
   }
 
+  if (schemaCodes.has(database.code ?? "") && operation.action === "bookAppointment") {
+    return {
+      code: "APPOINTMENT_SCHEMA_COMPATIBILITY_ERROR",
+      message: "The appointment could not be created because a required application update is missing.",
+      status: 500,
+    };
+  }
+
   if (schemaCodes.has(database.code ?? "") && ["recordOpportunityContact", "markOutreachManuallySent", "snoozeOpportunity"].includes(operation.action ?? "")) {
     return {
       code: "OUTREACH_SCHEMA_COMPATIBILITY_ERROR",
