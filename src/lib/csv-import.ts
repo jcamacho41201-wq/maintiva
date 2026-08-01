@@ -246,6 +246,79 @@ function validatePhone(value: string) {
   return !value || value.replace(/\D/g, "").length >= 10;
 }
 
+function displayDate(value: string | number | undefined) {
+  const date = validDate(String(value ?? ""));
+  if (!date) return String(value ?? "").trim() || "an unrecorded date";
+  return new Intl.DateTimeFormat("en-US", {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(`${date}T12:00:00`));
+}
+
+function includesDeclinedStatus(value: string | number | undefined) {
+  return normalizeText(value).includes("declin");
+}
+
+function includesCompletedStatus(value: string | number | undefined) {
+  const status = normalizeText(value);
+  return ["complete", "completed", "done", "performed", "paid", "closed"].some((token) => status.includes(token));
+}
+
+export type ImportRowEventClassification = {
+  importsCompletedService: boolean;
+  importsDeclinedWork: boolean;
+  importsAppointment: boolean;
+  ambiguousConflict: boolean;
+  issue?: string;
+};
+
+export function classifyImportRowEvent(
+  importType: ImportType,
+  normalized: Record<string, string | number>,
+): ImportRowEventClassification {
+  const serviceName = String(normalized.serviceName || normalized.services || "").trim();
+  const serviceDate = String(normalized.serviceDate ?? "");
+  const declinedDate = String(normalized.declinedDate ?? "");
+  const appointmentDate = String(normalized.appointmentDate ?? "");
+  const appointmentTime = String(normalized.appointmentTime ?? "");
+  const statusDeclined = includesDeclinedStatus(normalized.status);
+  const statusCompleted = includesCompletedStatus(normalized.status);
+  const importsAppointment = importType === "APPOINTMENTS" || Boolean(appointmentDate && appointmentTime);
+  const hasCompletionSignal = Boolean(serviceDate) || statusCompleted || importType === "SERVICE_HISTORY";
+  const hasDeclineSignal = importType === "DECLINED_WORK" || Boolean(declinedDate) || statusDeclined;
+  const sameCycleDate = !serviceDate || !declinedDate || serviceDate === declinedDate;
+  const ambiguousConflict =
+    Boolean(serviceName) &&
+    hasCompletionSignal &&
+    hasDeclineSignal &&
+    sameCycleDate &&
+    !importsAppointment;
+
+  if (ambiguousConflict) {
+    return {
+      importsCompletedService: false,
+      importsDeclinedWork: false,
+      importsAppointment,
+      ambiguousConflict: true,
+      issue: `Row marks ${serviceName} as both completed and declined on ${displayDate(declinedDate || serviceDate)}.`,
+    };
+  }
+
+  const importsDeclinedWork = hasDeclineSignal && !importsAppointment;
+  const importsCompletedService =
+    !importsDeclinedWork &&
+    !importsAppointment &&
+    Boolean(serviceDate || importType === "SERVICE_HISTORY" || statusCompleted);
+
+  return {
+    importsCompletedService,
+    importsDeclinedWork,
+    importsAppointment,
+    ambiguousConflict: false,
+  };
+}
+
 function customerKey(normalized: Record<string, string | number>) {
   const external = normalizeText(normalized.customerExternalId);
   const email = normalizeText(normalized.customerEmail);
@@ -265,11 +338,13 @@ function vehicleKey(normalized: Record<string, string | number>, resolvedCustome
   return `details:${resolvedCustomerKey}|${normalized.vehicleYear}|${normalizeText(normalized.vehicleMake)}|${normalizeText(normalized.vehicleModel)}`;
 }
 
-function childKind(importType: ImportType, normalized: Record<string, string | number>) {
-  if (importType === "APPOINTMENTS") return "Appointment" as const;
-  if (importType === "DECLINED_WORK") return "Declined work" as const;
-  if (String(normalized.appointmentDate ?? "") && String(normalized.appointmentTime ?? "")) return "Appointment" as const;
-  if (String(normalized.declinedDate ?? "") || normalizeText(normalized.status).includes("declin")) return "Declined work" as const;
+function childKind(
+  importType: ImportType,
+  normalized: Record<string, string | number>,
+  classification = classifyImportRowEvent(importType, normalized),
+) {
+  if (classification.importsAppointment) return "Appointment" as const;
+  if (classification.importsDeclinedWork) return "Declined work" as const;
   return "Service" as const;
 }
 
@@ -411,6 +486,10 @@ export function previewImport({
     if (importType === "SERVICE_HISTORY" && !normalized.serviceDate) errors.push("Service date is invalid.");
     if (importType === "DECLINED_WORK" && !normalized.declinedDate) errors.push("Declined date is invalid.");
     if (importType === "APPOINTMENTS" && (!normalized.appointmentDate || !normalized.appointmentTime)) errors.push("Appointment date and time are required.");
+    const eventClassification = classifyImportRowEvent(importType, normalized);
+    if (eventClassification.ambiguousConflict && eventClassification.issue) {
+      errors.push(eventClassification.issue.replace(/^Row /, `Row ${index + 2} `));
+    }
 
     const customerMatch = existingCustomerResult(state, normalized);
     const cKey = customerMatch?.key ?? customerKey(normalized);
@@ -432,7 +511,7 @@ export function previewImport({
         ? { entity: "Vehicle", status: "MATCH", message: "Reuses vehicle created earlier in this import.", key: vKey }
         : { entity: "Vehicle", status: "CREATE", message: "New vehicle will be created under the resolved customer.", key: vKey };
 
-    const kind = childKind(importType, normalized);
+    const kind = childKind(importType, normalized, eventClassification);
     const key = childKey(kind, vKey, normalized);
     const existingChild = existingChildResult(state, kind, vehicleMatch?.match.id, normalized);
     const childDuplicate = Boolean(existingChild) || childBatch.has(key);

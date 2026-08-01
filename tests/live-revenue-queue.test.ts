@@ -77,6 +77,27 @@ describe("live revenue queue data source", () => {
     expect(item.serviceNames).toEqual(["Brake Pads"]);
   });
 
+  it("links persisted declined-work opportunities only to declined source records", () => {
+    const state = asLiveShop(createInitialDemoState());
+    state.revenueOpportunities = [
+      opportunity({
+        id: "mro-declined",
+        maintenanceRecordId: undefined,
+        declinedWorkRecordId: "declined-jeep-brake-service",
+        source: "DECLINED_WORK",
+        explanation: "Brake Fluid was declined.",
+      }),
+    ];
+
+    const [item] = buildRevenueOpportunities(state);
+
+    expect(item.source).toBe("DECLINED_WORK");
+    expect(item.sourceRecordId).toBe("declined-jeep-brake-service");
+    expect(item.sourceType).toBe("DeclinedWorkRecord");
+    expect(item.maintenanceRecordId).toBeUndefined();
+    expect(item.declinedWorkRecordId).toBe("declined-jeep-brake-service");
+  });
+
   it("skips cross-tenant or mismatched opportunity records", () => {
     const state = asLiveShop(createInitialDemoState());
     state.revenueOpportunities = [
@@ -132,6 +153,7 @@ describe("revenue queue synchronization guardrails", () => {
     expect(pilotStateSource).toMatch(/export async function updatePilotMaintenanceItem[\s\S]+syncMaintenanceRevenueOpportunities/);
     expect(pilotStateSource).toMatch(/export async function markPilotMaintenanceServiceComplete[\s\S]+syncMaintenanceRevenueOpportunities/);
     expect(pilotStateSource).toMatch(/export async function importPilotCsvRows[\s\S]+touchedVehicleMaintenanceRecords[\s\S]+syncMaintenanceRevenueOpportunities/);
+    expect(pilotStateSource).toMatch(/export async function importPilotCsvRows[\s\S]+classifyImportRowEvent[\s\S]+importsCompletedService[\s\S]+importsDeclinedWork/);
   });
 
   it("keeps the main queue to four workflow tabs with advanced filters", () => {

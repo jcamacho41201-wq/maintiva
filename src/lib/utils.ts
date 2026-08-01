@@ -14,18 +14,21 @@ export function formatCurrency(cents: number) {
 }
 
 export function formatHours(minutes: number) {
-  const hours = minutes / 60;
-  return `${Number.isInteger(hours) ? hours : hours.toFixed(1)} hr`;
+  return formatLaborMinutes(minutes);
+}
+
+export function formatLaborMinutes(minutes: number) {
+  const totalMinutes = Math.round(minutes);
+  if (!Number.isFinite(totalMinutes) || totalMinutes <= 0) return "0 min";
+  const wholeHours = Math.floor(totalMinutes / 60);
+  const remainingMinutes = totalMinutes % 60;
+  if (remainingMinutes === 0) return `${wholeHours} hr`;
+  if (wholeHours === 0) return `${remainingMinutes} min`;
+  return `${wholeHours} hr ${remainingMinutes} min`;
 }
 
 export function formatLaborHours(hours: number) {
-  const totalMinutes = Math.round(hours * 60);
-  if (!Number.isFinite(totalMinutes) || totalMinutes <= 0) return "0 min";
-  const wholeHours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  if (minutes === 0) return `${wholeHours} hr`;
-  if (wholeHours === 0) return `${minutes} min`;
-  return `${wholeHours} hr ${minutes} min`;
+  return formatLaborMinutes(hours * 60);
 }
 
 export function formatDate(date: string | Date) {

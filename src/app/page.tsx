@@ -20,6 +20,7 @@ import {
   getRevenueRecoveryMetrics,
   groupRevenueOpportunities,
   buildRevenueOpportunities,
+  opportunityTimingLabel,
 } from "@/lib/revenue-recovery";
 import { formatCurrency, formatLaborHours } from "@/lib/utils";
 
@@ -187,7 +188,7 @@ export default function DashboardPage() {
                       <div key={item.id}>
                         <div className="mb-1 grid grid-cols-[minmax(0,1fr)_max-content] items-start gap-3 text-xs">
                           <span className="min-w-0 leading-snug">{item.serviceNames.join(", ")}</span>
-                          <span className="max-w-36 text-right leading-snug">{item.daysOverdue > 0 ? `${item.daysOverdue} days overdue` : item.sourceLabel}</span>
+                          <span className="max-w-36 text-right leading-snug">{opportunityTimingLabel(item)}</span>
                         </div>
                         <Progress value={item.priority === "HIGH" ? 12 : item.priority === "MEDIUM" ? 38 : 70} />
                       </div>

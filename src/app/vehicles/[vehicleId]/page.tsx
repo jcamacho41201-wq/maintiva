@@ -28,6 +28,7 @@ import {
 import { type MaintenanceService, type OutreachThresholdType, type TimeIntervalUnit, type User, type Vehicle, type VehicleDrivingProfile, type VehicleMaintenanceRecord, type VehicleMileageReading } from "@/lib/demo-data";
 import { type MaintenanceItemInput, useDemoStore } from "@/lib/demo-store";
 import { calculateDrivingProfile, estimateServiceDueDate, validateMileageReading } from "@/lib/adaptive-mileage";
+import { buildRevenueOpportunities, isOpenRevenueStage } from "@/lib/revenue-recovery";
 import { formatInterval, resolveMaintenanceInterval } from "@/lib/service-intervals";
 import { currentDateInTimeZone, formatCurrency, formatDate, formatDateTime, formatHours } from "@/lib/utils";
 
@@ -1468,8 +1469,15 @@ export default function VehicleMaintenancePage() {
     .sort((a, b) => a.effective.lifeRemaining - b.effective.lifeRemaining);
   const recommended = getRecommendedRecords(state, vehicle.id).map(({ record }) => record);
   const openRecommended = recommended.filter((record) => record.outreachStatus !== "SCHEDULED");
+  const openVehicleOpportunities = buildRevenueOpportunities(state).filter((opportunity) =>
+    opportunity.vehicleId === vehicle.id && isOpenRevenueStage(opportunity.stage),
+  );
+  const openMaintenanceOpportunities = openVehicleOpportunities.filter((opportunity) => opportunity.source !== "DECLINED_WORK");
+  const openDeclinedFollowUps = openVehicleOpportunities.filter((opportunity) => opportunity.source === "DECLINED_WORK");
   const opportunityStatus =
-    recommended.length > 0 && recommended.every((record) => record.outreachStatus === "SCHEDULED")
+    openMaintenanceOpportunities.length === 0
+      ? "HEALTHY"
+      : recommended.length > 0 && recommended.every((record) => record.outreachStatus === "SCHEDULED")
       ? "SCHEDULED"
       : recommended.some((record) => record.outreachStatus === "MANUALLY_SENT")
         ? "MANUALLY_SENT"
@@ -1559,7 +1567,7 @@ export default function VehicleMaintenancePage() {
           ["Current mileage", `${vehicle.currentMileage.toLocaleString()} mi`],
           ["Plan items", `${maintenance.length}`],
           ["Vehicle health", `${vehicle.overallHealth}%`],
-          ["Ready for outreach", `${openRecommended.length}`],
+          ["Open follow-ups", `${openRecommended.length + openDeclinedFollowUps.length}`],
         ].map(([label, value]) => (
           <Card key={label}>
             <CardContent>
@@ -1590,8 +1598,11 @@ export default function VehicleMaintenancePage() {
           </div>
           <div className="flex flex-wrap gap-2">
             <Badge variant={statusVariant(opportunityStatus)}>
-              {opportunityLabel(opportunityStatus)}
+              Maintenance condition: {opportunityLabel(opportunityStatus)}
             </Badge>
+            {openDeclinedFollowUps.length > 0 && (
+              <Badge variant="purple">Open declined-work follow-up</Badge>
+            )}
             <button
               onClick={() => setAddOpen(true)}
               className="inline-flex items-center gap-2 rounded-lg bg-violet-950 px-3 py-2 text-sm font-semibold text-white"

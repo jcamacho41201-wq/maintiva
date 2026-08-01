@@ -40,6 +40,7 @@ import {
   MAINTIVA_IMPORT_ROW_LIMIT,
   importRowLimitMessage,
   isImportRowLimitExceeded,
+  classifyImportRowEvent,
   previewImport,
   summarizeImport,
   type CsvRow,
@@ -4207,6 +4208,10 @@ export async function importPilotCsvRows(
       const priceCents = numberValue(normalized, "price");
       const laborMinutes = Math.round(numberValue(normalized, "laborHours") * 60);
       if (!serviceName || priceCents <= 0 || laborMinutes <= 0) continue;
+      const importEvent = classifyImportRowEvent(input.importType, normalized);
+      if (importEvent.ambiguousConflict) continue;
+      const importsCompletedService = importEvent.importsCompletedService;
+      const importsDeclinedWork = importEvent.importsDeclinedWork;
 
       let service = await tx.serviceDefinition.findFirst({
         where: { shopId: context.shopId, name: serviceName },
@@ -4244,10 +4249,10 @@ export async function importPilotCsvRows(
         const maintenance = await tx.vehicleMaintenanceRecord.update({
           where: { id: existingMaintenance.id },
           data: {
-            lastCompletedDate: stringValue(normalized, "serviceDate")
+            lastCompletedDate: importsCompletedService && stringValue(normalized, "serviceDate")
               ? new Date(stringValue(normalized, "serviceDate"))
               : undefined,
-            lastCompletedMileage: numberValue(normalized, "serviceMileage") || undefined,
+            lastCompletedMileage: importsCompletedService ? numberValue(normalized, "serviceMileage") || undefined : undefined,
             priceOverrideCents: priceCents,
             laborMinutesOverride: laborMinutes,
             priceCents,
@@ -4264,9 +4269,12 @@ export async function importPilotCsvRows(
           serviceDefinitionId: service.id,
           serviceName,
           lastCompletedDate: stringValue(normalized, "serviceDate")
+            && importsCompletedService
             ? new Date(stringValue(normalized, "serviceDate"))
             : null,
-          lastCompletedMileage: numberValue(normalized, "serviceMileage") || numberValue(normalized, "currentMileage"),
+          lastCompletedMileage: importsCompletedService
+            ? numberValue(normalized, "serviceMileage") || numberValue(normalized, "currentMileage") || null
+            : null,
           recommendedMileageInterval: null,
           recommendedTimeIntervalMonths: null,
           mileageIntervalOverride: null,
@@ -4289,7 +4297,7 @@ export async function importPilotCsvRows(
         touchedMaintenanceRecordIds.push(maintenance.id);
       }
 
-      if (stringValue(normalized, "serviceDate")) {
+      if (importsCompletedService && stringValue(normalized, "serviceDate")) {
         const serviceDate = stringValue(normalized, "serviceDate");
         const serviceMileage = numberValue(normalized, "serviceMileage") || numberValue(normalized, "currentMileage");
         const serviceHistory = await tx.serviceHistoryRecord.create({
@@ -4338,11 +4346,7 @@ export async function importPilotCsvRows(
         }
       }
 
-      if (
-        input.importType === "DECLINED_WORK" ||
-        stringValue(normalized, "declinedDate") ||
-        stringValue(normalized, "status").toLowerCase().includes("declin")
-      ) {
+      if (importsDeclinedWork) {
         const declinedRecord = await tx.declinedWorkRecord.create({
           data: {
             shopId: context.shopId,

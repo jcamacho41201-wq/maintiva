@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createInitialDemoState } from "@/lib/demo-data";
 import {
+  classifyImportRowEvent,
   buildImportErrorCsv,
   detectColumnMapping,
   parseCsv,
@@ -195,6 +196,65 @@ describe("CSV import workflow", () => {
     expect(preview.rows[0].status).toBe("INVALID");
     expect(preview.rows[0].errors).toContain("Reading Date is required when importing mileage history.");
     expect(summarizeImport(preview.rows).heldRows).toBe(1);
+  });
+
+  it("holds ambiguous completed-and-declined service cycles for review", () => {
+    const rows = parseCsv(
+      [
+        "First Name,Last Name,Email,VIN,Year,Make,Model,Current Mileage,Service Name,Service Date,Service Mileage,Price,Labor Hours,Status,Declined Date",
+        "Heather,Reed,heather@example.com,WA1EAAF45LA100001,2020,Audi,Q5,50000,Check Engine Diagnostic,2026-05-26,50000,160,1.0167,Declined,2026-05-26",
+      ].join("\n"),
+    );
+    const preview = previewImport({
+      rows,
+      mapping: detectColumnMapping(Object.keys(rows[0])),
+      importType: "COMBINED",
+      state: createInitialDemoState(),
+    });
+    const [row] = preview.rows;
+
+    expect(row.status).toBe("INVALID");
+    expect(row.action).toBe("HOLD");
+    expect(row.entities.child.entity).toBe("Service");
+    expect(row.errors).toContain("Row 2 marks Check Engine Diagnostic as both completed and declined on May 26, 2026.");
+    expect(summarizeImport(preview.rows)).toMatchObject({
+      heldRows: 1,
+      servicesToImport: 0,
+      declinedWorkToImport: 0,
+    });
+  });
+
+  it("classifies completed, declined, and appointment import events separately", () => {
+    expect(classifyImportRowEvent("SERVICE_HISTORY", {
+      serviceName: "Check Engine Diagnostic",
+      serviceDate: "2026-05-26",
+      status: "Completed",
+    })).toMatchObject({
+      importsCompletedService: true,
+      importsDeclinedWork: false,
+      importsAppointment: false,
+      ambiguousConflict: false,
+    });
+    expect(classifyImportRowEvent("DECLINED_WORK", {
+      serviceName: "Check Engine Diagnostic",
+      declinedDate: "2026-05-26",
+      status: "Declined",
+    })).toMatchObject({
+      importsCompletedService: false,
+      importsDeclinedWork: true,
+      importsAppointment: false,
+      ambiguousConflict: false,
+    });
+    expect(classifyImportRowEvent("APPOINTMENTS", {
+      serviceName: "Check Engine Diagnostic",
+      appointmentDate: "2026-08-05",
+      appointmentTime: "09:00",
+    })).toMatchObject({
+      importsCompletedService: false,
+      importsDeclinedWork: false,
+      importsAppointment: true,
+      ambiguousConflict: false,
+    });
   });
 
   it("exports rejected rows as a downloadable error report", () => {
