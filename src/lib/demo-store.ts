@@ -25,6 +25,7 @@ import {
 import { hasActiveVehicleAppointmentAt } from "@/lib/appointment";
 import { createAppointmentFromRecords } from "@/lib/demo-calculations";
 import {
+  classifyImportRowEvent,
   summarizeImport,
   type CsvRow,
   type DuplicateImportMode,
@@ -1649,8 +1650,8 @@ export function useDemoStore() {
         update((draft) => {
           function actionFor(row: ImportPreviewRow) {
             const override = input.rowActions?.[row.rowNumber];
+            if (row.status === "INVALID" || row.status === "HELD") return override === "SKIP" ? "SKIP" as const : "HOLD" as const;
             if (override) return override;
-            if (row.status === "INVALID") return "HOLD" as const;
             if (row.entities.child.status === "DUPLICATE") {
               if (input.duplicateMode === "UPDATE") return "UPDATE" as const;
               if (input.duplicateMode === "IMPORT_AS_NEW") return "IMPORT_AS_NEW" as const;
@@ -1659,6 +1660,8 @@ export function useDemoStore() {
             return row.action;
           }
           const importedRows = input.previewRows.filter((row) =>
+            row.status !== "INVALID" &&
+            row.status !== "HELD" &&
             ["IMPORT", "UPDATE", "IMPORT_AS_NEW"].includes(actionFor(row)),
           );
           const now = Date.now();
@@ -1698,6 +1701,10 @@ export function useDemoStore() {
             const serviceName = text(normalized.serviceName) || text(normalized.services);
             const priceCents = numeric(normalized.price);
             const laborHours = numeric(normalized.laborHours);
+            const importEvent = classifyImportRowEvent(input.importType, normalized);
+            if (importEvent.ambiguousConflict) return;
+            const importsCompletedService = importEvent.importsCompletedService;
+            const importsDeclinedWork = importEvent.importsDeclinedWork;
             const customer = {
               id: customerId,
               shopId: draft.shop.id,
@@ -1761,8 +1768,8 @@ export function useDemoStore() {
               vehicleId,
               serviceId: "svc-imported",
               serviceName,
-              lastCompletedDate: text(normalized.serviceDate) || new Date().toISOString().slice(0, 10),
-              lastCompletedMileage: numeric(normalized.serviceMileage) || vehicle.currentMileage,
+              lastCompletedDate: importsCompletedService ? text(normalized.serviceDate) || new Date().toISOString().slice(0, 10) : null,
+              lastCompletedMileage: importsCompletedService ? numeric(normalized.serviceMileage) || vehicle.currentMileage : null,
               recommendedMileageInterval: 12_000,
               recommendedTimeIntervalMonths: 12,
               mileageIntervalOverride: null,
@@ -1780,7 +1787,7 @@ export function useDemoStore() {
               createdByUserId: actorUserId(draft),
               updatedByUserId: actorUserId(draft),
             });
-            if (text(normalized.serviceDate)) {
+            if (importsCompletedService && text(normalized.serviceDate)) {
               if (numeric(normalized.serviceMileage) > 0 && numeric(normalized.serviceMileage) !== numeric(normalized.currentMileage)) {
                 mileageReadings.push({
                   id: `mile-import-service-${now}-${index}`,
@@ -1807,7 +1814,7 @@ export function useDemoStore() {
                 notes: "Imported from CSV.",
               });
             }
-            if (text(normalized.declinedDate) || text(normalized.status).toLowerCase().includes("declin")) {
+            if (importsDeclinedWork) {
               declinedWorkRecords.push({
                 id: `declined-import-${now}-${index}`,
                 shopId: draft.shop.id,
@@ -1862,15 +1869,24 @@ export function useDemoStore() {
                 userId: actorUserId(draft) ?? "user-owner",
                 fileName: input.fileName,
                 importType: input.importType,
-                status: summary.failedRows > 0 ? "PARTIAL" : "COMPLETED",
+                status: summary.heldRows > 0 ? "PARTIAL" : "COMPLETED",
+                displayStatus: summary.successfulRows + summary.updatedRows > 0
+                  ? summary.heldRows > 0
+                    ? "COMPLETED_WITH_REVIEW"
+                    : "COMPLETED"
+                  : summary.heldRows > 0
+                    ? "REVIEW_REQUIRED"
+                    : "COMPLETED",
                 importedAt: new Date().toISOString(),
                 totalRows: summary.totalRows,
                 successfulRows: summary.successfulRows,
                 duplicateRows: summary.duplicateRows,
                 updatedRows: summary.updatedRows,
                 skippedRows: summary.skippedRows,
-                failedRows: summary.failedRows,
-                errorReportUrl: summary.failedRows > 0 ? "downloadable-error-report" : undefined,
+                failedRows: 0,
+                heldRows: summary.heldRows,
+                invalidRows: summary.invalidRows,
+                errorReportUrl: summary.heldRows > 0 || summary.skippedRows > 0 ? "downloadable-result-report" : undefined,
               },
               ...draft.importHistory,
             ],

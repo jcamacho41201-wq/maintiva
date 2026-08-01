@@ -213,14 +213,43 @@ describe("CSV import workflow", () => {
     });
     const [row] = preview.rows;
 
-    expect(row.status).toBe("INVALID");
+    expect(row.status).toBe("HELD");
     expect(row.action).toBe("HOLD");
     expect(row.entities.child.entity).toBe("Service");
     expect(row.errors).toContain("Row 2 marks Check Engine Diagnostic as both completed and declined on May 26, 2026.");
     expect(summarizeImport(preview.rows)).toMatchObject({
       heldRows: 1,
+      reviewRows: 1,
+      invalidRows: 0,
       servicesToImport: 0,
       declinedWorkToImport: 0,
+    });
+  });
+
+  it("keeps ready rows importable when a mixed file has a needs-review row", () => {
+    const rows = parseCsv(
+      [
+        "First Name,Last Name,Email,VIN,Year,Make,Model,Current Mileage,Service Name,Service Date,Service Mileage,Price,Labor Hours,Status,Declined Date",
+        "QA,Complete,qa.complete@example.com,WA1EAAF45LA100001,2020,Audi,Q5,50000,Oil Change,2026-07-01,50000,95,0.5,Completed,",
+        "QA,Declined,qa.declined@example.com,WA1EAAF45LA100002,2020,Audi,Q5,50000,Brake Fluid,,,160,1.0,Declined,2026-07-01",
+        "QA,Ambiguous,qa.ambiguous@example.com,WA1EAAF45LA100003,2020,Audi,Q5,50000,Check Engine Diagnostic,2026-07-01,50000,160,1.01,Declined,2026-07-01",
+      ].join("\n"),
+    );
+    const preview = previewImport({
+      rows,
+      mapping: detectColumnMapping(Object.keys(rows[0])),
+      importType: "COMBINED",
+      state: createInitialDemoState(),
+    });
+
+    expect(preview.rows.map((row) => row.status)).toEqual(["VALID", "VALID", "HELD"]);
+    expect(summarizeImport(preview.rows)).toMatchObject({
+      readyRows: 2,
+      heldRows: 1,
+      reviewRows: 1,
+      invalidRows: 0,
+      servicesToImport: 1,
+      declinedWorkToImport: 1,
     });
   });
 
@@ -267,5 +296,23 @@ describe("CSV import workflow", () => {
     });
 
     expect(buildImportErrorCsv(preview.rows)).toContain("Email format is invalid");
+  });
+
+  it("exports needs-review rows in the result report", () => {
+    const rows = parseCsv(
+      [
+        "First Name,Last Name,Email,VIN,Year,Make,Model,Current Mileage,Service Name,Service Date,Service Mileage,Price,Labor Hours,Status,Declined Date",
+        "QA,Ambiguous,qa.ambiguous@example.com,WA1EAAF45LA100003,2020,Audi,Q5,50000,Check Engine Diagnostic,2026-07-01,50000,160,1.01,Declined,2026-07-01",
+      ].join("\n"),
+    );
+    const preview = previewImport({
+      rows,
+      mapping: detectColumnMapping(Object.keys(rows[0])),
+      importType: "COMBINED",
+      state: createInitialDemoState(),
+    });
+
+    expect(buildImportErrorCsv(preview.rows)).toContain("NEEDS_REVIEW");
+    expect(buildImportErrorCsv(preview.rows)).toContain("Check Engine Diagnostic");
   });
 });

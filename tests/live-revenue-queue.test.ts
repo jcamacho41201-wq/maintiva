@@ -138,6 +138,7 @@ describe("revenue queue synchronization guardrails", () => {
   const contactModalSource = readFileSync(join(process.cwd(), "src/components/contact-customer-modal.tsx"), "utf8");
   const contactWorkflowSource = readFileSync(join(process.cwd(), "src/lib/contact-workflow.ts"), "utf8");
   const vehiclePageSource = readFileSync(join(process.cwd(), "src/app/vehicles/[vehicleId]/page.tsx"), "utf8");
+  const importPageSource = readFileSync(join(process.cwd(), "src/app/import/page.tsx"), "utf8");
 
   it("recalculates persisted maintenance opportunities from effective intervals", () => {
     expect(pilotStateSource).toContain("resolveMaintenanceInterval({");
@@ -239,6 +240,15 @@ describe("revenue queue synchronization guardrails", () => {
     expect(pilotStateSource).toContain("lastCompletedMileage: record.lastCompletedMileage");
     expect(vehiclePageSource).toContain("Last completed mileage not entered");
     expect(vehiclePageSource).not.toContain("lastCompletedMileage: record.lastCompletedMileage ?? 0");
+  });
+
+  it("keeps mixed CSV imports available when some rows need review", () => {
+    expect(importPageSource).toContain("Some rows need attention. Ready rows can still be imported.");
+    expect(importPageSource).toContain("Import ${readyRows} rows and hold ${heldRows} for review");
+    expect(importPageSource).toContain("Save ${heldRows} rows for review");
+    expect(importPageSource).toContain("Needs review");
+    expect(pilotStateSource).toMatch(/row.status === "INVALID" \|\| row.status === "HELD"[\s\S]+return override === "SKIP"/);
+    expect(pilotStateSource).toMatch(/row.status !== "INVALID" &&[\s\S]+row.status !== "HELD"/);
   });
 });
 

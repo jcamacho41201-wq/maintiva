@@ -78,7 +78,10 @@ export type ImportSummary = {
   totalRows: number;
   readyRows: number;
   validRows: number;
+  reviewRows: number;
+  invalidRows: number;
   duplicateRows: number;
+  duplicateSkippedRows: number;
   failedRows: number;
   customersToCreate: number;
   customersMatched: number;
@@ -279,13 +282,14 @@ export function classifyImportRowEvent(
 ): ImportRowEventClassification {
   const serviceName = String(normalized.serviceName || normalized.services || "").trim();
   const serviceDate = String(normalized.serviceDate ?? "");
+  const serviceMileage = Number(normalized.serviceMileage || 0);
   const declinedDate = String(normalized.declinedDate ?? "");
   const appointmentDate = String(normalized.appointmentDate ?? "");
   const appointmentTime = String(normalized.appointmentTime ?? "");
   const statusDeclined = includesDeclinedStatus(normalized.status);
   const statusCompleted = includesCompletedStatus(normalized.status);
   const importsAppointment = importType === "APPOINTMENTS" || Boolean(appointmentDate && appointmentTime);
-  const hasCompletionSignal = Boolean(serviceDate) || statusCompleted || importType === "SERVICE_HISTORY";
+  const hasCompletionSignal = Boolean(serviceDate) || serviceMileage > 0 || statusCompleted || importType === "SERVICE_HISTORY";
   const hasDeclineSignal = importType === "DECLINED_WORK" || Boolean(declinedDate) || statusDeclined;
   const sameCycleDate = !serviceDate || !declinedDate || serviceDate === declinedDate;
   const ambiguousConflict =
@@ -309,7 +313,7 @@ export function classifyImportRowEvent(
   const importsCompletedService =
     !importsDeclinedWork &&
     !importsAppointment &&
-    Boolean(serviceDate || importType === "SERVICE_HISTORY" || statusCompleted);
+    hasCompletionSignal;
 
   return {
     importsCompletedService,
@@ -458,6 +462,7 @@ export function previewImport({
       services: mapped(row, mapping, "services"),
     };
     const errors: string[] = [];
+    const reviewIssues: string[] = [];
 
     if (["CUSTOMERS", "COMBINED"].includes(importType)) {
       if (!normalized.customerFirstName || !normalized.customerLastName) errors.push("Customer first and last name are required.");
@@ -475,8 +480,10 @@ export function previewImport({
       if (Number.isNaN(normalized.price) || normalized.price <= 0) errors.push("Service price must be positive.");
       if (Number.isNaN(normalized.laborHours) || normalized.laborHours <= 0) errors.push("Labor hours must be positive.");
     }
+    const eventClassification = classifyImportRowEvent(importType, normalized);
     if (
       ["SERVICE_HISTORY", "COMBINED"].includes(importType) &&
+      eventClassification.importsCompletedService &&
       (normalized.serviceName || normalized.services) &&
       (normalized.serviceMileage > 0 || normalized.currentMileage > 0) &&
       !normalized.serviceDate
@@ -486,9 +493,8 @@ export function previewImport({
     if (importType === "SERVICE_HISTORY" && !normalized.serviceDate) errors.push("Service date is invalid.");
     if (importType === "DECLINED_WORK" && !normalized.declinedDate) errors.push("Declined date is invalid.");
     if (importType === "APPOINTMENTS" && (!normalized.appointmentDate || !normalized.appointmentTime)) errors.push("Appointment date and time are required.");
-    const eventClassification = classifyImportRowEvent(importType, normalized);
     if (eventClassification.ambiguousConflict && eventClassification.issue) {
-      errors.push(eventClassification.issue.replace(/^Row /, `Row ${index + 2} `));
+      reviewIssues.push(eventClassification.issue.replace(/^Row /, `Row ${index + 2} `));
     }
 
     const customerMatch = existingCustomerResult(state, normalized);
@@ -527,10 +533,10 @@ export function previewImport({
         }
       : { entity: kind, status: "CREATE", message: `${kind} is new and ready to import.`, key };
 
-    const status = errors.length > 0 ? "INVALID" : childDuplicate ? "DUPLICATE" : "VALID";
-    const action: ImportRowAction = errors.length > 0 ? "HOLD" : childDuplicate ? "SKIP" : "IMPORT";
+    const status = errors.length > 0 ? "INVALID" : reviewIssues.length > 0 ? "HELD" : childDuplicate ? "DUPLICATE" : "VALID";
+    const action: ImportRowAction = status === "INVALID" || status === "HELD" ? "HOLD" : childDuplicate ? "SKIP" : "IMPORT";
     const duplicateReason = childDuplicate ? child.message : undefined;
-    const issue = errors[0] ?? [customer.message, vehicle.message, child.message].join(" ");
+    const issue = errors[0] ?? reviewIssues[0] ?? [customer.message, vehicle.message, child.message].join(" ");
 
     return {
       rowNumber: index + 2,
@@ -540,7 +546,7 @@ export function previewImport({
       status,
       action,
       issue,
-      errors,
+      errors: [...errors, ...reviewIssues],
       entities: { customer, vehicle, child },
     };
   });
@@ -552,8 +558,10 @@ export function previewImport({
 
 function effectiveAction(row: ImportPreviewRow, rowActions?: Record<number, ImportRowAction>, duplicateMode: DuplicateImportMode = "SKIP") {
   const override = rowActions?.[row.rowNumber];
+  if (row.status === "INVALID" || row.status === "HELD") {
+    return override === "SKIP" ? "SKIP" : "HOLD";
+  }
   if (override) return override;
-  if (row.status === "INVALID") return "HOLD";
   if (row.entities.child.status === "DUPLICATE") {
     if (duplicateMode === "UPDATE") return "UPDATE";
     if (duplicateMode === "IMPORT_AS_NEW") return "IMPORT_AS_NEW";
@@ -568,7 +576,11 @@ export function summarizeImport(
   rowActions: Record<number, ImportRowAction> = {},
 ): ImportSummary {
   const actionFor = (row: ImportPreviewRow) => effectiveAction(row, rowActions, duplicateMode);
-  const importable = rows.filter((row) => ["IMPORT", "UPDATE", "IMPORT_AS_NEW"].includes(actionFor(row)) && row.status !== "INVALID");
+  const importable = rows.filter((row) =>
+    ["IMPORT", "UPDATE", "IMPORT_AS_NEW"].includes(actionFor(row)) &&
+    row.status !== "INVALID" &&
+    row.status !== "HELD",
+  );
   const customersToCreate = new Set(importable.filter((row) => row.entities.customer.status === "CREATE").map((row) => row.entities.customer.key)).size;
   const customersMatched = new Set(importable.filter((row) => row.entities.customer.status === "MATCH").map((row) => row.entities.customer.key)).size;
   const vehiclesToCreate = new Set(importable.filter((row) => row.entities.vehicle.status === "CREATE").map((row) => row.entities.vehicle.key)).size;
@@ -577,9 +589,12 @@ export function summarizeImport(
 
   return {
     totalRows: rows.length,
-    readyRows: rows.filter((row) => actionFor(row) === "IMPORT" && row.status !== "INVALID").length,
+    readyRows: importable.length,
     validRows: rows.filter((row) => row.status === "VALID").length,
+    reviewRows: rows.filter((row) => row.status === "HELD").length,
+    invalidRows: rows.filter((row) => row.status === "INVALID").length,
     duplicateRows: rows.filter((row) => row.entities.child.status === "DUPLICATE").length,
+    duplicateSkippedRows: skippedDuplicateRows,
     failedRows: rows.filter((row) => row.status === "INVALID").length,
     customersToCreate,
     customersMatched,
@@ -598,9 +613,21 @@ export function summarizeImport(
 }
 
 export function buildImportErrorCsv(rows: ImportPreviewRow[]) {
-  const failures = rows.filter((row) => row.status === "INVALID");
+  const failures = rows.filter((row) =>
+    row.status === "INVALID" ||
+    row.status === "HELD" ||
+    row.entities.child.status === "DUPLICATE" ||
+    row.action === "HOLD" ||
+    row.action === "SKIP",
+  );
+  const disposition = (row: ImportPreviewRow) => {
+    if (row.status === "HELD") return "NEEDS_REVIEW";
+    if (row.status === "INVALID") return "INVALID";
+    if (row.entities.child.status === "DUPLICATE") return "DUPLICATE_SKIPPED";
+    return row.action;
+  };
   return [
-    "Row,Errors",
-    ...failures.map((row) => `${row.rowNumber},"${row.errors.join("; ").replaceAll('"', '""')}"`),
+    "Row,Disposition,Issue",
+    ...failures.map((row) => `${row.rowNumber},${disposition(row)},"${(row.errors.join("; ") || row.issue).replaceAll('"', '""')}"`),
   ].join("\n");
 }

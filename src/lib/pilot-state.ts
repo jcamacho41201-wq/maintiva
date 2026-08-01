@@ -788,6 +788,20 @@ type StateServiceDefinition = {
   } | null;
 };
 
+function importErrorReportSummary(value: unknown) {
+  if (!value || typeof value !== "object") return {};
+  const report = value as {
+    displayStatus?: ImportHistoryRecord["displayStatus"];
+    heldRows?: number;
+    invalidRows?: number;
+  };
+  return {
+    displayStatus: report.displayStatus,
+    heldRows: typeof report.heldRows === "number" ? report.heldRows : undefined,
+    invalidRows: typeof report.invalidRows === "number" ? report.invalidRows : undefined,
+  };
+}
+
 type StateMaintenanceRecord = {
   id: string;
   shopId: string;
@@ -2080,22 +2094,28 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
     bookingWindows,
     bookingBlackouts,
     customerBookingLinks,
-    importHistory: shop.importHistory.map((record): ImportHistoryRecord => ({
-      id: record.id,
-      shopId: record.shopId,
-      userId: record.userId ?? "",
-      fileName: record.fileName,
-      importType: record.importType,
-      status: record.status,
-      importedAt: iso(record.importedAt),
-      totalRows: record.totalRows,
-      successfulRows: record.successfulRows,
-      duplicateRows: record.duplicateRows,
-      updatedRows: record.updatedRows,
-      skippedRows: record.skippedRows,
-      failedRows: record.failedRows,
-      errorReportUrl: record.errorReportUrl ?? undefined,
-    })),
+    importHistory: shop.importHistory.map((record): ImportHistoryRecord => {
+      const reportSummary = importErrorReportSummary(record.errorReport);
+      return {
+        id: record.id,
+        shopId: record.shopId,
+        userId: record.userId ?? "",
+        fileName: record.fileName,
+        importType: record.importType,
+        status: record.status,
+        displayStatus: reportSummary.displayStatus,
+        importedAt: iso(record.importedAt),
+        totalRows: record.totalRows,
+        successfulRows: record.successfulRows,
+        duplicateRows: record.duplicateRows,
+        updatedRows: record.updatedRows,
+        skippedRows: record.skippedRows,
+        failedRows: record.failedRows,
+        heldRows: reportSummary.heldRows,
+        invalidRows: reportSummary.invalidRows,
+        errorReportUrl: record.errorReportUrl ?? undefined,
+      };
+    }),
     seededAt: new Date().toISOString(),
   };
 }
@@ -4081,8 +4101,8 @@ export async function importPilotCsvRows(
   const summary = summarizeImport(preview.rows, input.duplicateMode, rowActions);
   const rowAction = (row: (typeof preview.rows)[number]) => {
     const override = rowActions[row.rowNumber];
+    if (row.status === "INVALID" || row.status === "HELD") return override === "SKIP" ? "SKIP" as const : "HOLD" as const;
     if (override) return override;
-    if (row.status === "INVALID") return "HOLD" as const;
     if (row.entities.child.status === "DUPLICATE") {
       if (input.duplicateMode === "UPDATE") return "UPDATE" as const;
       if (input.duplicateMode === "IMPORT_AS_NEW") return "IMPORT_AS_NEW" as const;
@@ -4092,7 +4112,11 @@ export async function importPilotCsvRows(
   };
   const rowsToImport = preview.rows.filter((row) => {
     const action = rowAction(row);
-    return action === "IMPORT" || action === "UPDATE" || action === "IMPORT_AS_NEW";
+    return (
+      row.status !== "INVALID" &&
+      row.status !== "HELD" &&
+      (action === "IMPORT" || action === "UPDATE" || action === "IMPORT_AS_NEW")
+    );
   });
   const defaultService = await prisma.serviceDefinition.findFirst({
     where: { shopId: context.shopId, isActive: true },
@@ -4417,14 +4441,27 @@ export async function importPilotCsvRows(
         userId: context.userId,
         fileName: input.fileName,
         importType: input.importType,
-        status: summary.failedRows > 0 ? "PARTIAL" : "COMPLETED",
+        status: summary.heldRows > 0 ? "PARTIAL" : "COMPLETED",
         totalRows: summary.totalRows,
         successfulRows: summary.successfulRows,
         duplicateRows: summary.duplicateRows,
         updatedRows: summary.updatedRows,
         skippedRows: summary.skippedRows,
-        failedRows: summary.failedRows,
-        errorReportUrl: summary.failedRows > 0 ? "downloadable-error-report" : null,
+        failedRows: 0,
+        errorReportUrl: summary.heldRows > 0 || summary.skippedRows > 0 ? "downloadable-result-report" : null,
+        errorReport: {
+          displayStatus: summary.successfulRows + summary.updatedRows > 0
+            ? summary.heldRows > 0
+              ? "COMPLETED_WITH_REVIEW"
+              : "COMPLETED"
+            : summary.heldRows > 0
+              ? "REVIEW_REQUIRED"
+              : "COMPLETED",
+          heldRows: summary.heldRows,
+          reviewRows: summary.reviewRows,
+          invalidRows: summary.invalidRows,
+          duplicateSkippedRows: summary.duplicateSkippedRows,
+        },
       },
     });
 
@@ -4451,14 +4488,16 @@ export async function importPilotCsvRows(
       data: preview.rows.map((row) => {
         const action = rowAction(row);
         const status = row.status === "INVALID"
-          ? "FAILED"
-          : action === "HOLD"
-            ? "HELD"
-            : action === "SKIP"
-              ? "SKIPPED"
-              : action === "UPDATE"
-                ? "UPDATED"
-                : "IMPORTED";
+          ? "INVALID"
+          : row.status === "HELD"
+            ? "NEEDS_REVIEW"
+            : action === "HOLD"
+              ? "NEEDS_REVIEW"
+              : action === "SKIP"
+                ? "DUPLICATE_SKIPPED"
+                : action === "UPDATE"
+                  ? "UPDATED"
+                  : "IMPORTED";
 
         return {
           shopId: context.shopId,

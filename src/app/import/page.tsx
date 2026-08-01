@@ -68,6 +68,28 @@ function downloadCsv(filename: string, content: string) {
   URL.revokeObjectURL(url);
 }
 
+function primaryImportLabel({
+  completed,
+  saving,
+  readyRows,
+  heldRows,
+  skippedRows,
+}: {
+  completed: boolean;
+  saving: boolean;
+  readyRows: number;
+  heldRows: number;
+  skippedRows: number;
+}) {
+  if (completed) return "Import results saved";
+  if (saving) return readyRows > 0 ? "Importing..." : "Saving...";
+  if (readyRows > 0 && heldRows > 0) return `Import ${readyRows} rows and hold ${heldRows} for review`;
+  if (readyRows > 0) return `Import ${readyRows} rows`;
+  if (heldRows > 0) return `Save ${heldRows} rows for review`;
+  if (skippedRows > 0) return "Save skipped duplicate results";
+  return "Confirm import";
+}
+
 export default function ImportPage() {
   const store = useDemoStore();
   const { state } = store;
@@ -91,6 +113,7 @@ export default function ImportPage() {
   );
   const rowLimitExceeded = isImportRowLimitExceeded(summary.totalRows);
   const rowLimitError = rowLimitExceeded ? importRowLimitMessage(summary.totalRows) : "";
+  const hasRowsToSave = summary.readyRows > 0 || summary.heldRows > 0 || summary.skippedRows > 0;
 
   async function handleFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -213,17 +236,25 @@ export default function ImportPage() {
             <p className="mt-1 text-sm text-zinc-500">Rows are validated for required fields, duplicates, and service economics.</p>
           </CardHeader>
           <CardContent className="space-y-4">
+            {(summary.reviewRows > 0 || summary.invalidRows > 0) && !rowLimitExceeded && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-800">
+                Some rows need attention. Ready rows can still be imported.
+              </div>
+            )}
             <div className="grid gap-3 sm:grid-cols-4">
               {[
-                ["Rows", summary.totalRows],
+                ["Total rows", summary.totalRows],
                 ["Ready", summary.readyRows],
-                ["Customers", `${summary.customersToCreate} new / ${summary.customersMatched} matched`],
-                ["Vehicles", `${summary.vehiclesToCreate} new / ${summary.vehiclesMatched} matched`],
-                ["Errors", summary.failedRows],
+                ["Needs review", summary.reviewRows],
+                ["Invalid", summary.invalidRows],
+                ["Duplicate skipped", summary.duplicateSkippedRows],
+                ["New customers", summary.customersToCreate],
+                ["Matched customers", summary.customersMatched],
+                ["New vehicles", summary.vehiclesToCreate],
+                ["Matched vehicles", summary.vehiclesMatched],
                 ["Services", summary.servicesToImport],
                 ["Declined", summary.declinedWorkToImport],
                 ["Appointments", summary.appointmentsToImport],
-                ["Held/skipped", `${summary.heldRows}/${summary.skippedRows}`],
               ].map(([label, value]) => (
                 <div key={label} className="rounded-lg border border-zinc-200 p-3">
                   <p className="text-xs text-zinc-500">{label}</p>
@@ -251,7 +282,7 @@ export default function ImportPage() {
                       <td className="px-4 py-3">{row.rowNumber}</td>
                       <td className="px-4 py-3">
                         <Badge variant={row.status === "VALID" ? "green" : row.status === "DUPLICATE" ? "yellow" : row.status === "INVALID" ? "red" : "neutral"}>
-                          {row.status === "DUPLICATE" ? "Child duplicate" : row.status}
+                          {row.status === "DUPLICATE" ? "Duplicate" : row.status === "HELD" ? "Needs review" : row.status}
                         </Badge>
                       </td>
                       <td className="px-4 py-3">
@@ -276,11 +307,11 @@ export default function ImportPage() {
                           })}
                           className="h-9 rounded-lg border border-zinc-200 px-2 text-sm outline-none focus:border-violet-500"
                         >
-                          <option value="IMPORT">Import</option>
+                          {row.status !== "INVALID" && row.status !== "HELD" && <option value="IMPORT">Import</option>}
                           <option value="HOLD">Hold for review</option>
                           <option value="SKIP">Skip</option>
-                          <option value="UPDATE">Resolve duplicate / update</option>
-                          <option value="IMPORT_AS_NEW">Import as new</option>
+                          {row.status !== "INVALID" && row.status !== "HELD" && <option value="UPDATE">Resolve duplicate / update</option>}
+                          {row.status !== "INVALID" && row.status !== "HELD" && <option value="IMPORT_AS_NEW">Import as new</option>}
                         </select>
                       </td>
                     </tr>
@@ -292,23 +323,29 @@ export default function ImportPage() {
             <div className="flex flex-wrap justify-between gap-3">
               <button
                 onClick={() => downloadCsv("maintiva-import-errors.csv", buildImportErrorCsv(preview.rows))}
-                disabled={summary.failedRows === 0}
+                disabled={summary.failedRows === 0 && summary.heldRows === 0 && summary.skippedRows === 0}
                 className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 px-4 py-2 text-sm font-semibold text-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <TableProperties className="h-4 w-4" />
-                Error report
+                Result report
               </button>
               <button
                 onClick={confirmImport}
-                disabled={saving || rowLimitExceeded || summary.totalRows === 0 || summary.successfulRows + summary.updatedRows === 0}
+                disabled={saving || rowLimitExceeded || summary.totalRows === 0 || !hasRowsToSave}
                 className="rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {completed ? "Import complete" : saving ? "Importing..." : "Confirm import"}
+                {primaryImportLabel({
+                  completed,
+                  saving,
+                  readyRows: summary.readyRows,
+                  heldRows: summary.heldRows,
+                  skippedRows: summary.skippedRows,
+                })}
               </button>
             </div>
             {completed && (
               <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700">
-                Import complete. Valid rows now create recovery opportunities and imported appointments where applicable.
+                Import results saved. Ready rows created operational records; held rows remain available for review in Import History.
               </div>
             )}
             {saveError && (
@@ -333,6 +370,7 @@ export default function ImportPage() {
                 <th className="px-5 py-3">Status</th>
                 <th className="px-5 py-3">Successful</th>
                 <th className="px-5 py-3">Duplicates</th>
+                <th className="px-5 py-3">Held</th>
                 <th className="px-5 py-3">Failed</th>
               </tr>
             </thead>
@@ -341,9 +379,14 @@ export default function ImportPage() {
                 <tr key={item.id}>
                   <td className="px-5 py-4 font-medium">{item.fileName}</td>
                   <td className="px-5 py-4">{item.importType}</td>
-                  <td className="px-5 py-4"><Badge variant={item.status === "COMPLETED" ? "green" : "yellow"}>{item.status}</Badge></td>
+                  <td className="px-5 py-4">
+                    <Badge variant={(item.displayStatus ?? item.status) === "COMPLETED" ? "green" : (item.displayStatus ?? item.status) === "FAILED" ? "red" : "yellow"}>
+                      {item.displayStatus ?? item.status}
+                    </Badge>
+                  </td>
                   <td className="px-5 py-4">{item.successfulRows}</td>
                   <td className="px-5 py-4">{item.duplicateRows}</td>
+                  <td className="px-5 py-4">{item.heldRows ?? 0}</td>
                   <td className="px-5 py-4">{item.failedRows}</td>
                 </tr>
               ))}
