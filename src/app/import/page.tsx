@@ -36,7 +36,7 @@ const fields: { value: MaintivaField; label: string }[] = [
   { value: "vehicleMake", label: "Vehicle make" },
   { value: "vehicleModel", label: "Vehicle model" },
   { value: "licensePlate", label: "License plate" },
-  { value: "currentMileage", label: "Current mileage" },
+  { value: "currentMileage", label: "Actual current odometer" },
   { value: "serviceName", label: "Service name" },
   { value: "serviceDate", label: "Service date" },
   { value: "serviceMileage", label: "Service mileage" },

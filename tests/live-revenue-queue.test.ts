@@ -158,6 +158,15 @@ describe("revenue queue synchronization guardrails", () => {
     expect(pilotStateSource).toMatch(/export async function importPilotCsvRows[\s\S]+classifyImportRowEvent[\s\S]+importsCompletedService[\s\S]+importsDeclinedWork/);
   });
 
+  it("keeps imported service mileage historical instead of assigning it as actual current mileage", () => {
+    expect(pilotStateSource).toContain("const actualCurrentMileage = importsCompletedService && serviceDateValue ? null : currentMileage");
+    expect(pilotStateSource).toContain("const historicalServiceMileage = importsCompletedService && serviceDateValue && serviceMileage === null");
+    expect(pilotStateSource).toContain("currentMileage: actualCurrentMileage ?? vehicle.currentMileage");
+    expect(pilotStateSource).toContain("lastCompletedMileage: importsCompletedService ? historicalServiceMileage");
+    expect(pilotStateSource).not.toContain("currentMileage: nextCurrentMileage ?? vehicle.currentMileage");
+    expect(pilotStateSource).not.toContain("currentMileage: initialCurrentMileage ?? 0");
+  });
+
   it("keeps the main queue to four workflow tabs with advanced filters", () => {
     expect(automationPageSource).toContain("Needs Attention");
     expect(automationPageSource).toContain("Contacted");
@@ -262,7 +271,8 @@ describe("revenue queue synchronization guardrails", () => {
   it("uses shared missing-mileage display helpers for customer and vehicle pages", () => {
     expect(customerPageSource).toContain("formatMileage(vehicleMileageDisplayValue(state, vehicle))");
     expect(customerPageSource).toContain("formatServiceMileage(record.mileage)");
-    expect(vehiclePageSource).toContain("formatMileage(displayedCurrentMileage)");
+    expect(vehiclePageSource).toContain("formatMileage(displayedLatestKnownMileage)");
+    expect(vehiclePageSource).toContain("forecastBasisLabel(vehicleForecastMileage.kind)");
     expect(vehiclePageSource).toContain("formatServiceMileage(record.mileage)");
     expect(vehiclePageSource).toContain("Last completed mileage not entered");
   });

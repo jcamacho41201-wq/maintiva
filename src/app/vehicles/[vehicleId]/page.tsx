@@ -22,12 +22,14 @@ import { Badge, statusVariant } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import {
+  getVehicleMaintenanceCondition,
   getRecommendedRecords,
+  stateForecastAsOfDate,
   vehicleLabel,
 } from "@/lib/demo-calculations";
 import { type MaintenanceService, type OutreachThresholdType, type TimeIntervalUnit, type User, type Vehicle, type VehicleDrivingProfile, type VehicleMaintenanceRecord, type VehicleMileageReading } from "@/lib/demo-data";
 import { type MaintenanceItemInput, useDemoStore } from "@/lib/demo-store";
-import { calculateDrivingProfile, estimateServiceDueDate, validateMileageReading } from "@/lib/adaptive-mileage";
+import { calculateDrivingProfile, estimateServiceDueDate, resolveEffectiveForecastMileage, resolveLatestKnownMileage, validateMileageReading } from "@/lib/adaptive-mileage";
 import { buildRevenueOpportunities, isOpenRevenueStage } from "@/lib/revenue-recovery";
 import { formatInterval, resolveMaintenanceInterval } from "@/lib/service-intervals";
 import { currentDateInTimeZone, formatCurrency, formatDate, formatDateTime, formatHours, formatMileage, formatServiceMileage } from "@/lib/utils";
@@ -90,9 +92,15 @@ function readableReviewCondition(value: string) {
   return labels[value] ?? value;
 }
 
-function vehicleMileageDisplayValue(vehicle: Vehicle, readings: VehicleMileageReading[]) {
-  const hasMileageFact = vehicle.currentMileage !== 0 || readings.some((reading) => reading.vehicleId === vehicle.id);
-  return hasMileageFact ? vehicle.currentMileage : null;
+function vehicleMileageDisplayValue(vehicle: Vehicle, readings: VehicleMileageReading[], asOf?: Date | string) {
+  const latestKnown = resolveLatestKnownMileage(readings.filter((reading) => reading.vehicleId === vehicle.id), asOf);
+  return latestKnown?.readingMileage ?? (vehicle.currentMileage !== 0 ? vehicle.currentMileage : null);
+}
+
+function forecastBasisLabel(kind: string | undefined) {
+  if (kind === "ACTUAL") return "Actual current";
+  if (kind === "ESTIMATED") return "Estimated current";
+  return "Mileage unavailable";
 }
 
 function mileageHistoryStats(readings: VehicleMileageReading[]) {
@@ -412,6 +420,7 @@ function DrivingProfilePanel({
   currentUserId,
   shopTimezone,
   shopDefaultAnnualMileage,
+  forecastAsOfDate,
 }: {
   vehicle: Vehicle;
   profile: VehicleDrivingProfile;
@@ -420,6 +429,7 @@ function DrivingProfilePanel({
   currentUserId?: string;
   shopTimezone: string;
   shopDefaultAnnualMileage: number;
+  forecastAsOfDate: string;
 }) {
   const store = useDemoStore();
   const usersById = useMemo(() => new Map(users.map((user) => [user.id, user])), [users]);
@@ -441,6 +451,18 @@ function DrivingProfilePanel({
   const monthlyMileage = Math.round(profile.calculatedAnnualMileage / 12);
   const stats = mileageHistoryStats(readings);
   const latestReading = stats.latest;
+  const forecastMileage = resolveEffectiveForecastMileage({
+    shopId: vehicle.shopId,
+    vehicleId: vehicle.id,
+    readings,
+    shopDefaultAnnualMileage,
+    customerReportedAnnualMileage: profile.customerReportedAnnualMileage ?? vehicle.estimatedAnnualMileage,
+    customerReportedAt: profile.customerReportedAt ?? null,
+    customerReportedByUserId: profile.customerReportedByUserId ?? null,
+    existingProfile: profile,
+    asOf: forecastAsOfDate,
+    shopTimezone,
+  });
   const maintivaCalculatedProfile = calculateDrivingProfile({
     shopId: vehicle.shopId,
     vehicleId: vehicle.id,
@@ -457,6 +479,8 @@ function DrivingProfilePanel({
       manualOverrideSetAt: null,
       manualOverrideSetByUserId: null,
     },
+    asOf: forecastAsOfDate,
+    shopTimezone,
   });
 
   async function saveReported() {
@@ -531,8 +555,10 @@ function DrivingProfilePanel({
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid grid-cols-2 gap-3">
-            <DetailTile label="Current mileage" value={formatMileage(vehicleMileageDisplayValue(vehicle, readings))} />
-            <DetailTile label="Last reading date" value={latestReading ? formatDate(latestReading.readingDate) : "Not recorded"} />
+            <DetailTile label="Latest known mileage" value={formatMileage(forecastMileage.latestKnownMileage)} />
+            <DetailTile label="Latest known date" value={forecastMileage.latestKnownDate ? formatDate(forecastMileage.latestKnownDate) : "Not recorded"} />
+            <DetailTile label={forecastBasisLabel(forecastMileage.kind)} value={formatMileage(forecastMileage.mileage)} />
+            <DetailTile label="Estimate as of" value={formatDate(forecastMileage.asOf)} />
             <DetailTile label="Estimated annual mileage" value={`${profile.calculatedAnnualMileage.toLocaleString()} mi`} />
             <DetailTile label="Confidence" value={profile.confidence} />
             <DetailTile label="Source" value={sourceLabel(profile.estimateSource)} />
@@ -546,6 +572,11 @@ function DrivingProfilePanel({
             <p className="mt-2 text-zinc-500">
               Latest fact: {latestReading ? `${latestReading.readingMileage.toLocaleString()} mi on ${formatDate(latestReading.readingDate)}` : "unknown"}
             </p>
+            {forecastMileage.kind === "ESTIMATED" && forecastMileage.daysSinceLatestKnownReading !== null && (
+              <p className="mt-1 text-zinc-500">
+                Estimated current: {formatMileage(forecastMileage.mileage)} projected {forecastMileage.daysSinceLatestKnownReading.toLocaleString()} days from the latest fact.
+              </p>
+            )}
             <p className="mt-1 text-zinc-500">
               Pace: {dailyMileage.toLocaleString()} mi/day · {monthlyMileage.toLocaleString()} mi/month
             </p>
@@ -1127,8 +1158,8 @@ function CompleteServiceModal({
   onClose: () => void;
 }) {
   const store = useDemoStore();
-  const effective = resolveMaintenanceInterval({ record, service, vehicle });
   const today = currentDateInTimeZone(shopTimezone);
+  const effective = resolveMaintenanceInterval({ record, service, vehicle, asOf: today, shopTimezone });
   const [completedAt, setCompletedAt] = useState(today);
   const [completedMileage, setCompletedMileage] = useState(vehicle.currentMileage.toString());
   const [price, setPrice] = useState((effective.priceCents / 100).toString());
@@ -1460,6 +1491,22 @@ export default function VehicleMaintenancePage() {
   const customer = state.customers.find((item) => item.id === vehicle.customerId);
   if (!customer) return null;
 
+  const forecastAsOfDate = stateForecastAsOfDate(state);
+  const mileageReadings = state.mileageReadings.filter((reading) => reading.vehicleId === vehicle.id);
+  const persistedProfile = state.drivingProfiles.find((profile) => profile.vehicleId === vehicle.id);
+  const vehicleForecastMileage = resolveEffectiveForecastMileage({
+    shopId: state.shop.id,
+    vehicleId: vehicle.id,
+    readings: mileageReadings,
+    shopDefaultAnnualMileage: state.shop.defaultAnnualMileage,
+    customerReportedAnnualMileage: persistedProfile?.customerReportedAnnualMileage ?? vehicle.estimatedAnnualMileage,
+    customerReportedAt: persistedProfile?.customerReportedAt ?? null,
+    customerReportedByUserId: persistedProfile?.customerReportedByUserId ?? null,
+    existingProfile: persistedProfile,
+    asOf: forecastAsOfDate,
+    shopTimezone: state.shop.timezone,
+  });
+  const vehicleMaintenanceCondition = getVehicleMaintenanceCondition(state, vehicle.id, forecastAsOfDate);
   const maintenance = state.maintenanceRecords
     .filter((item) => item.vehicleId === vehicle.id && item.isActive !== false)
     .map((record) => ({
@@ -1469,6 +1516,9 @@ export default function VehicleMaintenancePage() {
         record,
         service: record.serviceId ? servicesById.get(record.serviceId) : undefined,
         vehicle,
+        forecastMileage: vehicleForecastMileage,
+        asOf: forecastAsOfDate,
+        shopTimezone: state.shop.timezone,
       }),
     }))
     .sort((a, b) => a.effective.lifeRemaining - b.effective.lifeRemaining);
@@ -1498,9 +1548,7 @@ export default function VehicleMaintenancePage() {
     .filter((record) => !record.notes?.startsWith("[Inspection]"))
     .filter((record) => !historyFilter || record.serviceName === historyFilter)
     .sort((a, b) => b.completedAt.localeCompare(a.completedAt));
-  const mileageReadings = state.mileageReadings.filter((reading) => reading.vehicleId === vehicle.id);
-  const displayedCurrentMileage = vehicleMileageDisplayValue(vehicle, mileageReadings);
-  const persistedProfile = state.drivingProfiles.find((profile) => profile.vehicleId === vehicle.id);
+  const displayedLatestKnownMileage = vehicleMileageDisplayValue(vehicle, mileageReadings, forecastAsOfDate);
   const calculatedProfile = calculateDrivingProfile({
     shopId: state.shop.id,
     vehicleId: vehicle.id,
@@ -1510,6 +1558,8 @@ export default function VehicleMaintenancePage() {
     customerReportedAt: persistedProfile?.customerReportedAt ?? null,
     customerReportedByUserId: persistedProfile?.customerReportedByUserId ?? null,
     existingProfile: persistedProfile,
+    asOf: forecastAsOfDate,
+    shopTimezone: state.shop.timezone,
   });
   const drivingProfile: VehicleDrivingProfile = persistedProfile ?? {
     id: `profile-${vehicle.id}`,
@@ -1570,10 +1620,10 @@ export default function VehicleMaintenancePage() {
 
       <section className="grid gap-4 md:grid-cols-4">
         {[
-          ["Current mileage", formatMileage(displayedCurrentMileage)],
+          ["Latest known mileage", formatMileage(displayedLatestKnownMileage)],
+          [forecastBasisLabel(vehicleForecastMileage.kind), formatMileage(vehicleForecastMileage.mileage)],
+          ["Maintenance status", vehicleMaintenanceCondition.label],
           ["Plan items", `${maintenance.length}`],
-          ["Vehicle health", `${vehicle.overallHealth}%`],
-          ["Open follow-ups", `${openRecommended.length + openDeclinedFollowUps.length}`],
         ].map(([label, value]) => (
           <Card key={label}>
             <CardContent>
@@ -1592,6 +1642,7 @@ export default function VehicleMaintenancePage() {
         currentUserId={state.currentUserId}
         shopTimezone={state.shop.timezone}
         shopDefaultAnnualMileage={state.shop.defaultAnnualMileage}
+        forecastAsOfDate={forecastAsOfDate}
       />
 
       <Card>
@@ -1646,7 +1697,10 @@ export default function VehicleMaintenancePage() {
 
               <div className="mt-4 grid grid-cols-2 gap-3">
                 <DetailTile label="Effective interval" value={formatInterval(effective.mileageInterval, effective.timeIntervalValue, effective.timeIntervalUnit)} />
-                <DetailTile label="Current mileage" value={formatMileage(displayedCurrentMileage)} />
+                <DetailTile label={forecastBasisLabel(effective.forecastMileageKind)} value={formatMileage(effective.forecastMileage)} />
+                <DetailTile label="Latest known mileage" value={formatMileage(effective.latestKnownMileage)} />
+                <DetailTile label="Estimate as of" value={formatDate(forecastAsOfDate)} />
+                <DetailTile label="Confidence" value={effective.forecastConfidence ?? "Not calculated"} />
                 <DetailTile label="Next due mileage" value={effective.nextDueMileage !== null ? formatMileage(effective.nextDueMileage) : "Not calculated"} />
                 <DetailTile label="Next due date" value={effective.nextDueDate ? formatDate(effective.nextDueDate) : "Not calculated"} />
                 <DetailTile label="Price" value={formatCurrency(effective.priceCents)} />
@@ -1654,10 +1708,19 @@ export default function VehicleMaintenancePage() {
               </div>
 
               {(() => {
+                if (effective.forecastMileage === null || effective.forecastMileage === undefined) {
+                  return (
+                    <div className="mt-4 rounded-lg border border-zinc-200 p-3 text-sm">
+                      <p className="font-semibold">Forecast preview</p>
+                      <p className="mt-1 text-zinc-500">Add a dated odometer reading to calculate mileage-based due dates.</p>
+                    </div>
+                  );
+                }
                 const preview = estimateServiceDueDate({
-                  currentMileage: vehicle.currentMileage,
-                  dailyMileage: drivingProfile.calculatedAnnualMileage / 365,
+                  currentMileage: effective.forecastMileage,
+                  dailyMileage: vehicleForecastMileage.dailyMileage ?? drivingProfile.calculatedAnnualMileage / 365,
                   effective,
+                  asOf: forecastAsOfDate,
                 });
                 return (
                   <div className="mt-4 rounded-lg border border-zinc-200 p-3 text-sm">
@@ -1824,6 +1887,7 @@ export default function VehicleMaintenancePage() {
           customer={customer}
           vehicle={vehicle}
           records={recommended}
+          shopTimezone={state.shop.timezone}
           onClose={() => setRecommendationOpen(false)}
           onSendRecommendation={store.sendRecommendation}
           onBookAppointment={store.bookAppointment}

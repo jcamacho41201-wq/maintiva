@@ -623,6 +623,17 @@ export function previewImport({
     const existingChild = existingChildResult(state, kind, vehicleMatch?.match.id, normalized);
     const childDuplicate = Boolean(existingChild) || childBatch.has(key);
     if (!childDuplicate) childBatch.add(key);
+    const historicalMileageMessage = (
+      kind === "Service" &&
+      eventClassification.importsCompletedService &&
+      normalized.serviceDate &&
+      (
+        typeof normalized.serviceMileage === "number" ||
+        typeof normalized.currentMileage === "number"
+      )
+    )
+      ? ` Will add a historical mileage reading dated ${normalized.serviceDate}.`
+      : "";
     const child: EntityImportResult = childDuplicate
       ? {
           entity: kind,
@@ -632,7 +643,7 @@ export function previewImport({
             : `${kind} appears to have already been imported and will follow the selected row action.`,
           key,
         }
-      : { entity: kind, status: "CREATE", message: `${kind} is new and ready to import.`, key };
+      : { entity: kind, status: "CREATE", message: `${kind} is new and ready to import.${historicalMileageMessage}`, key };
 
     const status = errors.length > 0 ? "INVALID" : reviewIssues.length > 0 ? "HELD" : childDuplicate ? "DUPLICATE" : "VALID";
     const action: ImportRowAction = status === "INVALID" || status === "HELD" ? "HOLD" : childDuplicate ? "SKIP" : "IMPORT";

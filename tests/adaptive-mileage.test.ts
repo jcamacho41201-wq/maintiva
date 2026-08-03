@@ -5,6 +5,7 @@ import {
   detectMileageAnomalies,
   estimateServiceDueDate,
   resolveCurrentMileage,
+  resolveEffectiveForecastMileage,
   validateMileageReading,
   type MileageReadingDraft,
 } from "@/lib/adaptive-mileage";
@@ -70,6 +71,17 @@ describe("adaptive mileage profile calculation", () => {
     expect(result.confidence).toBe("MEDIUM");
   });
 
+  it("requires at least 30 days before personalizing annual mileage from historical readings", () => {
+    const result = profile([
+      { ...baseReading, readingMileage: 10_000, readingDate: "2026-07-01" },
+      { ...baseReading, readingMileage: 10_200, readingDate: "2026-07-15" },
+    ]);
+
+    expect(result.estimateSource).toBe("VERIFIED_PLUS_DEFAULT");
+    expect(result.calculatedAnnualMileage).toBe(DEFAULT_ANNUAL_MILEAGE);
+    expect(result.confidence).toBe("LOW");
+  });
+
   it("uses customer-reported mileage ahead of one verified reading plus default", () => {
     const result = profile(
       [{ ...baseReading, readingMileage: 42_000, readingDate: "2026-07-01" }],
@@ -111,6 +123,81 @@ describe("adaptive mileage profile calculation", () => {
 
     expect(current.currentMileage).toBe(44_000);
     expect(current.source).toBe("Latest valid mileage reading");
+  });
+
+  it("separates latest known mileage from estimated current mileage", () => {
+    const forecast = resolveEffectiveForecastMileage({
+      shopId: "shop-1",
+      vehicleId: "veh-1",
+      readings: [
+        { ...baseReading, readingMileage: 10_000, readingDate: "2026-01-01" },
+        { ...baseReading, readingMileage: 20_000, readingDate: "2026-07-01" },
+      ],
+      shopDefaultAnnualMileage: DEFAULT_ANNUAL_MILEAGE,
+      asOf: "2026-07-31",
+    });
+
+    expect(forecast.latestKnownMileage).toBe(20_000);
+    expect(forecast.latestKnownDate).toBe("2026-07-01");
+    expect(forecast.kind).toBe("ESTIMATED");
+    expect(forecast.mileage).toBeGreaterThan(20_000);
+  });
+
+  it("estimates the QA historical service vehicle as of August 3", () => {
+    const imported = {
+      ...baseReading,
+      source: "SERVICE_HISTORY_IMPORT" as const,
+      verificationStatus: "IMPORTED" as const,
+    };
+    const forecast = resolveEffectiveForecastMileage({
+      shopId: "shop-1",
+      vehicleId: "veh-qa-mileage",
+      readings: [
+        { ...imported, readingMileage: 42_000, readingDate: "2025-01-10" },
+        { ...imported, readingMileage: 49_500, readingDate: "2025-07-10" },
+        { ...imported, readingMileage: 57_000, readingDate: "2026-01-10" },
+      ],
+      shopDefaultAnnualMileage: DEFAULT_ANNUAL_MILEAGE,
+      asOf: "2026-08-03",
+      shopTimezone: "America/New_York",
+    });
+
+    expect(forecast.latestKnownMileage).toBe(57_000);
+    expect(forecast.latestKnownDate).toBe("2026-01-10");
+    expect(forecast.annualMileage).toBeGreaterThanOrEqual(14_900);
+    expect(forecast.annualMileage).toBeLessThanOrEqual(15_100);
+    expect(forecast.mileage).toBeGreaterThanOrEqual(65_400);
+    expect(forecast.mileage).toBeLessThanOrEqual(65_450);
+    expect(forecast.kind).toBe("ESTIMATED");
+    expect(forecast.asOf).toBe("2026-08-03");
+  });
+
+  it("treats a same-day reading as actual current mileage", () => {
+    const forecast = resolveEffectiveForecastMileage({
+      shopId: "shop-1",
+      vehicleId: "veh-1",
+      readings: [{ ...baseReading, readingMileage: 0, readingDate: "2026-07-29" }],
+      shopDefaultAnnualMileage: DEFAULT_ANNUAL_MILEAGE,
+      asOf: "2026-07-29",
+    });
+
+    expect(forecast.kind).toBe("ACTUAL");
+    expect(forecast.mileage).toBe(0);
+    expect(forecast.latestKnownMileage).toBe(0);
+  });
+
+  it("returns unavailable forecast mileage when no usable reading exists", () => {
+    const forecast = resolveEffectiveForecastMileage({
+      shopId: "shop-1",
+      vehicleId: "veh-1",
+      readings: [],
+      shopDefaultAnnualMileage: DEFAULT_ANNUAL_MILEAGE,
+      asOf: "2026-07-29",
+    });
+
+    expect(forecast.kind).toBe("UNAVAILABLE");
+    expect(forecast.mileage).toBeNull();
+    expect(forecast.confidence).toBe("NONE");
   });
 
   it("flags reversals for review", () => {

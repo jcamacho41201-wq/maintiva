@@ -31,8 +31,10 @@ import {
   DEFAULT_ANNUAL_MILEAGE,
   calculateDrivingProfile,
   resolveCurrentMileage,
+  resolveEffectiveForecastMileage,
   validateMileageReading,
 } from "@/lib/adaptive-mileage";
+import { resolveForecastAsOfDate } from "@/lib/forecast-dates";
 import { currentDateInTimeZone } from "@/lib/utils";
 import { safeDatabaseError, SafeActionError } from "@/lib/server-diagnostics";
 import { isCustomerBookingEnabled } from "@/lib/feature-flags";
@@ -381,7 +383,7 @@ function stageFromOutreach(input: {
 
 type OpportunitySyncClient = Pick<
   typeof prisma,
-  "$executeRaw" | "maintenanceRevenueOpportunity" | "vehicleMaintenanceRecord" | "declinedWorkRecord"
+  "$executeRaw" | "$queryRaw" | "maintenanceRevenueOpportunity" | "vehicleMaintenanceRecord" | "declinedWorkRecord" | "vehicleMileageReading" | "vehicleDrivingProfile"
 >;
 
 function toStateVehicle(vehicle: {
@@ -419,6 +421,60 @@ function toStateVehicle(vehicle: {
     overallHealth: vehicle.overallHealth,
     lastServiceDate: dateOnly(vehicle.lastServiceDate || vehicle.updatedAt),
   };
+}
+
+async function resolveVehicleForecastMileageForSync({
+  tx,
+  context,
+  vehicle,
+  asOf,
+}: {
+  tx: OpportunitySyncClient;
+  context: AuthenticatedShopContext;
+  vehicle: Parameters<typeof toStateVehicle>[0];
+  asOf: Date | string;
+}) {
+  const [readings, existingProfile, shopDefaultRows] = await Promise.all([
+    tx.vehicleMileageReading.findMany({
+      where: { shopId: context.shopId, vehicleId: vehicle.id },
+      orderBy: [{ readingDate: "asc" }, { createdAt: "asc" }],
+    }),
+    tx.vehicleDrivingProfile.findUnique({ where: { vehicleId: vehicle.id } }),
+    tx.$queryRaw<{ defaultAnnualMileage: number | null }[]>`
+      SELECT "defaultAnnualMileage" FROM public."Shop" WHERE "id" = ${context.shopId} LIMIT 1
+    `,
+  ]);
+
+  return resolveEffectiveForecastMileage({
+    shopId: context.shopId,
+    vehicleId: vehicle.id,
+    readings: readings.map((reading) => ({
+      readingMileage: reading.readingMileage,
+      readingDate: dateOnly(reading.readingDate),
+      source: reading.source,
+      verificationStatus: reading.verificationStatus,
+      anomalyStatus: reading.anomalyStatus,
+      includedInForecast: reading.includedInForecast,
+    })),
+    shopDefaultAnnualMileage: shopDefaultRows[0]?.defaultAnnualMileage ?? DEFAULT_ANNUAL_MILEAGE,
+    customerReportedAnnualMileage: existingProfile?.customerReportedAnnualMileage ?? vehicle.estimatedAnnualMileage,
+    customerReportedAt: dateOnly(existingProfile?.customerReportedAt) || null,
+    customerReportedByUserId: existingProfile?.customerReportedByUserId ?? null,
+    existingProfile: existingProfile
+      ? {
+          customerReportedAnnualMileage: existingProfile.customerReportedAnnualMileage,
+          customerReportedAt: dateOnly(existingProfile.customerReportedAt) || null,
+          customerReportedByUserId: existingProfile.customerReportedByUserId,
+          manualAnnualMileageOverride: existingProfile.manualAnnualMileageOverride,
+          manualOverrideReason: existingProfile.manualOverrideReason,
+          manualOverrideNotes: existingProfile.manualOverrideNotes,
+          manualOverrideSetAt: iso(existingProfile.manualOverrideSetAt) || null,
+          manualOverrideSetByUserId: existingProfile.manualOverrideSetByUserId,
+        }
+      : null,
+    asOf,
+    shopTimezone: context.shopTimezone,
+  });
 }
 
 function toStateServiceDefinition(service: {
@@ -582,11 +638,21 @@ async function syncMaintenanceRevenueOpportunities(
     assertSameShop(context, record.shopId);
     assertSameShop(context, record.vehicle.shopId);
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${context.shopId}:maintenance:${record.id}`}))`;
+    const now = new Date();
+    const forecastAsOfDate = resolveForecastAsOfDate({ shopTimezone: context.shopTimezone, now });
+    const forecastMileage = await resolveVehicleForecastMileageForSync({
+      tx,
+      context,
+      vehicle: record.vehicle,
+      asOf: forecastAsOfDate,
+    });
     const effective = resolveMaintenanceInterval({
       record: toStateMaintenanceRecord(record),
       service: record.serviceDefinition ? toStateServiceDefinition(record.serviceDefinition) : undefined,
       vehicle: toStateVehicle(record.vehicle),
-      asOf: new Date(),
+      forecastMileage,
+      asOf: forecastAsOfDate,
+      shopTimezone: context.shopTimezone,
     });
     const computedStatus = maintenanceStatusForDatabase(effective.status);
     if (record.status !== computedStatus) {
@@ -647,9 +713,21 @@ async function syncMaintenanceRevenueOpportunities(
       estimatedRevenueCents: effective.priceCents,
       booked: stage === "BOOKED" || stage === "COMPLETED",
     });
-    const explanation = source === "OVERDUE_MAINTENANCE"
+    const forecastNote = effective.forecastMileageKind === "ESTIMATED" && effective.latestKnownMileage !== null && effective.latestKnownDate
+      ? ` Mileage is estimated from ${effective.latestKnownMileage.toLocaleString()} mi on ${effective.latestKnownDate}; ${(effective.forecastConfidence ?? "LOW").toLowerCase()} confidence.`
+      : "";
+    const explanation = (source === "OVERDUE_MAINTENANCE"
       ? `${effective.serviceName} is overdue for this vehicle.`
-      : `${effective.serviceName} ${effective.dueText.toLowerCase()}.`;
+      : `${effective.serviceName} ${effective.dueText.toLowerCase()}.`) + forecastNote;
+    const prioritized = effective.forecastMileageKind === "ESTIMATED" &&
+      effective.forecastConfidence === "LOW" &&
+      daysLate === 0 &&
+      source !== "OVERDUE_MAINTENANCE"
+      ? {
+          priority: "LOW" as const,
+          priorityReason: "Needs advisor confirmation; mileage is estimated from limited odometer history.",
+        }
+      : priority;
     const data = {
       shopId: context.shopId,
       customerId: record.vehicle.customerId,
@@ -658,9 +736,9 @@ async function syncMaintenanceRevenueOpportunities(
       declinedWorkRecordId: null,
       source,
       stage,
-      priority: priority.priority,
+      priority: prioritized.priority,
       explanation,
-      priorityReason: priority.priorityReason,
+      priorityReason: prioritized.priorityReason,
       estimatedRevenueCents: effective.priceCents,
       estimatedLaborMinutes: effective.laborMinutes,
       dueDate,
@@ -1777,6 +1855,7 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
     loadStateAppointmentBookingMetadata(context.shopId),
   ]);
 
+  const forecastAsOfDate = resolveForecastAsOfDate({ shopTimezone: shop.timezone });
   const services: MaintenanceService[] = serviceDefinitions.map(toStateServiceDefinition);
   const outreachBookingLinkById = new Map(outreachBookingLinkIds.map((record) => [record.id, record.bookingLinkId]));
   const appointmentBookingMetadataById = new Map(appointmentBookingMetadata.map((appointment) => [appointment.id, appointment]));
@@ -1815,7 +1894,7 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
       verificationStatus: reading.verificationStatus,
       anomalyStatus: reading.anomalyStatus,
       includedInForecast: reading.includedInForecast,
-    })));
+    })).filter((reading) => reading.readingDate <= forecastAsOfDate));
     return {
       id: vehicle.id,
       shopId: vehicle.shopId,
@@ -1865,6 +1944,8 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
             manualOverrideSetByUserId: persisted.manualOverrideSetByUserId,
           }
         : null,
+      asOf: forecastAsOfDate,
+      shopTimezone: shop.timezone,
     });
     return {
       id: persisted?.id ?? `profile-${vehicle.id}`,
@@ -1962,6 +2043,38 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
         updatedByUserId: record.updatedByUserId ?? undefined,
       };
       if (!vehicle) return baseRecord;
+      const readingDrafts = (readingsByVehicle.get(vehicle.id) ?? []).map((reading) => ({
+        readingMileage: reading.readingMileage,
+        readingDate: dateOnly(reading.readingDate),
+        source: reading.source,
+        verificationStatus: reading.verificationStatus,
+        anomalyStatus: reading.anomalyStatus,
+        includedInForecast: reading.includedInForecast,
+      }));
+      const persistedProfile = persistedProfileByVehicle.get(vehicle.id);
+      const forecastMileage = resolveEffectiveForecastMileage({
+        shopId: context.shopId,
+        vehicleId: vehicle.id,
+        readings: readingDrafts,
+        shopDefaultAnnualMileage,
+        customerReportedAnnualMileage: persistedProfile?.customerReportedAnnualMileage ?? vehicle.estimatedAnnualMileage,
+        customerReportedAt: persistedProfile ? dateOnly(persistedProfile.customerReportedAt) || null : null,
+        customerReportedByUserId: persistedProfile?.customerReportedByUserId ?? null,
+        existingProfile: persistedProfile
+          ? {
+              customerReportedAnnualMileage: persistedProfile.customerReportedAnnualMileage,
+              customerReportedAt: dateOnly(persistedProfile.customerReportedAt) || null,
+              customerReportedByUserId: persistedProfile.customerReportedByUserId,
+              manualAnnualMileageOverride: persistedProfile.manualAnnualMileageOverride,
+              manualOverrideReason: persistedProfile.manualOverrideReason,
+              manualOverrideNotes: persistedProfile.manualOverrideNotes,
+              manualOverrideSetAt: iso(persistedProfile.manualOverrideSetAt) || null,
+              manualOverrideSetByUserId: persistedProfile.manualOverrideSetByUserId,
+            }
+          : null,
+        asOf: forecastAsOfDate,
+        shopTimezone: shop.timezone,
+      });
       const effective = resolveMaintenanceInterval({
         record: baseRecord,
         service,
@@ -1982,6 +2095,9 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
           overallHealth: vehicle.overallHealth,
           lastServiceDate: vehicle.lastServiceDate,
         },
+        forecastMileage,
+        asOf: forecastAsOfDate,
+        shopTimezone: shop.timezone,
       });
       return {
         ...baseRecord,
@@ -2103,6 +2219,7 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
     bookingWindows,
     bookingBlackouts,
     customerBookingLinks,
+    forecastAsOfDate,
     importHistory: shop.importHistory.map((record): ImportHistoryRecord => {
       const reportSummary = importErrorReportSummary(record.errorReport);
       return {
@@ -2730,6 +2847,7 @@ async function recalculatePersistedDrivingProfile({
   });
   const customerReported = customerReportedAnnualMileage ?? existing?.customerReportedAnnualMileage ?? null;
   const now = new Date();
+  const forecastAsOfDate = resolveForecastAsOfDate({ shopTimezone: context.shopTimezone, now });
   const manualOverride = clearManualOverride
     ? null
     : manualAnnualMileageOverride ?? existing?.manualAnnualMileageOverride ?? null;
@@ -2758,7 +2876,8 @@ async function recalculatePersistedDrivingProfile({
       manualOverrideSetAt: manualAnnualMileageOverride !== undefined ? now.toISOString() : clearManualOverride ? null : iso(existing?.manualOverrideSetAt) || null,
       manualOverrideSetByUserId: manualAnnualMileageOverride !== undefined ? context.userId : clearManualOverride ? null : existing?.manualOverrideSetByUserId ?? null,
     },
-    asOf: now,
+    asOf: forecastAsOfDate,
+    shopTimezone: context.shopTimezone,
   });
 
   await tx.vehicleDrivingProfile.upsert({
@@ -4141,6 +4260,15 @@ export async function importPilotCsvRows(
       const action = rowAction(row);
       const currentMileage = nullableNumberValue(normalized, "currentMileage");
       const serviceMileage = nullableNumberValue(normalized, "serviceMileage");
+      const importEvent = classifyImportRowEvent(input.importType, normalized);
+      if (importEvent.ambiguousConflict) continue;
+      const serviceDateValue = stringValue(normalized, "serviceDate");
+      const importsCompletedService = importEvent.importsCompletedService;
+      const importsDeclinedWork = importEvent.importsDeclinedWork;
+      const actualCurrentMileage = importsCompletedService && serviceDateValue ? null : currentMileage;
+      const historicalServiceMileage = importsCompletedService && serviceDateValue && serviceMileage === null
+        ? currentMileage
+        : serviceMileage;
 
       let customer = row.entities.customer.key ? customerByKey.get(row.entities.customer.key) ?? null : null;
       customer ??= await tx.customer.findFirst({
@@ -4205,9 +4333,6 @@ export async function importPilotCsvRows(
         : null;
 
       if (vehicle) {
-        const nextCurrentMileage = currentMileage ?? (
-          stringValue(normalized, "serviceDate") && serviceMileage !== null ? serviceMileage : null
-        );
         vehicle = await tx.vehicle.update({
           where: { id: vehicle.id },
           data: {
@@ -4215,7 +4340,7 @@ export async function importPilotCsvRows(
             year: numberValue(normalized, "vehicleYear") || vehicle.year,
             make: stringValue(normalized, "vehicleMake") || vehicle.make,
             model: stringValue(normalized, "vehicleModel") || vehicle.model,
-            currentMileage: nextCurrentMileage ?? vehicle.currentMileage,
+            currentMileage: actualCurrentMileage ?? vehicle.currentMileage,
             licensePlate: stringValue(normalized, "licensePlate") || vehicle.licensePlate,
             lastServiceDate: new Date(),
           },
@@ -4225,9 +4350,6 @@ export async function importPilotCsvRows(
         stringValue(normalized, "vehicleModel") &&
         numberValue(normalized, "vehicleYear")
       ) {
-        const initialCurrentMileage = currentMileage ?? (
-          stringValue(normalized, "serviceDate") && serviceMileage !== null ? serviceMileage : null
-        );
         vehicle = await tx.vehicle.create({
           data: {
             shopId: context.shopId,
@@ -4237,7 +4359,7 @@ export async function importPilotCsvRows(
             model: stringValue(normalized, "vehicleModel"),
             vin: vehicleVin,
             licensePlate: stringValue(normalized, "licensePlate") || null,
-            currentMileage: initialCurrentMileage ?? 0,
+            currentMileage: actualCurrentMileage ?? 0,
             estimatedAnnualMileage: 12_000,
             lastServiceDate: new Date(),
           },
@@ -4248,15 +4370,15 @@ export async function importPilotCsvRows(
       if (row.entities.vehicle.key) vehicleByKey.set(row.entities.vehicle.key, vehicle);
       touchedVehicleIds.add(vehicle.id);
 
-      if (currentMileage !== null) {
-        const currentMileageDate = stringValue(normalized, "serviceDate") || currentDateInTimeZone(context.shopTimezone);
-        const currentMileageKey = `${vehicle.id}|${currentMileageDate}|${currentMileage}`;
+      if (actualCurrentMileage !== null) {
+        const currentMileageDate = currentDateInTimeZone(context.shopTimezone);
+        const currentMileageKey = `${vehicle.id}|${currentMileageDate}|${actualCurrentMileage}`;
         const existingCurrentMileageReading = await tx.vehicleMileageReading.findFirst({
           where: {
             shopId: context.shopId,
             vehicleId: vehicle.id,
             readingDate: dateFromDateOnly(currentMileageDate),
-            readingMileage: currentMileage,
+            readingMileage: actualCurrentMileage,
           },
         });
         if (!existingCurrentMileageReading && !importedMileageKeys.has(currentMileageKey)) {
@@ -4265,9 +4387,9 @@ export async function importPilotCsvRows(
             data: {
               shopId: context.shopId,
               vehicleId: vehicle.id,
-              readingMileage: currentMileage,
+              readingMileage: actualCurrentMileage,
               readingDate: dateFromDateOnly(currentMileageDate),
-              source: "SERVICE_HISTORY_IMPORT",
+              source: "SHOP_MANUAL_ENTRY",
               verificationStatus: "IMPORTED",
               anomalyStatus: "NONE",
               includedInForecast: true,
@@ -4283,10 +4405,6 @@ export async function importPilotCsvRows(
       const priceCents = numberValue(normalized, "price");
       const laborMinutes = Math.round(numberValue(normalized, "laborHours") * 60);
       if (!serviceName || priceCents <= 0 || laborMinutes <= 0) continue;
-      const importEvent = classifyImportRowEvent(input.importType, normalized);
-      if (importEvent.ambiguousConflict) continue;
-      const importsCompletedService = importEvent.importsCompletedService;
-      const importsDeclinedWork = importEvent.importsDeclinedWork;
 
       let service = await tx.serviceDefinition.findFirst({
         where: { shopId: context.shopId, name: serviceName },
@@ -4327,7 +4445,7 @@ export async function importPilotCsvRows(
             lastCompletedDate: importsCompletedService && stringValue(normalized, "serviceDate")
               ? new Date(stringValue(normalized, "serviceDate"))
               : undefined,
-            lastCompletedMileage: importsCompletedService ? serviceMileage ?? undefined : undefined,
+            lastCompletedMileage: importsCompletedService ? historicalServiceMileage ?? undefined : undefined,
             priceOverrideCents: priceCents,
             laborMinutesOverride: laborMinutes,
             priceCents,
@@ -4347,7 +4465,7 @@ export async function importPilotCsvRows(
             && importsCompletedService
             ? new Date(stringValue(normalized, "serviceDate"))
             : null,
-          lastCompletedMileage: importsCompletedService ? serviceMileage : null,
+          lastCompletedMileage: importsCompletedService ? historicalServiceMileage : null,
           recommendedMileageInterval: null,
           recommendedTimeIntervalMonths: null,
           mileageIntervalOverride: null,
@@ -4380,30 +4498,30 @@ export async function importPilotCsvRows(
             serviceDefinitionId: service.id,
             serviceName,
             completedAt: dateFromDateOnly(serviceDate),
-            mileage: serviceMileage,
+            mileage: historicalServiceMileage,
             laborMinutes,
             priceCents,
             notes: "Imported from CSV.",
           },
         });
-        const mileageKey = `${vehicle.id}|${serviceDate}|${serviceMileage ?? "missing"}`;
-        const existingReading = serviceMileage !== null
+        const mileageKey = `${vehicle.id}|${serviceDate}|${historicalServiceMileage ?? "missing"}`;
+        const existingReading = historicalServiceMileage !== null
           ? await tx.vehicleMileageReading.findFirst({
             where: {
               shopId: context.shopId,
               vehicleId: vehicle.id,
               readingDate: dateFromDateOnly(serviceDate),
-              readingMileage: serviceMileage,
+              readingMileage: historicalServiceMileage,
             },
           })
           : null;
-        if (serviceMileage !== null && !existingReading && !importedMileageKeys.has(mileageKey)) {
+        if (historicalServiceMileage !== null && !existingReading && !importedMileageKeys.has(mileageKey)) {
           importedMileageKeys.add(mileageKey);
           await tx.vehicleMileageReading.create({
             data: {
               shopId: context.shopId,
               vehicleId: vehicle.id,
-              readingMileage: serviceMileage,
+              readingMileage: historicalServiceMileage,
               readingDate: dateFromDateOnly(serviceDate),
               source: "SERVICE_HISTORY_IMPORT",
               verificationStatus: "IMPORTED",

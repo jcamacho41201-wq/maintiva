@@ -1,6 +1,6 @@
 import { calculateAppointmentDuration } from "@/lib/appointment";
 
-export const asOfDate = new Date("2026-07-28T12:00:00-04:00");
+const demoSeedTimestamp = new Date("2026-07-28T12:00:00-04:00");
 
 export type ContactMethod = "SMS" | "EMAIL" | "CALL";
 export type CustomerStatus = "ACTIVE" | "WATCHLIST" | "PAUSED" | "ARCHIVED";
@@ -405,6 +405,7 @@ export type RevenueOpportunityRecord = {
 
 export type DemoState = {
   shop: Shop;
+  forecastAsOfDate?: string;
   currentUserId?: string;
   users: User[];
   customers: Customer[];
@@ -1008,7 +1009,7 @@ export const drivingProfiles: VehicleDrivingProfile[] = vehicles.map((vehicle) =
   manualOverrideNotes: null,
   manualOverrideSetAt: null,
   manualOverrideSetByUserId: null,
-  lastCalculatedAt: asOfDate.toISOString(),
+  lastCalculatedAt: demoSeedTimestamp.toISOString(),
 }));
 
 export const initialDemoState: DemoState = {
@@ -1034,7 +1035,7 @@ export const initialDemoState: DemoState = {
   bookingBlackouts: [],
   customerBookingLinks: [],
   importHistory,
-  seededAt: asOfDate.toISOString(),
+  seededAt: demoSeedTimestamp.toISOString(),
 };
 
 export function createInitialDemoState(): DemoState {

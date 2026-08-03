@@ -1,5 +1,5 @@
 import {
-  asOfDate,
+  type DrivingProfileConfidence,
   type MaintenanceService,
   type MaintenanceStatus,
   type OutreachThresholdType,
@@ -7,8 +7,8 @@ import {
   type Vehicle,
   type VehicleMaintenanceRecord,
 } from "@/lib/demo-data";
-
-const dayMs = 86_400_000;
+import type { EffectiveForecastMileage, ForecastMileageKind } from "@/lib/adaptive-mileage";
+import { calendarDaysBetween, resolveForecastAsOfDate } from "@/lib/forecast-dates";
 
 export type MaintenanceIntervalStatus = MaintenanceStatus | "NOT_ENOUGH_HISTORY";
 
@@ -34,6 +34,12 @@ export type EffectiveMaintenanceInterval = {
   milesUntilDue: number | null;
   daysUntilDue: number | null;
   notEnoughHistoryReason?: string;
+  forecastMileage: number | null;
+  forecastMileageKind: ForecastMileageKind | "LEGACY";
+  latestKnownMileage: number | null;
+  latestKnownDate: string | null;
+  forecastConfidence: DrivingProfileConfidence | "NONE" | null;
+  forecastConfidenceReason?: string;
 };
 
 function serviceName(record: VehicleMaintenanceRecord, service?: MaintenanceService) {
@@ -90,17 +96,26 @@ function formatCause(causes: string[]) {
   return "both mileage and time";
 }
 
+function formatDayCount(days: number) {
+  return `${Math.abs(days)} ${Math.abs(days) === 1 ? "day" : "days"}`;
+}
+
 export function resolveMaintenanceInterval({
   record,
   service,
   vehicle,
-  asOf = asOfDate,
+  forecastMileage,
+  asOf,
+  shopTimezone,
 }: {
   record: VehicleMaintenanceRecord;
   service?: MaintenanceService;
   vehicle: Vehicle;
-  asOf?: Date;
+  forecastMileage?: EffectiveForecastMileage;
+  asOf?: Date | string;
+  shopTimezone?: string | null;
 }): EffectiveMaintenanceInterval {
+  const asOfKey = resolveForecastAsOfDate({ shopTimezone, now: asOf });
   const hasMileageOverride = record.mileageIntervalOverride !== null && record.mileageIntervalOverride !== undefined;
   const hasTimeOverride = record.timeIntervalValueOverride !== null && record.timeIntervalValueOverride !== undefined;
   const hasPriceOverride = record.priceOverrideCents !== null && record.priceOverrideCents !== undefined;
@@ -142,14 +157,15 @@ export function resolveMaintenanceInterval({
   let daysUntilDue: number | null = null;
   const lifeValues: number[] = [];
   const reasons: string[] = [];
+  const mileageForForecast = forecastMileage ? forecastMileage.mileage : vehicle.currentMileage;
 
   if (mileageInterval) {
-    if (record.lastCompletedMileage === null || record.lastCompletedMileage === undefined || vehicle.currentMileage === null || vehicle.currentMileage === undefined) {
+    if (record.lastCompletedMileage === null || record.lastCompletedMileage === undefined || mileageForForecast === null || mileageForForecast === undefined) {
       statuses.push("NOT_ENOUGH_HISTORY");
-      reasons.push("Unable to calculate until current mileage and last completed mileage are entered.");
+      reasons.push("Unable to calculate until latest known mileage and last completed mileage are entered.");
     } else {
       nextDueMileage = record.lastCompletedMileage + mileageInterval;
-      milesUntilDue = nextDueMileage - vehicle.currentMileage;
+      milesUntilDue = nextDueMileage - mileageForForecast;
       lifeValues.push(remainingPercent(milesUntilDue, mileageInterval));
       if (milesUntilDue < 0) {
         statuses.push("OVERDUE");
@@ -178,7 +194,7 @@ export function resolveMaintenanceInterval({
       reasons.push("Unable to calculate until last completed date is entered.");
     } else {
       nextDueDate = addTimeInterval(record.lastCompletedDate, timeIntervalValue, timeIntervalUnit);
-      daysUntilDue = Math.ceil((new Date(`${nextDueDate}T12:00:00Z`).getTime() - asOf.getTime()) / dayMs);
+      daysUntilDue = calendarDaysBetween(asOfKey, nextDueDate);
       const totalDays = Math.max(1, (timeIntervalToMonths(timeIntervalValue, timeIntervalUnit) ?? 0) * 30.4375);
       lifeValues.push(remainingPercent(daysUntilDue, totalDays));
       if (daysUntilDue < 0) {
@@ -216,21 +232,21 @@ export function resolveMaintenanceInterval({
   } else if (status === "OVERDUE") {
     const parts = [
       milesUntilDue !== null && milesUntilDue < 0 ? `${Math.abs(milesUntilDue).toLocaleString()} miles` : "",
-      daysUntilDue !== null && daysUntilDue < 0 ? `${Math.abs(daysUntilDue)} days` : "",
+      daysUntilDue !== null && daysUntilDue < 0 ? formatDayCount(daysUntilDue) : "",
     ].filter(Boolean);
     dueText = `Overdue by ${parts.join(" and ")}`;
   } else if (status === "DUE") {
-    dueText = `Due now by ${cause || "interval"}`;
+    dueText = cause === "time" ? "Due today" : `Due now by ${cause || "interval"}`;
   } else if (status === "DUE_SOON") {
-    if (cause === "time" && daysUntilDue !== null) dueText = `Due in ${daysUntilDue} days`;
+    if (cause === "time" && daysUntilDue !== null) dueText = `Due in ${formatDayCount(daysUntilDue)}`;
     else if (milesUntilDue !== null) dueText = `Due in ${milesUntilDue.toLocaleString()} miles`;
     else dueText = `Due soon by ${cause || "interval"}`;
   } else if (milesUntilDue !== null && daysUntilDue !== null) {
-    dueText = `Due in ${milesUntilDue.toLocaleString()} miles or ${daysUntilDue} days`;
+    dueText = `Due in ${milesUntilDue.toLocaleString()} miles or ${formatDayCount(daysUntilDue)}`;
   } else if (milesUntilDue !== null) {
     dueText = `Due in ${milesUntilDue.toLocaleString()} miles`;
   } else if (daysUntilDue !== null) {
-    dueText = `Due in ${daysUntilDue} days`;
+    dueText = `Due in ${formatDayCount(daysUntilDue)}`;
   }
 
   return {
@@ -255,6 +271,12 @@ export function resolveMaintenanceInterval({
     milesUntilDue,
     daysUntilDue,
     notEnoughHistoryReason: reasons[0],
+    forecastMileage: mileageForForecast ?? null,
+    forecastMileageKind: forecastMileage?.kind ?? "LEGACY",
+    latestKnownMileage: forecastMileage?.latestKnownMileage ?? null,
+    latestKnownDate: forecastMileage?.latestKnownDate ?? null,
+    forecastConfidence: forecastMileage?.confidence ?? null,
+    forecastConfidenceReason: forecastMileage?.confidenceReason,
   };
 }
 

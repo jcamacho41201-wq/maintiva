@@ -10,7 +10,8 @@ import { createInitialDemoState } from "@/lib/demo-data";
 
 describe("pilot workflow flow", () => {
   it("counts the seeded July 28 appointment as today's capacity", () => {
-    const metrics = getDashboardMetrics(createInitialDemoState());
+    const state = { ...createInitialDemoState(), forecastAsOfDate: "2026-07-28" };
+    const metrics = getDashboardMetrics(state);
 
     expect(metrics.appointmentsToday).toBe(1);
     expect(metrics.openBayCapacityHours).toBe(62);
@@ -22,8 +23,9 @@ describe("pilot workflow flow", () => {
       ({ record }) => record.outreachStatus !== "SCHEDULED",
     );
 
-    expect(jeepRecords).toHaveLength(2);
+    expect(jeepRecords).toHaveLength(3);
     expect(jeepRecords.map(({ record }) => record.serviceName)).toEqual(expect.arrayContaining([
+      "Brake Pads",
       "Cabin Air Filter",
       "Oil Change",
     ]));
@@ -32,7 +34,7 @@ describe("pilot workflow flow", () => {
   });
 
   it("updates dashboard metrics after booking selected maintenance", () => {
-    const state = createInitialDemoState();
+    const state = { ...createInitialDemoState(), forecastAsOfDate: "2026-07-28" };
     const before = getDashboardMetrics(state);
     const selectedIds = [
       "item-veh-jeep-oil-change",

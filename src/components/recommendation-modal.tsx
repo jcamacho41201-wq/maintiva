@@ -13,12 +13,13 @@ import {
   type VehicleMaintenanceRecord,
 } from "@/lib/demo-data";
 import { vehicleLabel } from "@/lib/demo-calculations";
-import { formatCurrency } from "@/lib/utils";
+import { currentDateInTimeZone, formatCurrency } from "@/lib/utils";
 
 type Props = {
   customer: Customer;
   vehicle: Vehicle;
   records: VehicleMaintenanceRecord[];
+  shopTimezone: string;
   onClose: () => void;
   onSendRecommendation: (input: {
     customerId: string;
@@ -43,6 +44,7 @@ export function RecommendationModal({
   customer,
   vehicle,
   records,
+  shopTimezone,
   onClose,
   onSendRecommendation,
   onBookAppointment,
@@ -56,7 +58,7 @@ export function RecommendationModal({
       .map((record) => record.serviceName.toLowerCase())
       .join(", ")}. We can bundle these services into one visit. Use this link to choose a time that works for you: [Booking Link]`,
   );
-  const [date, setDate] = useState("2026-07-28");
+  const [date, setDate] = useState(() => currentDateInTimeZone(shopTimezone));
   const [time, setTime] = useState("09:00");
   const [status, setStatus] = useState<Appointment["status"]>("CONFIRMED");
   const [channel, setChannel] = useState<OutreachChannel>("TEXT");
