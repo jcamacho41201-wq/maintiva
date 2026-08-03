@@ -380,6 +380,43 @@ export type CustomerBookingLink = {
   createdAt: string;
 };
 
+export type SmartMaintenanceBlock = {
+  id: string;
+  shopId: string;
+  name: string;
+  description: string;
+  isActive: boolean;
+  timezone: string;
+  daysOfWeek: number[];
+  startMinute: number;
+  endMinute: number;
+  serviceDefinitionIds: string[];
+  maxVehicles: number;
+  maxLaborMinutes: number;
+  minimumNoticeMinutes: number;
+  maximumHorizonDays: number;
+  slotIntervalMinutes: 15 | 30 | 60;
+  approvalRequired: true;
+  internalNotes: string;
+  createdByUserId?: string;
+  archivedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SmartMaintenanceBlockBlackout = {
+  id: string;
+  shopId: string;
+  blockId?: string | null;
+  startsAt: string;
+  endsAt: string;
+  reason: string;
+  isFullDay: boolean;
+  createdByUserId?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type RevenueOpportunityRecord = {
   id: string;
   shopId: string;
@@ -423,6 +460,8 @@ export type DemoState = {
   bookingWindows: BookingWindow[];
   bookingBlackouts: ShopBookingBlackout[];
   customerBookingLinks: CustomerBookingLink[];
+  smartMaintenanceBlocks: SmartMaintenanceBlock[];
+  smartMaintenanceBlockBlackouts: SmartMaintenanceBlockBlackout[];
   importHistory: ImportHistoryRecord[];
   seededAt: string;
 };
@@ -524,6 +563,33 @@ export const defaultBookingWindows: BookingWindow[] = [1, 2, 3, 4, 5].map((dayOf
   endMinute: 17 * 60,
   isActive: true,
 }));
+
+export const defaultSmartMaintenanceBlocks: SmartMaintenanceBlock[] = [
+  {
+    id: "smart-block-quick-maintenance",
+    shopId: demoShop.id,
+    name: "Quick Maintenance",
+    description: "Controlled-capacity lane for oil, tire, and filter work.",
+    isActive: true,
+    timezone: demoShop.timezone,
+    daysOfWeek: [1, 2, 3, 4, 5],
+    startMinute: 8 * 60,
+    endMinute: 12 * 60,
+    serviceDefinitionIds: serviceDefinitions
+      .filter((service) => ["Oil Change", "Tire Rotation", "Cabin Air Filter", "Engine Air Filter"].includes(service.name))
+      .map((service) => service.id),
+    maxVehicles: 3,
+    maxLaborMinutes: 180,
+    minimumNoticeMinutes: 1440,
+    maximumHorizonDays: 30,
+    slotIntervalMinutes: 30,
+    approvalRequired: true,
+    internalNotes: "Advisor approval stays required for every customer request.",
+    createdByUserId: "user-owner",
+    createdAt: demoSeedTimestamp.toISOString(),
+    updatedAt: demoSeedTimestamp.toISOString(),
+  },
+];
 
 export function defaultServiceBookingRule(service: MaintenanceService): ServiceBookingRule {
   const diagnostics = service.name.toLowerCase().includes("diagnostic");
@@ -1034,6 +1100,8 @@ export const initialDemoState: DemoState = {
   bookingWindows: defaultBookingWindows,
   bookingBlackouts: [],
   customerBookingLinks: [],
+  smartMaintenanceBlocks: defaultSmartMaintenanceBlocks,
+  smartMaintenanceBlockBlackouts: [],
   importHistory,
   seededAt: demoSeedTimestamp.toISOString(),
 };

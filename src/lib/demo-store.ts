@@ -13,6 +13,8 @@ import {
   type ServiceBookingIntakeOption,
   type ServiceBookingRule,
   type ShopBookingSettings,
+  type SmartMaintenanceBlock,
+  type SmartMaintenanceBlockBlackout,
   type VehicleDrivingProfile,
   type VehicleMileageReading,
   type OutreachRecord,
@@ -70,6 +72,8 @@ const authenticatedLoadingSnapshot: DemoState = {
   importHistory: [],
   outreachRecords: [],
   appointments: [],
+  smartMaintenanceBlocks: [],
+  smartMaintenanceBlockBlackouts: [],
   seededAt: "",
 };
 export type BookingLinkResult = {
@@ -114,6 +118,33 @@ export type ServiceBookingRuleInput = {
   weekdays: number[];
   startMinute: number;
   endMinute: number;
+};
+
+export type SmartMaintenanceBlockInput = {
+  id?: string;
+  name: string;
+  description?: string;
+  isActive: boolean;
+  timezone?: string;
+  daysOfWeek: number[];
+  startMinute: number;
+  endMinute: number;
+  serviceDefinitionIds: string[];
+  maxVehicles: number;
+  maxLaborMinutes: number;
+  minimumNoticeMinutes: number;
+  maximumHorizonDays: number;
+  slotIntervalMinutes: 15 | 30 | 60;
+  internalNotes?: string;
+};
+
+export type SmartMaintenanceBlockBlackoutInput = {
+  id?: string;
+  blockId?: string | null;
+  startsAt: string;
+  endsAt: string;
+  reason?: string;
+  isFullDay?: boolean;
 };
 
 function getServerSnapshot() {
@@ -170,6 +201,8 @@ function normalizeState(state: DemoState): DemoState {
     bookingWindows: state.bookingWindows ?? baseline.bookingWindows ?? defaultBookingWindows,
     bookingBlackouts: state.bookingBlackouts ?? baseline.bookingBlackouts ?? [],
     customerBookingLinks: state.customerBookingLinks ?? baseline.customerBookingLinks ?? [],
+    smartMaintenanceBlocks: state.smartMaintenanceBlocks ?? baseline.smartMaintenanceBlocks ?? [],
+    smartMaintenanceBlockBlackouts: state.smartMaintenanceBlockBlackouts ?? baseline.smartMaintenanceBlockBlackouts ?? [],
   };
 }
 
@@ -540,6 +573,127 @@ export function useDemoStore() {
             };
             return { ...service, bookingRule: rule };
           }),
+        }));
+        return Promise.resolve({ ok: true, message: undefined });
+      },
+      saveSmartMaintenanceBlock(input: SmartMaintenanceBlockInput) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "saveSmartMaintenanceBlock", payload: input });
+        }
+
+        update((draft) => {
+          const now = new Date().toISOString();
+          const existing = input.id
+            ? draft.smartMaintenanceBlocks.find((block) => block.id === input.id)
+            : undefined;
+          const block: SmartMaintenanceBlock = {
+            id: existing?.id ?? `smart-block-${Date.now()}`,
+            shopId: draft.shop.id,
+            name: input.name.trim(),
+            description: input.description?.trim() ?? "",
+            isActive: input.isActive,
+            timezone: input.timezone || draft.shop.timezone,
+            daysOfWeek: Array.from(new Set(input.daysOfWeek)).sort(),
+            startMinute: input.startMinute,
+            endMinute: input.endMinute,
+            serviceDefinitionIds: Array.from(new Set(input.serviceDefinitionIds)),
+            maxVehicles: input.maxVehicles,
+            maxLaborMinutes: input.maxLaborMinutes,
+            minimumNoticeMinutes: input.minimumNoticeMinutes,
+            maximumHorizonDays: input.maximumHorizonDays,
+            slotIntervalMinutes: input.slotIntervalMinutes,
+            approvalRequired: true,
+            internalNotes: input.internalNotes?.trim() ?? "",
+            createdByUserId: existing?.createdByUserId ?? actorUserId(draft),
+            archivedAt: existing?.archivedAt,
+            createdAt: existing?.createdAt ?? now,
+            updatedAt: now,
+          };
+          return {
+            ...draft,
+            smartMaintenanceBlocks: existing
+              ? draft.smartMaintenanceBlocks.map((item) => item.id === block.id ? block : item)
+              : [block, ...draft.smartMaintenanceBlocks],
+          };
+        });
+        return Promise.resolve({ ok: true, message: undefined });
+      },
+      deleteSmartMaintenanceBlock(blockId: string) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "deleteSmartMaintenanceBlock", id: blockId });
+        }
+
+        update((draft) => ({
+          ...draft,
+          smartMaintenanceBlocks: draft.smartMaintenanceBlocks.map((block) =>
+            block.id === blockId
+              ? { ...block, isActive: false, archivedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
+              : block,
+          ),
+        }));
+        return Promise.resolve({ ok: true, message: undefined });
+      },
+      duplicateSmartMaintenanceBlock(blockId: string) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "duplicateSmartMaintenanceBlock", id: blockId });
+        }
+
+        update((draft) => {
+          const source = draft.smartMaintenanceBlocks.find((block) => block.id === blockId);
+          if (!source) return draft;
+          const now = new Date().toISOString();
+          const duplicate: SmartMaintenanceBlock = {
+            ...source,
+            id: `smart-block-${Date.now()}`,
+            name: `${source.name} copy`,
+            isActive: false,
+            archivedAt: undefined,
+            createdAt: now,
+            updatedAt: now,
+          };
+          return { ...draft, smartMaintenanceBlocks: [duplicate, ...draft.smartMaintenanceBlocks] };
+        });
+        return Promise.resolve({ ok: true, message: undefined });
+      },
+      saveSmartMaintenanceBlockBlackout(input: SmartMaintenanceBlockBlackoutInput) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "saveSmartMaintenanceBlockBlackout", payload: input });
+        }
+
+        update((draft) => {
+          const now = new Date().toISOString();
+          const existing = input.id
+            ? draft.smartMaintenanceBlockBlackouts.find((blackout) => blackout.id === input.id)
+            : undefined;
+          const blackout: SmartMaintenanceBlockBlackout = {
+            id: existing?.id ?? `smart-blackout-${Date.now()}`,
+            shopId: draft.shop.id,
+            blockId: input.blockId ?? null,
+            startsAt: input.startsAt,
+            endsAt: input.endsAt,
+            reason: input.reason?.trim() || "Unavailable",
+            isFullDay: input.isFullDay ?? false,
+            createdByUserId: existing?.createdByUserId ?? actorUserId(draft),
+            createdAt: existing?.createdAt ?? now,
+            updatedAt: now,
+          };
+          return {
+            ...draft,
+            smartMaintenanceBlockBlackouts: existing
+              ? draft.smartMaintenanceBlockBlackouts.map((item) => item.id === blackout.id ? blackout : item)
+              : [blackout, ...draft.smartMaintenanceBlockBlackouts],
+          };
+        });
+        return Promise.resolve({ ok: true, message: undefined });
+      },
+      deleteSmartMaintenanceBlockBlackout(blackoutId: string) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "deleteSmartMaintenanceBlockBlackout", id: blackoutId });
+        }
+
+        update((draft) => ({
+          ...draft,
+          smartMaintenanceBlockBlackouts: draft.smartMaintenanceBlockBlackouts.filter((blackout) => blackout.id !== blackoutId),
         }));
         return Promise.resolve({ ok: true, message: undefined });
       },

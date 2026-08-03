@@ -31,6 +31,22 @@ describe("production readiness safeguards", () => {
     expect(bookingRoute).toContain("customerBookingDisabledResponse");
   });
 
+  it("keeps Smart Maintenance Blocks disabled by default and optional in state loading", () => {
+    const envExample = source(".env.example");
+    const flags = source("src/lib/feature-flags.ts");
+    const pilotState = source("src/lib/pilot-state.ts");
+    const settingsPage = source("src/app/settings/page.tsx");
+
+    expect(envExample).toContain('SMART_MAINTENANCE_BLOCKS_ENABLED="false"');
+    expect(envExample).toContain('NEXT_PUBLIC_SMART_MAINTENANCE_BLOCKS_ENABLED="false"');
+    expect(flags).toContain('SMART_MAINTENANCE_BLOCKS_ENABLED === "true"');
+    expect(flags).toContain('NEXT_PUBLIC_SMART_MAINTENANCE_BLOCKS_ENABLED === "true"');
+    expect(pilotState).toContain("assertSmartMaintenanceBlocksFeatureEnabled");
+    expect(pilotState).toContain("if (!isSmartMaintenanceBlocksEnabled())");
+    expect(pilotState).toContain("isMissingSmartMaintenanceBlocksSchema");
+    expect(settingsPage).toContain("isSmartMaintenanceBlocksEnabled");
+  });
+
   it("exposes a safe health endpoint without leaking environment values", () => {
     const healthRoute = source("src/app/api/health/route.ts");
     const proxy = source("src/proxy.ts");

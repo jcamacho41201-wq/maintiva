@@ -2,10 +2,10 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { CalendarClock, FileUp, Save, ShieldCheck } from "lucide-react";
+import { CalendarClock, FileUp, Save, ShieldCheck, SquareStack } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { useDemoStore } from "@/lib/demo-store";
-import { isCustomerBookingEnabled } from "@/lib/feature-flags";
+import { isCustomerBookingEnabled, isSmartMaintenanceBlocksEnabled } from "@/lib/feature-flags";
 import { formatDate } from "@/lib/utils";
 
 const dayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -22,6 +22,7 @@ function timeToMinutes(value: string) {
 export default function SettingsPage() {
   const { state, saveBookingSettings } = useDemoStore();
   const customerBookingEnabled = isCustomerBookingEnabled();
+  const smartMaintenanceBlocksEnabled = isSmartMaintenanceBlocksEnabled();
   const settings = state.bookingSettings!;
   const [form, setForm] = useState({
     onlineBookingEnabled: settings.onlineBookingEnabled,
@@ -88,6 +89,12 @@ export default function SettingsPage() {
             href: "/capacity",
             icon: CalendarClock,
           },
+          ...(smartMaintenanceBlocksEnabled ? [{
+            title: "Smart Maintenance Blocks",
+            description: "Control recurring request windows by service, vehicle count, and labor minutes.",
+            href: "/settings/smart-maintenance-blocks",
+            icon: SquareStack,
+          }] : []),
           {
             title: "Tenant Controls",
             description: "Authenticated pilot data stays scoped to the current shop context.",

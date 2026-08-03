@@ -248,6 +248,8 @@ async function main() {
           bookingWindows: defaultBookingWindows,
           bookingBlackouts: [],
           customerBookingLinks: [],
+          smartMaintenanceBlocks: [],
+          smartMaintenanceBlockBlackouts: [],
           importHistory,
           seededAt: new Date().toISOString(),
         },
