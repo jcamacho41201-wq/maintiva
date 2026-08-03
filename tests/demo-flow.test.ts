@@ -22,8 +22,9 @@ describe("pilot workflow flow", () => {
       ({ record }) => record.outreachStatus !== "SCHEDULED",
     );
 
-    expect(jeepRecords).toHaveLength(2);
+    expect(jeepRecords).toHaveLength(3);
     expect(jeepRecords.map(({ record }) => record.serviceName)).toEqual(expect.arrayContaining([
+      "Brake Pads",
       "Cabin Air Filter",
       "Oil Change",
     ]));

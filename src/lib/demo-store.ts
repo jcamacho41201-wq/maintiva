@@ -1670,6 +1670,9 @@ export function useDemoStore() {
           const appointments = [...draft.appointments];
           const customerByKey = new Map<string, string>();
           const vehicleByKey = new Map<string, string>();
+          const importedMileageKeys = new Set(
+            mileageReadings.map((reading) => `${reading.vehicleId}|${reading.readingDate}|${reading.readingMileage}`),
+          );
 
           importedRows.forEach((row, index) => {
             const normalized = row.normalized;
@@ -1703,9 +1706,11 @@ export function useDemoStore() {
             if (importEvent.ambiguousConflict) return;
             const importsCompletedService = importEvent.importsCompletedService;
             const importsDeclinedWork = importEvent.importsDeclinedWork;
-            const effectiveVehicleMileage = currentMileage ?? (
-              importsCompletedService && serviceMileage !== null ? serviceMileage : null
-            );
+            const serviceDate = text(normalized.serviceDate);
+            const actualCurrentMileage = importsCompletedService && serviceDate ? null : currentMileage;
+            const historicalServiceMileage = importsCompletedService && serviceDate && serviceMileage === null
+              ? currentMileage
+              : serviceMileage;
             const customer = {
               id: customerId,
               shopId: draft.shop.id,
@@ -1736,28 +1741,33 @@ export function useDemoStore() {
               engine: "",
               trim: "",
               vehicleType: "Passenger vehicle",
-              currentMileage: effectiveVehicleMileage ?? 0,
+              currentMileage: actualCurrentMileage ?? 0,
               estimatedAnnualMileage: 12_000,
               overallHealth: 76,
-              lastServiceDate: text(normalized.serviceDate) || new Date().toISOString().slice(0, 10),
+              lastServiceDate: serviceDate || new Date().toISOString().slice(0, 10),
             };
             if (!customer.firstName || !customer.lastName || !vehicle.make || !vehicle.model || !serviceName) return;
             if (!customers.some((item) => item.id === customerId)) customers.push(customer);
             vehicleId = vehicle.id;
             if (!vehicles.some((item) => item.id === vehicleId)) vehicles.push(vehicle);
-            if (currentMileage !== null) {
-              mileageReadings.push({
-                id: `mile-import-current-${now}-${index}`,
-                shopId: draft.shop.id,
-                vehicleId,
-                readingMileage: currentMileage,
-                readingDate: text(normalized.serviceDate) || new Date().toISOString().slice(0, 10),
-                source: "SERVICE_HISTORY_IMPORT",
-                verificationStatus: "IMPORTED",
-                anomalyStatus: "NONE",
-                includedInForecast: true,
-                sourceReferenceType: "ImportRowRecord",
-              });
+            if (actualCurrentMileage !== null) {
+              const readingDate = new Date().toISOString().slice(0, 10);
+              const mileageKey = `${vehicleId}|${readingDate}|${actualCurrentMileage}`;
+              if (!importedMileageKeys.has(mileageKey)) {
+                importedMileageKeys.add(mileageKey);
+                mileageReadings.push({
+                  id: `mile-import-current-${now}-${index}`,
+                  shopId: draft.shop.id,
+                  vehicleId,
+                  readingMileage: actualCurrentMileage,
+                  readingDate,
+                  source: "SHOP_MANUAL_ENTRY",
+                  verificationStatus: "IMPORTED",
+                  anomalyStatus: "NONE",
+                  includedInForecast: true,
+                  sourceReferenceType: "ImportRowRecord",
+                });
+              }
             }
             if (row.entities.customer.key) customerByKey.set(row.entities.customer.key, customerId);
             if (row.entities.vehicle.key) vehicleByKey.set(row.entities.vehicle.key, vehicleId);
@@ -1769,8 +1779,8 @@ export function useDemoStore() {
               vehicleId,
               serviceId: "svc-imported",
               serviceName,
-              lastCompletedDate: importsCompletedService ? text(normalized.serviceDate) || new Date().toISOString().slice(0, 10) : null,
-              lastCompletedMileage: importsCompletedService ? serviceMileage : null,
+              lastCompletedDate: importsCompletedService ? serviceDate || new Date().toISOString().slice(0, 10) : null,
+              lastCompletedMileage: importsCompletedService ? historicalServiceMileage : null,
               recommendedMileageInterval: 12_000,
               recommendedTimeIntervalMonths: 12,
               mileageIntervalOverride: null,
@@ -1788,14 +1798,16 @@ export function useDemoStore() {
               createdByUserId: actorUserId(draft),
               updatedByUserId: actorUserId(draft),
             });
-            if (importsCompletedService && text(normalized.serviceDate)) {
-              if (serviceMileage !== null && serviceMileage !== currentMileage) {
+            if (importsCompletedService && serviceDate) {
+              const mileageKey = `${vehicleId}|${serviceDate}|${historicalServiceMileage ?? "missing"}`;
+              if (historicalServiceMileage !== null && !importedMileageKeys.has(mileageKey)) {
+                importedMileageKeys.add(mileageKey);
                 mileageReadings.push({
                   id: `mile-import-service-${now}-${index}`,
                   shopId: draft.shop.id,
                   vehicleId,
-                  readingMileage: serviceMileage,
-                  readingDate: text(normalized.serviceDate),
+                  readingMileage: historicalServiceMileage,
+                  readingDate: serviceDate,
                   source: "SERVICE_HISTORY_IMPORT",
                   verificationStatus: "IMPORTED",
                   anomalyStatus: "NONE",
@@ -1809,8 +1821,8 @@ export function useDemoStore() {
                 customerId,
                 vehicleId,
                 serviceName,
-                completedAt: text(normalized.serviceDate),
-                mileage: serviceMileage,
+                completedAt: serviceDate,
+                mileage: historicalServiceMileage,
                 priceCents,
                 notes: "Imported from CSV.",
               });

@@ -8,6 +8,7 @@ import {
   type Vehicle,
   type VehicleMaintenanceRecord,
 } from "@/lib/demo-data";
+import { resolveEffectiveForecastMileage } from "@/lib/adaptive-mileage";
 import { resolveMaintenanceInterval } from "@/lib/service-intervals";
 
 function addHours(date: Date, hours: number) {
@@ -30,7 +31,8 @@ export function calculateMaintenanceStatus(
   state?: DemoState,
 ) {
   const service = state?.services.find((item) => item.id === record.serviceId);
-  const effective = resolveMaintenanceInterval({ record, service, vehicle, asOf });
+  const forecastMileage = state ? resolveVehicleForecastMileage(state, vehicle, asOf) : undefined;
+  const effective = resolveMaintenanceInterval({ record, service, vehicle, forecastMileage, asOf });
 
   return {
     status: effective.status === "NOT_ENOUGH_HISTORY" ? "HEALTHY" as MaintenanceStatus : effective.status,
@@ -43,7 +45,27 @@ export function calculateMaintenanceStatus(
     nextDueDate: effective.nextDueDate,
     sourceLabel: effective.sourceLabel,
     thresholdCause: effective.thresholdCause,
+    forecastMileage: effective.forecastMileage,
+    forecastMileageKind: effective.forecastMileageKind,
+    latestKnownMileage: effective.latestKnownMileage,
+    latestKnownDate: effective.latestKnownDate,
+    forecastConfidence: effective.forecastConfidence,
   };
+}
+
+export function resolveVehicleForecastMileage(state: DemoState, vehicle: Vehicle, asOf: Date | string = asOfDate) {
+  const profile = state.drivingProfiles.find((item) => item.vehicleId === vehicle.id);
+  return resolveEffectiveForecastMileage({
+    shopId: state.shop.id,
+    vehicleId: vehicle.id,
+    readings: state.mileageReadings.filter((reading) => reading.vehicleId === vehicle.id),
+    shopDefaultAnnualMileage: state.shop.defaultAnnualMileage,
+    customerReportedAnnualMileage: profile?.customerReportedAnnualMileage ?? vehicle.estimatedAnnualMileage,
+    customerReportedAt: profile?.customerReportedAt ?? null,
+    customerReportedByUserId: profile?.customerReportedByUserId ?? null,
+    existingProfile: profile,
+    asOf,
+  });
 }
 
 export function getRecordStatus(state: DemoState, record: VehicleMaintenanceRecord) {

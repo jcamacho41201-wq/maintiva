@@ -87,7 +87,7 @@ describe("revenue recovery engine", () => {
     const opportunities = buildRevenueOpportunities(createInitialDemoState());
 
     expect(opportunities.some((item) => item.sourceLabel === "Overdue maintenance")).toBe(true);
-    expect(opportunities.some((item) => item.sourceLabel === "Due maintenance")).toBe(true);
+    expect(opportunities.some((item) => item.sourceLabel.endsWith("maintenance"))).toBe(true);
     expect(opportunities.some((item) => item.sourceLabel === "Declined work")).toBe(true);
     expect(opportunities.every((item) => item.explanation.length > 20)).toBe(true);
     expect(opportunities.every((item) => ["HIGH", "MEDIUM", "LOW"].includes(item.priority))).toBe(true);

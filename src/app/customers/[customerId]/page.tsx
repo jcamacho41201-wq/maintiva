@@ -11,6 +11,7 @@ import {
   customerName,
   getRecordStatus,
   getRecommendedRecords,
+  resolveVehicleForecastMileage,
   vehicleLabel,
 } from "@/lib/demo-calculations";
 import { getOpenRevenueOpportunitiesForCustomer, type RevenueOpportunity } from "@/lib/revenue-recovery";
@@ -55,8 +56,8 @@ function opportunityStatusLabel(stage: RevenueOpportunity["stage"]) {
 }
 
 function vehicleMileageDisplayValue(state: ReturnType<typeof useDemoStore>["state"], vehicle: Vehicle) {
-  const hasMileageFact = vehicle.currentMileage !== 0 || state.mileageReadings.some((reading) => reading.vehicleId === vehicle.id);
-  return hasMileageFact ? vehicle.currentMileage : null;
+  const forecastMileage = resolveVehicleForecastMileage(state, vehicle);
+  return forecastMileage.latestKnownMileage ?? (vehicle.currentMileage !== 0 ? vehicle.currentMileage : null);
 }
 
 export default function CustomerDetailPage() {
@@ -283,6 +284,7 @@ export default function CustomerDetailPage() {
         {vehicles.map((vehicle) => {
           const items = state.maintenanceRecords.filter((item) => item.vehicleId === vehicle.id);
           const recommended = getRecommendedRecords(state, vehicle.id);
+          const forecastMileage = resolveVehicleForecastMileage(state, vehicle);
           return (
             <Card key={vehicle.id}>
               <CardHeader className="flex flex-row items-start justify-between gap-3">
@@ -295,11 +297,16 @@ export default function CustomerDetailPage() {
                 </Badge>
               </CardHeader>
               <CardContent className="space-y-5">
-                <div className="grid grid-cols-2 gap-3 text-sm">
+                <div className="grid gap-3 text-sm sm:grid-cols-3">
                   <div className="rounded-lg border border-zinc-200 p-3">
                     <Gauge className="mb-2 h-4 w-4 text-violet-900" />
-                    <p className="text-zinc-500">Current mileage</p>
+                    <p className="text-zinc-500">Latest known mileage</p>
                     <p className="font-semibold">{formatMileage(vehicleMileageDisplayValue(state, vehicle))}</p>
+                  </div>
+                  <div className="rounded-lg border border-zinc-200 p-3">
+                    <Gauge className="mb-2 h-4 w-4 text-violet-900" />
+                    <p className="text-zinc-500">{forecastMileage.kind === "ACTUAL" ? "Actual current" : "Estimated current"}</p>
+                    <p className="font-semibold">{formatMileage(forecastMileage.mileage)}</p>
                   </div>
                   <div className="rounded-lg border border-zinc-200 p-3">
                     <ClipboardCheck className="mb-2 h-4 w-4 text-violet-900" />

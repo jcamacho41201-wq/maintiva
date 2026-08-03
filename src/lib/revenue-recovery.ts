@@ -3,15 +3,18 @@ import {
   type Appointment,
   type DeclinedWorkRecord,
   type DemoState,
+  type DrivingProfileConfidence,
   type OutreachRecord,
   type RevenueOpportunityRecord,
   type VehicleMaintenanceRecord,
 } from "@/lib/demo-data";
 import {
   getRecommendedRecords,
+  resolveVehicleForecastMileage,
   vehicleLabel,
 } from "@/lib/demo-calculations";
 import { formatInterval, resolveMaintenanceInterval } from "@/lib/service-intervals";
+import type { ForecastMileageKind } from "@/lib/adaptive-mileage";
 
 const dayMs = 86_400_000;
 
@@ -46,6 +49,12 @@ export type RevenueOpportunity = {
   lastServiceDate?: string;
   lastServiceMileage?: number;
   currentMileage: number;
+  forecastMileage?: number;
+  forecastMileageKind?: ForecastMileageKind | "LEGACY";
+  forecastMileageConfidence?: DrivingProfileConfidence | "NONE" | null;
+  forecastMileageReason?: string;
+  latestKnownMileage?: number;
+  latestKnownDate?: string;
   dueDate?: string;
   dueMileage?: number;
   daysOverdue: number;
@@ -129,11 +138,24 @@ function priorityFor(input: {
   milesOverdue: number;
   estimatedRevenueCents: number;
   outreachStatus: string;
+  forecastMileageKind?: ForecastMileageKind | "LEGACY";
+  forecastMileageConfidence?: DrivingProfileConfidence | "NONE" | null;
 }) {
   if (input.outreachStatus === "SCHEDULED") {
     return {
       priority: "LOW" as const,
       priorityReason: "Appointment already booked.",
+    };
+  }
+  if (
+    input.source !== "DECLINED_WORK" &&
+    input.forecastMileageKind === "ESTIMATED" &&
+    input.forecastMileageConfidence === "LOW" &&
+    input.daysOverdue === 0
+  ) {
+    return {
+      priority: "LOW" as const,
+      priorityReason: "Needs advisor confirmation; mileage is estimated from limited odometer history.",
     };
   }
   if (
@@ -159,6 +181,19 @@ function priorityFor(input: {
     priority: "LOW" as const,
     priorityReason: "Lower urgency; keep available for capacity gaps.",
   };
+}
+
+function forecastExplanation(opportunity: {
+  forecastMileageKind?: ForecastMileageKind | "LEGACY";
+  latestKnownMileage?: number;
+  latestKnownDate?: string;
+  forecastMileageConfidence?: DrivingProfileConfidence | "NONE" | null;
+}) {
+  if (opportunity.forecastMileageKind !== "ESTIMATED" || !opportunity.latestKnownMileage || !opportunity.latestKnownDate) {
+    return "";
+  }
+  const confidence = opportunity.forecastMileageConfidence ? opportunity.forecastMileageConfidence.toLowerCase() : "low";
+  return ` Mileage is estimated from ${opportunity.latestKnownMileage.toLocaleString()} mi on ${opportunity.latestKnownDate}; ${confidence} confidence.`;
 }
 
 function stageFor(input: {
@@ -311,6 +346,7 @@ function buildPersistedRevenueOpportunities(state: DemoState): RevenueOpportunit
       if (!sourceRecordId) return null;
 
       const serviceName = opportunityServiceName(state, opportunity, maintenanceRecord, declinedWorkRecord);
+      const forecastMileage = resolveVehicleForecastMileage(state, vehicle);
       const lastOutreach = lastOutreachForOpportunity(state, {
         ...opportunity,
         customerName: `${customer.firstName} ${customer.lastName}`,
@@ -347,6 +383,12 @@ function buildPersistedRevenueOpportunities(state: DemoState): RevenueOpportunit
         lastServiceDate: declinedWorkRecord?.declinedAt ?? maintenanceRecord?.lastCompletedDate ?? undefined,
         lastServiceMileage: maintenanceRecord?.lastCompletedMileage ?? undefined,
         currentMileage: vehicle.currentMileage,
+        forecastMileage: forecastMileage.mileage ?? undefined,
+        forecastMileageKind: forecastMileage.kind,
+        forecastMileageConfidence: forecastMileage.confidence,
+        forecastMileageReason: forecastMileage.confidenceReason,
+        latestKnownMileage: forecastMileage.latestKnownMileage ?? undefined,
+        latestKnownDate: forecastMileage.latestKnownDate ?? undefined,
         dueDate: opportunity.dueDate,
         dueMileage: opportunity.dueMileage,
         daysOverdue: opportunity.daysOverdue,
@@ -396,7 +438,8 @@ function buildDerivedDemoRevenueOpportunities(state: DemoState): RevenueOpportun
     const appointment = appointmentForRecord(state, record);
     const outreach = state.outreachRecords.find((item) => item.id === record.outreachRecordId);
     const service = state.services.find((item) => item.id === record.serviceId);
-    const effective = resolveMaintenanceInterval({ record, service, vehicle });
+    const forecastMileage = resolveVehicleForecastMileage(state, vehicle);
+    const effective = resolveMaintenanceInterval({ record, service, vehicle, forecastMileage });
     const source: OpportunitySource =
       calculation.status === "OVERDUE" ? "OVERDUE_MAINTENANCE" : "DUE_MAINTENANCE";
     const daysOverdue = Math.max(0, -calculation.daysUntilDue);
@@ -407,7 +450,19 @@ function buildDerivedDemoRevenueOpportunities(state: DemoState): RevenueOpportun
       milesOverdue,
       estimatedRevenueCents: effective.priceCents,
       outreachStatus: record.outreachStatus,
+      forecastMileageKind: effective.forecastMileageKind,
+      forecastMileageConfidence: effective.forecastConfidence,
     });
+    const explanation = `${effective.serviceName} ${effective.dueText.toLowerCase()} based on ${formatInterval(
+      effective.mileageInterval,
+      effective.timeIntervalValue,
+      effective.timeIntervalUnit,
+    )}.${forecastExplanation({
+      forecastMileageKind: effective.forecastMileageKind,
+      latestKnownMileage: effective.latestKnownMileage ?? undefined,
+      latestKnownDate: effective.latestKnownDate ?? undefined,
+      forecastMileageConfidence: effective.forecastConfidence,
+    })}`;
 
     return {
       id: `opp-${record.id}`,
@@ -423,15 +478,17 @@ function buildDerivedDemoRevenueOpportunities(state: DemoState): RevenueOpportun
       serviceDefinitionId: record.serviceId ?? undefined,
       sourceRecordId: record.id,
       sourceType: "VehicleMaintenanceRecord",
-      explanation: `${effective.serviceName} ${effective.dueText.toLowerCase()} based on ${formatInterval(
-        effective.mileageInterval,
-        effective.timeIntervalValue,
-        effective.timeIntervalUnit,
-      )}.`,
+      explanation,
       ...priority,
       lastServiceDate: record.lastCompletedDate ?? undefined,
       lastServiceMileage: record.lastCompletedMileage ?? undefined,
       currentMileage: vehicle.currentMileage,
+      forecastMileage: effective.forecastMileage ?? undefined,
+      forecastMileageKind: effective.forecastMileageKind,
+      forecastMileageConfidence: effective.forecastConfidence,
+      forecastMileageReason: effective.forecastConfidenceReason,
+      latestKnownMileage: effective.latestKnownMileage ?? undefined,
+      latestKnownDate: effective.latestKnownDate ?? undefined,
       dueDate: effective.nextDueDate ?? undefined,
       dueMileage: effective.nextDueMileage ?? undefined,
       daysOverdue,
@@ -456,6 +513,7 @@ function buildDerivedDemoRevenueOpportunities(state: DemoState): RevenueOpportun
     const vehicle = state.vehicles.find((item) => item.id === record.vehicleId);
     const appointment = appointmentForRecord(state, record);
     const outreach = state.outreachRecords.find((item) => item.appointmentId === appointment?.id);
+    const forecastMileage = vehicle ? resolveVehicleForecastMileage(state, vehicle) : null;
     const daysOverdue = Math.max(0, daysBetween(record.declinedAt));
     const priority = priorityFor({
       source: "DECLINED_WORK",
@@ -485,6 +543,12 @@ function buildDerivedDemoRevenueOpportunities(state: DemoState): RevenueOpportun
       ...priority,
       lastServiceDate: record.declinedAt,
       currentMileage: vehicle?.currentMileage ?? 0,
+      forecastMileage: forecastMileage?.mileage ?? undefined,
+      forecastMileageKind: forecastMileage?.kind,
+      forecastMileageConfidence: forecastMileage?.confidence,
+      forecastMileageReason: forecastMileage?.confidenceReason,
+      latestKnownMileage: forecastMileage?.latestKnownMileage ?? undefined,
+      latestKnownDate: forecastMileage?.latestKnownDate ?? undefined,
       daysOverdue,
       milesOverdue: 0,
       estimatedRevenueCents: record.recommendedPriceCents,

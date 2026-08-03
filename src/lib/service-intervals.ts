@@ -1,5 +1,6 @@
 import {
   asOfDate,
+  type DrivingProfileConfidence,
   type MaintenanceService,
   type MaintenanceStatus,
   type OutreachThresholdType,
@@ -7,6 +8,7 @@ import {
   type Vehicle,
   type VehicleMaintenanceRecord,
 } from "@/lib/demo-data";
+import type { EffectiveForecastMileage, ForecastMileageKind } from "@/lib/adaptive-mileage";
 
 const dayMs = 86_400_000;
 
@@ -34,6 +36,12 @@ export type EffectiveMaintenanceInterval = {
   milesUntilDue: number | null;
   daysUntilDue: number | null;
   notEnoughHistoryReason?: string;
+  forecastMileage: number | null;
+  forecastMileageKind: ForecastMileageKind | "LEGACY";
+  latestKnownMileage: number | null;
+  latestKnownDate: string | null;
+  forecastConfidence: DrivingProfileConfidence | "NONE" | null;
+  forecastConfidenceReason?: string;
 };
 
 function serviceName(record: VehicleMaintenanceRecord, service?: MaintenanceService) {
@@ -94,11 +102,13 @@ export function resolveMaintenanceInterval({
   record,
   service,
   vehicle,
+  forecastMileage,
   asOf = asOfDate,
 }: {
   record: VehicleMaintenanceRecord;
   service?: MaintenanceService;
   vehicle: Vehicle;
+  forecastMileage?: EffectiveForecastMileage;
   asOf?: Date;
 }): EffectiveMaintenanceInterval {
   const hasMileageOverride = record.mileageIntervalOverride !== null && record.mileageIntervalOverride !== undefined;
@@ -142,14 +152,15 @@ export function resolveMaintenanceInterval({
   let daysUntilDue: number | null = null;
   const lifeValues: number[] = [];
   const reasons: string[] = [];
+  const mileageForForecast = forecastMileage ? forecastMileage.mileage : vehicle.currentMileage;
 
   if (mileageInterval) {
-    if (record.lastCompletedMileage === null || record.lastCompletedMileage === undefined || vehicle.currentMileage === null || vehicle.currentMileage === undefined) {
+    if (record.lastCompletedMileage === null || record.lastCompletedMileage === undefined || mileageForForecast === null || mileageForForecast === undefined) {
       statuses.push("NOT_ENOUGH_HISTORY");
-      reasons.push("Unable to calculate until current mileage and last completed mileage are entered.");
+      reasons.push("Unable to calculate until latest known mileage and last completed mileage are entered.");
     } else {
       nextDueMileage = record.lastCompletedMileage + mileageInterval;
-      milesUntilDue = nextDueMileage - vehicle.currentMileage;
+      milesUntilDue = nextDueMileage - mileageForForecast;
       lifeValues.push(remainingPercent(milesUntilDue, mileageInterval));
       if (milesUntilDue < 0) {
         statuses.push("OVERDUE");
@@ -255,6 +266,12 @@ export function resolveMaintenanceInterval({
     milesUntilDue,
     daysUntilDue,
     notEnoughHistoryReason: reasons[0],
+    forecastMileage: mileageForForecast ?? null,
+    forecastMileageKind: forecastMileage?.kind ?? "LEGACY",
+    latestKnownMileage: forecastMileage?.latestKnownMileage ?? null,
+    latestKnownDate: forecastMileage?.latestKnownDate ?? null,
+    forecastConfidence: forecastMileage?.confidence ?? null,
+    forecastConfidenceReason: forecastMileage?.confidenceReason,
   };
 }
 

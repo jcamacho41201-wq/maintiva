@@ -100,6 +100,24 @@ describe("CSV import workflow", () => {
     expect(preview.rows[1].entities.child.status).toBe("DUPLICATE");
   });
 
+  it("describes service-date mileage as historical evidence in the preview", () => {
+    const rows = parseCsv(
+      [
+        "First Name,Last Name,Email,VIN,Year,Make,Model,Mileage,Service Name,Service Date,Price,Labor Hours,Status",
+        "Alex,History,alex-history@example.com,WA1EAAF45LA100099,2019,Toyota,Tacoma,45000,Oil Change,2025-01-15,90,0.5,Completed",
+      ].join("\n"),
+    );
+    const preview = previewImport({
+      rows,
+      mapping: detectColumnMapping(Object.keys(rows[0])),
+      importType: "COMBINED",
+      state: createInitialDemoState(),
+    });
+
+    expect(preview.rows[0].normalized.currentMileage).toBe(45_000);
+    expect(preview.rows[0].entities.child.message).toContain("historical mileage reading dated 2025-01-15");
+  });
+
   it("validates customers, vehicles, service values, and VIN length", () => {
     const rows = parseCsv(
       "Full Name,Email,Phone,VIN,Year,Make,Model,Current Mileage,Service Name,Price,Labor Hours\nBad Email,bad-email,404,SHORT,1800,Honda,Accord,-1,Oil Change,-5,0",

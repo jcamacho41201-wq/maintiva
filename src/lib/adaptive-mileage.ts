@@ -34,6 +34,23 @@ export type DrivingProfileCalculation = Omit<VehicleDrivingProfile, "id"> & {
   latestMileageReading?: MileageReadingDraft;
 };
 
+export type ForecastMileageKind = "ACTUAL" | "ESTIMATED" | "UNAVAILABLE";
+
+export type EffectiveForecastMileage = {
+  mileage: number | null;
+  kind: ForecastMileageKind;
+  latestKnownMileage: number | null;
+  latestKnownDate: string | null;
+  latestKnownReading?: MileageReadingDraft;
+  annualMileage: number | null;
+  dailyMileage: number | null;
+  source: DrivingProfileEstimateSource | "NO_HISTORY";
+  confidence: DrivingProfileConfidence | "NONE";
+  confidenceReason: string;
+  daysSinceLatestKnownReading: number | null;
+  asOf: string;
+};
+
 export type MileageAnomalyReview = {
   index: number;
   status: MileageAnomalyStatus;
@@ -67,6 +84,11 @@ function annualize(first: MileageReadingDraft, last: MileageReadingDraft) {
   const days = daysBetween(first.readingDate, last.readingDate);
   if (days <= 0 || last.readingMileage <= first.readingMileage) return null;
   return Math.round(((last.readingMileage - first.readingMileage) / days) * 365);
+}
+
+function annualizeStableSpan(readings: MileageReadingDraft[]) {
+  if (spanDays(readings) < 30) return null;
+  return annualize(readings[0], readings[readings.length - 1]);
 }
 
 function cleanAnnualMileage(value?: number | null) {
@@ -167,7 +189,7 @@ function classifyConfidence({
   if (source === "VERIFIED_PLUS_DEFAULT") {
     return {
       confidence: "LOW",
-      reason: "Using one verified reading with the shop default annual mileage until more history exists.",
+      reason: "Using one mileage reading with the shop default annual mileage until more history exists.",
     };
   }
 
@@ -278,6 +300,10 @@ export function resolveCurrentMileage(vehicle: Pick<Vehicle, "currentMileage">, 
   };
 }
 
+export function resolveLatestKnownMileage(readings: MileageReadingDraft[], asOf: Date | string = asOfDate) {
+  return sortMileageReadings(readings.filter((reading) => isUsableMileageReading(reading, asOf))).at(-1);
+}
+
 export function calculateDrivingProfile({
   vehicleId,
   shopId,
@@ -300,18 +326,22 @@ export function calculateDrivingProfile({
   if (manualOverride) {
     calculatedAnnualMileage = manualOverride;
     estimateSource = "MANUAL_OVERRIDE";
-  } else if (verified.length >= 2) {
-    calculatedAnnualMileage = annualize(verified[0], verified[verified.length - 1]) ?? shopDefault;
-    estimateSource = "SHOP_VERIFIED_READINGS";
-  } else if (imported.length >= 2) {
-    calculatedAnnualMileage = annualize(imported[0], imported[imported.length - 1]) ?? shopDefault;
-    estimateSource = "IMPORTED_READINGS";
-  } else if (cleanAnnualMileage(customerReportedAnnualMileage)) {
-    calculatedAnnualMileage = cleanAnnualMileage(customerReportedAnnualMileage) ?? shopDefault;
-    estimateSource = "CUSTOMER_REPORTED";
-  } else if (verified.length === 1) {
-    calculatedAnnualMileage = shopDefault;
-    estimateSource = "VERIFIED_PLUS_DEFAULT";
+  } else {
+    const verifiedAnnualMileage = verified.length >= 2 ? annualizeStableSpan(verified) : null;
+    const importedAnnualMileage = imported.length >= 2 ? annualizeStableSpan(imported) : null;
+    if (verifiedAnnualMileage) {
+      calculatedAnnualMileage = verifiedAnnualMileage;
+      estimateSource = "SHOP_VERIFIED_READINGS";
+    } else if (importedAnnualMileage) {
+      calculatedAnnualMileage = importedAnnualMileage;
+      estimateSource = "IMPORTED_READINGS";
+    } else if (cleanAnnualMileage(customerReportedAnnualMileage)) {
+      calculatedAnnualMileage = cleanAnnualMileage(customerReportedAnnualMileage) ?? shopDefault;
+      estimateSource = "CUSTOMER_REPORTED";
+    } else if (verified.length > 0 || imported.length > 0) {
+      calculatedAnnualMileage = shopDefault;
+      estimateSource = "VERIFIED_PLUS_DEFAULT";
+    }
   }
 
   const confidence = manualOverride
@@ -341,6 +371,48 @@ export function calculateDrivingProfile({
     lastCalculatedAt: parseDate(asOf).toISOString(),
     usableReadingCount: usable.length,
     latestMileageReading: usable.at(-1),
+  };
+}
+
+export function resolveEffectiveForecastMileage(input: DrivingProfileCalculationInput): EffectiveForecastMileage {
+  const asOf = input.asOf ?? asOfDate;
+  const profile = calculateDrivingProfile(input);
+  const latest = resolveLatestKnownMileage(input.readings, asOf);
+  const asOfKey = dateKey(asOf);
+
+  if (!latest) {
+    return {
+      mileage: null,
+      kind: "UNAVAILABLE",
+      latestKnownMileage: null,
+      latestKnownDate: null,
+      annualMileage: null,
+      dailyMileage: null,
+      source: "NO_HISTORY",
+      confidence: "NONE",
+      confidenceReason: "No usable mileage history is available.",
+      daysSinceLatestKnownReading: null,
+      asOf: asOfKey,
+    };
+  }
+
+  const daysSinceLatestKnownReading = Math.floor(daysBetween(latest.readingDate, asOf));
+  const projectedMiles = Math.max(0, Math.round(profile.effectiveDailyMileage * daysSinceLatestKnownReading));
+  const mileage = latest.readingMileage + projectedMiles;
+
+  return {
+    mileage,
+    kind: daysSinceLatestKnownReading === 0 ? "ACTUAL" : "ESTIMATED",
+    latestKnownMileage: latest.readingMileage,
+    latestKnownDate: dateKey(latest.readingDate),
+    latestKnownReading: latest,
+    annualMileage: profile.effectiveAnnualMileage,
+    dailyMileage: profile.effectiveDailyMileage,
+    source: profile.estimateSource,
+    confidence: profile.confidence,
+    confidenceReason: profile.confidenceReason,
+    daysSinceLatestKnownReading,
+    asOf: asOfKey,
   };
 }
 

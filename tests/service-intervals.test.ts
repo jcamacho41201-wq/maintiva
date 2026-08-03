@@ -256,6 +256,41 @@ describe("editable vehicle service intervals", () => {
     expect(inside.thresholdCause).toBe("mileage");
   });
 
+  it("uses estimated current mileage for mileage-based maintenance status", () => {
+    const effective = resolveMaintenanceInterval({
+      record: record({
+        lastCompletedDate: "2026-01-01",
+        lastCompletedMileage: 10_000,
+      }),
+      service: {
+        ...service,
+        defaultTimeIntervalMonths: null,
+        defaultTimeIntervalValue: null,
+        defaultTimeIntervalUnit: null,
+      },
+      vehicle: { ...vehicle, currentMileage: 10_000 },
+      forecastMileage: {
+        mileage: 14_700,
+        kind: "ESTIMATED",
+        latestKnownMileage: 14_000,
+        latestKnownDate: "2026-07-01",
+        annualMileage: 12_500,
+        dailyMileage: 12_500 / 365,
+        source: "SHOP_DEFAULT",
+        confidence: "LOW",
+        confidenceReason: "Using default annual mileage.",
+        daysSinceLatestKnownReading: 28,
+        asOf: "2026-07-29",
+      },
+      asOf,
+    });
+
+    expect(effective.status).toBe("DUE_SOON");
+    expect(effective.milesUntilDue).toBe(300);
+    expect(effective.forecastMileageKind).toBe("ESTIMATED");
+    expect(effective.latestKnownMileage).toBe(14_000);
+  });
+
   it("uses <= for the configured time lead threshold without requiring the mileage threshold", () => {
     const timeBased = resolveMaintenanceInterval({
       record: record({
@@ -298,6 +333,19 @@ describe("editable vehicle service intervals", () => {
     const dueRecord = record();
     const demoState = state([dueRecord]);
     demoState.shop.isDemo = true;
+    demoState.mileageReadings.push({
+      id: "reading-due-demo",
+      shopId: "shop-a",
+      vehicleId: vehicle.id,
+      readingMileage: vehicle.currentMileage,
+      readingDate: "2026-07-28",
+      source: "SHOP_REPAIR_ORDER",
+      verificationStatus: "VERIFIED",
+      anomalyStatus: "NONE",
+      includedInForecast: true,
+      createdAt: "2026-07-29T00:00:00Z",
+      updatedAt: "2026-07-29T00:00:00Z",
+    });
     const opportunities = buildRevenueOpportunities(demoState);
     const completedRecord = record({
       lastCompletedDate: "2026-07-29",
@@ -311,5 +359,43 @@ describe("editable vehicle service intervals", () => {
     expect(opportunities[0].explanation).toContain("5,000 miles or 6 months");
     expect(buildRevenueOpportunities(completedDemoState)).toHaveLength(0);
     expect(buildRevenueOpportunities(state([dueRecord]))).toHaveLength(0);
+  });
+
+  it("labels low-confidence mileage-only revenue opportunities for advisor confirmation", () => {
+    const mileageOnlyService = {
+      ...service,
+      defaultTimeIntervalMonths: null,
+      defaultTimeIntervalValue: null,
+      defaultTimeIntervalUnit: null,
+    };
+    const demoState = state([
+      record({
+        lastCompletedDate: "2026-01-01",
+        lastCompletedMileage: 10_000,
+      }),
+    ], [mileageOnlyService]);
+    demoState.shop.isDemo = true;
+    demoState.mileageReadings.push({
+      id: "reading-one-history",
+      shopId: "shop-a",
+      vehicleId: vehicle.id,
+      readingMileage: 14_000,
+      readingDate: "2026-07-01",
+      source: "SERVICE_HISTORY_IMPORT",
+      verificationStatus: "IMPORTED",
+      anomalyStatus: "NONE",
+      includedInForecast: true,
+      sourceReferenceType: "ServiceHistoryRecord",
+      createdAt: "2026-07-01T00:00:00Z",
+      updatedAt: "2026-07-01T00:00:00Z",
+    });
+
+    const [opportunity] = buildRevenueOpportunities(demoState);
+
+    expect(opportunity.priority).toBe("LOW");
+    expect(opportunity.priorityReason).toContain("advisor confirmation");
+    expect(opportunity.explanation).toContain("Mileage is estimated");
+    expect(opportunity.forecastMileageKind).toBe("ESTIMATED");
+    expect(opportunity.forecastMileageConfidence).toBe("LOW");
   });
 });
