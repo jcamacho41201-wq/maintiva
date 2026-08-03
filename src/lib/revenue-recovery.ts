@@ -1,5 +1,4 @@
 import {
-  asOfDate,
   type Appointment,
   type DeclinedWorkRecord,
   type DemoState,
@@ -11,12 +10,12 @@ import {
 import {
   getRecommendedRecords,
   resolveVehicleForecastMileage,
+  stateForecastAsOfDate,
   vehicleLabel,
 } from "@/lib/demo-calculations";
 import { formatInterval, resolveMaintenanceInterval } from "@/lib/service-intervals";
 import type { ForecastMileageKind } from "@/lib/adaptive-mileage";
-
-const dayMs = 86_400_000;
+import { calendarDaysBetween, dateOnlyToUtcNoon, resolveForecastAsOfDate } from "@/lib/forecast-dates";
 
 export type OpportunitySource =
   | "DUE_MAINTENANCE"
@@ -100,8 +99,8 @@ export function getOpenRevenueOpportunitiesForCustomer(state: DemoState, custome
   );
 }
 
-function daysBetween(start: string, end: Date = asOfDate) {
-  return Math.floor((end.getTime() - new Date(start).getTime()) / dayMs);
+function daysBetween(start: string, end: Date | string = resolveForecastAsOfDate()) {
+  return Math.max(0, calendarDaysBetween(start, end));
 }
 
 function sourceLabel(source: OpportunitySource) {
@@ -114,10 +113,13 @@ function sourceLabel(source: OpportunitySource) {
   }[source];
 }
 
-export function opportunityTimingLabel(opportunity: Pick<RevenueOpportunity, "source" | "daysOverdue" | "dueDate" | "sourceLabel" | "followUpDate">) {
+export function opportunityTimingLabel(
+  opportunity: Pick<RevenueOpportunity, "source" | "daysOverdue" | "dueDate" | "sourceLabel" | "followUpDate">,
+  asOf?: Date | string,
+) {
   if (opportunity.source === "DECLINED_WORK") {
     if (opportunity.followUpDate) {
-      const followUpDaysOverdue = daysBetween(opportunity.followUpDate);
+      const followUpDaysOverdue = daysBetween(opportunity.followUpDate, asOf);
       if (followUpDaysOverdue > 0) return `Follow-up overdue by ${followUpDaysOverdue} days`;
     }
     if (opportunity.daysOverdue > 0) return `Declined ${opportunity.daysOverdue} days ago`;
@@ -126,7 +128,7 @@ export function opportunityTimingLabel(opportunity: Pick<RevenueOpportunity, "so
 
   if (opportunity.daysOverdue > 0) return `${opportunity.daysOverdue} days overdue`;
   if (opportunity.dueDate) {
-    const daysUntilDue = Math.ceil((new Date(opportunity.dueDate).getTime() - asOfDate.getTime()) / dayMs);
+    const daysUntilDue = calendarDaysBetween(resolveForecastAsOfDate({ now: asOf }), opportunity.dueDate);
     if (daysUntilDue > 0) return `Due in ${daysUntilDue} days`;
   }
   return opportunity.sourceLabel;
@@ -347,6 +349,57 @@ function buildPersistedRevenueOpportunities(state: DemoState): RevenueOpportunit
 
       const serviceName = opportunityServiceName(state, opportunity, maintenanceRecord, declinedWorkRecord);
       const forecastMileage = resolveVehicleForecastMileage(state, vehicle);
+      const maintenanceService = maintenanceRecord?.serviceId
+        ? state.services.find((item) => item.id === maintenanceRecord.serviceId)
+        : undefined;
+      const effective = maintenanceRecord
+        ? resolveMaintenanceInterval({
+            record: maintenanceRecord,
+            service: maintenanceService,
+            vehicle,
+            forecastMileage,
+            asOf: forecastMileage.asOf,
+            shopTimezone: state.shop.timezone,
+          })
+        : null;
+      const daysOverdue = effective?.daysUntilDue !== null && effective?.daysUntilDue !== undefined
+        ? Math.max(0, -effective.daysUntilDue)
+        : opportunity.daysOverdue;
+      const milesOverdue = effective?.milesUntilDue !== null && effective?.milesUntilDue !== undefined
+        ? Math.max(0, -effective.milesUntilDue)
+        : opportunity.milesOverdue;
+      const source = effective
+        ? effective.status === "OVERDUE" || daysOverdue > 0 || milesOverdue > 0
+          ? "OVERDUE_MAINTENANCE" as const
+          : "DUE_MAINTENANCE" as const
+        : opportunity.source;
+      const sourceOutreachStatus = declinedWorkRecord?.outreachStatus ?? maintenanceRecord?.outreachStatus ?? "NEEDS_OUTREACH";
+      const priority = effective
+        ? priorityFor({
+            source,
+            daysOverdue,
+            milesOverdue,
+            estimatedRevenueCents: effective.priceCents,
+            outreachStatus: sourceOutreachStatus,
+            forecastMileageKind: effective.forecastMileageKind,
+            forecastMileageConfidence: effective.forecastConfidence,
+          })
+        : {
+            priority: opportunity.priority,
+            priorityReason: opportunity.priorityReason,
+          };
+      const refreshedExplanation = effective
+        ? `${effective.serviceName} ${effective.dueText.toLowerCase()} based on ${formatInterval(
+            effective.mileageInterval,
+            effective.timeIntervalValue,
+            effective.timeIntervalUnit,
+          )}.${forecastExplanation({
+            forecastMileageKind: effective.forecastMileageKind,
+            latestKnownMileage: effective.latestKnownMileage ?? undefined,
+            latestKnownDate: effective.latestKnownDate ?? undefined,
+            forecastMileageConfidence: effective.forecastConfidence,
+          })}`
+        : opportunity.explanation;
       const lastOutreach = lastOutreachForOpportunity(state, {
         ...opportunity,
         customerName: `${customer.firstName} ${customer.lastName}`,
@@ -359,7 +412,6 @@ function buildPersistedRevenueOpportunities(state: DemoState): RevenueOpportunit
         estimatedLaborHours: opportunity.estimatedLaborHours,
         appointmentStatus: "UNSCHEDULED",
       } as RevenueOpportunity);
-      const sourceOutreachStatus = declinedWorkRecord?.outreachStatus ?? maintenanceRecord?.outreachStatus ?? "NEEDS_OUTREACH";
       const displayStage = effectiveStage({ stage: opportunity.stage, lastOutreach });
 
       return {
@@ -369,17 +421,17 @@ function buildPersistedRevenueOpportunities(state: DemoState): RevenueOpportunit
         vehicleId: opportunity.vehicleId,
         customerName: `${customer.firstName} ${customer.lastName}`,
         vehicleLabel: vehicleLabel(vehicle),
-        source: opportunity.source,
-        sourceLabel: sourceLabel(opportunity.source),
+        source,
+        sourceLabel: sourceLabel(source),
         serviceNames: [serviceName],
         maintenanceRecordId: opportunity.maintenanceRecordId,
         declinedWorkRecordId: opportunity.declinedWorkRecordId,
         serviceDefinitionId: maintenanceRecord?.serviceId ?? undefined,
         sourceRecordId,
         sourceType: opportunity.declinedWorkRecordId ? "DeclinedWorkRecord" : "VehicleMaintenanceRecord",
-        explanation: opportunity.explanation,
-        priority: opportunity.priority,
-        priorityReason: opportunity.priorityReason,
+        explanation: refreshedExplanation,
+        priority: priority.priority,
+        priorityReason: priority.priorityReason,
         lastServiceDate: declinedWorkRecord?.declinedAt ?? maintenanceRecord?.lastCompletedDate ?? undefined,
         lastServiceMileage: maintenanceRecord?.lastCompletedMileage ?? undefined,
         currentMileage: vehicle.currentMileage,
@@ -389,12 +441,12 @@ function buildPersistedRevenueOpportunities(state: DemoState): RevenueOpportunit
         forecastMileageReason: forecastMileage.confidenceReason,
         latestKnownMileage: forecastMileage.latestKnownMileage ?? undefined,
         latestKnownDate: forecastMileage.latestKnownDate ?? undefined,
-        dueDate: opportunity.dueDate,
-        dueMileage: opportunity.dueMileage,
-        daysOverdue: opportunity.daysOverdue,
-        milesOverdue: opportunity.milesOverdue,
-        estimatedRevenueCents: opportunity.estimatedRevenueCents,
-        estimatedLaborHours: opportunity.estimatedLaborHours,
+        dueDate: effective?.nextDueDate ?? opportunity.dueDate,
+        dueMileage: effective?.nextDueMileage ?? opportunity.dueMileage,
+        daysOverdue,
+        milesOverdue,
+        estimatedRevenueCents: effective?.priceCents ?? opportunity.estimatedRevenueCents,
+        estimatedLaborHours: effective ? effective.laborMinutes / 60 : opportunity.estimatedLaborHours,
         outreachStatus: effectiveOutreachStatus({
           lastOutreach,
           sourceStatus: sourceOutreachStatus,
@@ -432,6 +484,7 @@ function buildPersistedRevenueOpportunities(state: DemoState): RevenueOpportunit
 }
 
 function buildDerivedDemoRevenueOpportunities(state: DemoState): RevenueOpportunity[] {
+  const asOf = stateForecastAsOfDate(state);
   const maintenance = getRecommendedRecords(state).map(({ record, calculation }): RevenueOpportunity | null => {
     const vehicle = state.vehicles.find((item) => item.id === record.vehicleId);
     if (!vehicle) return null;
@@ -439,7 +492,7 @@ function buildDerivedDemoRevenueOpportunities(state: DemoState): RevenueOpportun
     const outreach = state.outreachRecords.find((item) => item.id === record.outreachRecordId);
     const service = state.services.find((item) => item.id === record.serviceId);
     const forecastMileage = resolveVehicleForecastMileage(state, vehicle);
-    const effective = resolveMaintenanceInterval({ record, service, vehicle, forecastMileage });
+    const effective = resolveMaintenanceInterval({ record, service, vehicle, forecastMileage, asOf, shopTimezone: state.shop.timezone });
     const source: OpportunitySource =
       calculation.status === "OVERDUE" ? "OVERDUE_MAINTENANCE" : "DUE_MAINTENANCE";
     const daysOverdue = Math.max(0, -calculation.daysUntilDue);
@@ -502,10 +555,10 @@ function buildDerivedDemoRevenueOpportunities(state: DemoState): RevenueOpportun
         appointment,
         responseStatus: outreach?.responseStatus,
       }),
-      createdAt: record.lastCompletedDate ?? asOfDate.toISOString(),
+      createdAt: record.lastCompletedDate ?? dateOnlyToUtcNoon(asOf).toISOString(),
       lastContactedAt: outreachContactedAt(outreach),
       followUpDate: outreach?.followUpDate,
-      lastActivityAt: outreach?.sentAt ?? appointment?.scheduledStart ?? record.lastCompletedDate ?? asOfDate.toISOString(),
+      lastActivityAt: outreach?.sentAt ?? appointment?.scheduledStart ?? record.lastCompletedDate ?? dateOnlyToUtcNoon(asOf).toISOString(),
     };
   });
 
@@ -514,7 +567,7 @@ function buildDerivedDemoRevenueOpportunities(state: DemoState): RevenueOpportun
     const appointment = appointmentForRecord(state, record);
     const outreach = state.outreachRecords.find((item) => item.appointmentId === appointment?.id);
     const forecastMileage = vehicle ? resolveVehicleForecastMileage(state, vehicle) : null;
-    const daysOverdue = Math.max(0, daysBetween(record.declinedAt));
+    const daysOverdue = Math.max(0, daysBetween(record.declinedAt, asOf));
     const priority = priorityFor({
       source: "DECLINED_WORK",
       daysOverdue,
@@ -696,8 +749,9 @@ export function getRevenueFunnel(state: DemoState) {
 }
 
 export function getCapacitySummary(state: DemoState, days: 7 | 14 | 30) {
+  const asOf = stateForecastAsOfDate(state);
   const appointments = state.appointments.filter((appointment) => {
-    const delta = Math.ceil((new Date(appointment.scheduledStart).getTime() - asOfDate.getTime()) / dayMs);
+    const delta = calendarDaysBetween(asOf, appointment.scheduledStart, state.shop.timezone);
     return delta >= 0 && delta < days && !["CANCELLED", "NO_SHOW"].includes(appointment.status);
   });
   const totalAvailableLaborHours = state.shop.dailyBayHours * days;

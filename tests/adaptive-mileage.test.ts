@@ -143,6 +143,35 @@ describe("adaptive mileage profile calculation", () => {
     expect(forecast.mileage).toBeGreaterThan(20_000);
   });
 
+  it("estimates the QA historical service vehicle as of August 3", () => {
+    const imported = {
+      ...baseReading,
+      source: "SERVICE_HISTORY_IMPORT" as const,
+      verificationStatus: "IMPORTED" as const,
+    };
+    const forecast = resolveEffectiveForecastMileage({
+      shopId: "shop-1",
+      vehicleId: "veh-qa-mileage",
+      readings: [
+        { ...imported, readingMileage: 42_000, readingDate: "2025-01-10" },
+        { ...imported, readingMileage: 49_500, readingDate: "2025-07-10" },
+        { ...imported, readingMileage: 57_000, readingDate: "2026-01-10" },
+      ],
+      shopDefaultAnnualMileage: DEFAULT_ANNUAL_MILEAGE,
+      asOf: "2026-08-03",
+      shopTimezone: "America/New_York",
+    });
+
+    expect(forecast.latestKnownMileage).toBe(57_000);
+    expect(forecast.latestKnownDate).toBe("2026-01-10");
+    expect(forecast.annualMileage).toBeGreaterThanOrEqual(14_900);
+    expect(forecast.annualMileage).toBeLessThanOrEqual(15_100);
+    expect(forecast.mileage).toBeGreaterThanOrEqual(65_400);
+    expect(forecast.mileage).toBeLessThanOrEqual(65_450);
+    expect(forecast.kind).toBe("ESTIMATED");
+    expect(forecast.asOf).toBe("2026-08-03");
+  });
+
   it("treats a same-day reading as actual current mileage", () => {
     const forecast = resolveEffectiveForecastMileage({
       shopId: "shop-1",

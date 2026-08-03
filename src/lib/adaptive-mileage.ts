@@ -1,11 +1,11 @@
-import { asOfDate, type DrivingProfileConfidence, type DrivingProfileEstimateSource, type MileageAnomalyStatus, type MileageVerificationStatus, type Vehicle, type VehicleDrivingProfile, type VehicleMileageReading } from "@/lib/demo-data";
+import { type DrivingProfileConfidence, type DrivingProfileEstimateSource, type MileageAnomalyStatus, type MileageVerificationStatus, type Vehicle, type VehicleDrivingProfile, type VehicleMileageReading } from "@/lib/demo-data";
 import type { EffectiveMaintenanceInterval } from "@/lib/service-intervals";
+import { addCalendarDays, calendarDaysBetween, normalizeDateOnly, resolveForecastAsOfDate } from "@/lib/forecast-dates";
 
 export const DEFAULT_ANNUAL_MILEAGE = 12_500;
 export const DEFAULT_MONTHLY_MILEAGE = Math.round(DEFAULT_ANNUAL_MILEAGE / 12);
 export const DEFAULT_DAILY_MILEAGE = DEFAULT_ANNUAL_MILEAGE / 365;
 
-const dayMs = 86_400_000;
 const reasonableAnnualMileageCeiling = 75_000;
 
 export type MileageReadingDraft = Pick<
@@ -25,6 +25,7 @@ export type DrivingProfileCalculationInput = {
   customerReportedByUserId?: string | null;
   existingProfile?: Partial<VehicleDrivingProfile> | null;
   asOf?: Date | string;
+  shopTimezone?: string | null;
 };
 
 export type DrivingProfileCalculation = Omit<VehicleDrivingProfile, "id"> & {
@@ -69,15 +70,15 @@ export type MileageReadingValidationIssue = {
 };
 
 function parseDate(value: Date | string) {
-  return value instanceof Date ? value : new Date(`${String(value).slice(0, 10)}T12:00:00Z`);
+  return new Date(`${dateKey(value)}T12:00:00Z`);
 }
 
 function dateKey(value: Date | string) {
-  return value instanceof Date ? value.toISOString().slice(0, 10) : String(value).slice(0, 10);
+  return normalizeDateOnly(value);
 }
 
 function daysBetween(start: Date | string, end: Date | string) {
-  return Math.max(0, (parseDate(end).getTime() - parseDate(start).getTime()) / dayMs);
+  return Math.max(0, calendarDaysBetween(start, end));
 }
 
 function annualize(first: MileageReadingDraft, last: MileageReadingDraft) {
@@ -96,7 +97,7 @@ function cleanAnnualMileage(value?: number | null) {
   return Math.round(value);
 }
 
-export function isUsableMileageReading(reading: MileageReadingDraft, asOf: Date | string = new Date()) {
+export function isUsableMileageReading(reading: MileageReadingDraft, asOf: Date | string = resolveForecastAsOfDate()) {
   const parsedDate = parseDate(reading.readingDate);
   return (
     reading.includedInForecast !== false &&
@@ -115,7 +116,7 @@ export function sortMileageReadings<T extends MileageReadingDraft>(readings: T[]
   );
 }
 
-function readingsByStatus(readings: MileageReadingDraft[], statuses: MileageVerificationStatus[], asOf: Date | string = new Date()) {
+function readingsByStatus(readings: MileageReadingDraft[], statuses: MileageVerificationStatus[], asOf: Date | string = resolveForecastAsOfDate()) {
   return sortMileageReadings(
     readings.filter((reading) =>
       isUsableMileageReading(reading, asOf) && statuses.includes(reading.verificationStatus),
@@ -228,7 +229,7 @@ export function validateMileageReading({
   const issues: MileageReadingValidationIssue[] = [];
   const readingDate = dateKey(reading.readingDate);
   const parsedDate = parseDate(readingDate);
-  const asOfDate = parseDate(asOf);
+  const cutoffDate = parseDate(asOf);
 
   if (!readingDate || Number.isNaN(parsedDate.getTime())) {
     return [{
@@ -238,7 +239,7 @@ export function validateMileageReading({
     }];
   }
 
-  if (parsedDate.getTime() > asOfDate.getTime()) {
+  if (parsedDate.getTime() > cutoffDate.getTime()) {
     issues.push({
       code: "READING_DATE_FUTURE",
       severity: "error",
@@ -300,7 +301,7 @@ export function resolveCurrentMileage(vehicle: Pick<Vehicle, "currentMileage">, 
   };
 }
 
-export function resolveLatestKnownMileage(readings: MileageReadingDraft[], asOf: Date | string = asOfDate) {
+export function resolveLatestKnownMileage(readings: MileageReadingDraft[], asOf: Date | string = resolveForecastAsOfDate()) {
   return sortMileageReadings(readings.filter((reading) => isUsableMileageReading(reading, asOf))).at(-1);
 }
 
@@ -313,13 +314,15 @@ export function calculateDrivingProfile({
   customerReportedAt,
   customerReportedByUserId,
   existingProfile,
-  asOf = asOfDate,
+  asOf,
+  shopTimezone,
 }: DrivingProfileCalculationInput): DrivingProfileCalculation {
+  const asOfKey = resolveForecastAsOfDate({ shopTimezone, now: asOf });
   const shopDefault = cleanAnnualMileage(shopDefaultAnnualMileage) ?? DEFAULT_ANNUAL_MILEAGE;
   const manualOverride = cleanAnnualMileage(existingProfile?.manualAnnualMileageOverride);
-  const verified = readingsByStatus(readings, ["VERIFIED"], asOf);
-  const imported = readingsByStatus(readings, ["IMPORTED"], asOf);
-  const usable = sortMileageReadings(readings.filter((reading) => isUsableMileageReading(reading, asOf)));
+  const verified = readingsByStatus(readings, ["VERIFIED"], asOfKey);
+  const imported = readingsByStatus(readings, ["IMPORTED"], asOfKey);
+  const usable = sortMileageReadings(readings.filter((reading) => isUsableMileageReading(reading, asOfKey)));
   let calculatedAnnualMileage = shopDefault;
   let estimateSource: DrivingProfileEstimateSource = "SHOP_DEFAULT";
 
@@ -349,7 +352,7 @@ export function calculateDrivingProfile({
         confidence: "LOW" as DrivingProfileConfidence,
         reason: "Manual override is active; review before treating the estimate as learned behavior.",
       }
-    : classifyConfidence({ readings, annualMileage: calculatedAnnualMileage, source: estimateSource, asOf });
+    : classifyConfidence({ readings, annualMileage: calculatedAnnualMileage, source: estimateSource, asOf: asOfKey });
 
   return {
     shopId,
@@ -368,17 +371,16 @@ export function calculateDrivingProfile({
     manualOverrideNotes: existingProfile?.manualOverrideNotes ?? null,
     manualOverrideSetAt: existingProfile?.manualOverrideSetAt ?? null,
     manualOverrideSetByUserId: existingProfile?.manualOverrideSetByUserId ?? null,
-    lastCalculatedAt: parseDate(asOf).toISOString(),
+    lastCalculatedAt: parseDate(asOfKey).toISOString(),
     usableReadingCount: usable.length,
     latestMileageReading: usable.at(-1),
   };
 }
 
 export function resolveEffectiveForecastMileage(input: DrivingProfileCalculationInput): EffectiveForecastMileage {
-  const asOf = input.asOf ?? asOfDate;
-  const profile = calculateDrivingProfile(input);
-  const latest = resolveLatestKnownMileage(input.readings, asOf);
-  const asOfKey = dateKey(asOf);
+  const asOfKey = resolveForecastAsOfDate({ shopTimezone: input.shopTimezone, now: input.asOf });
+  const profile = calculateDrivingProfile({ ...input, asOf: asOfKey });
+  const latest = resolveLatestKnownMileage(input.readings, asOfKey);
 
   if (!latest) {
     return {
@@ -396,7 +398,7 @@ export function resolveEffectiveForecastMileage(input: DrivingProfileCalculation
     };
   }
 
-  const daysSinceLatestKnownReading = Math.floor(daysBetween(latest.readingDate, asOf));
+  const daysSinceLatestKnownReading = Math.floor(daysBetween(latest.readingDate, asOfKey));
   const projectedMiles = Math.max(0, Math.round(profile.effectiveDailyMileage * daysSinceLatestKnownReading));
   const mileage = latest.readingMileage + projectedMiles;
 
@@ -420,31 +422,32 @@ export function estimateServiceDueDate({
   currentMileage,
   dailyMileage,
   effective,
-  asOf = asOfDate,
+  asOf,
 }: {
   currentMileage: number;
   dailyMileage: number;
   effective: Pick<EffectiveMaintenanceInterval, "nextDueMileage" | "nextDueDate" | "mileageInterval">;
   asOf?: Date | string;
 }) {
+  const asOfKey = resolveForecastAsOfDate({ now: asOf });
   const mileageDate = effective.nextDueMileage && dailyMileage > 0
-    ? new Date(parseDate(asOf).getTime() + Math.max(0, effective.nextDueMileage - currentMileage) / dailyMileage * dayMs)
+    ? addCalendarDays(asOfKey, Math.ceil(Math.max(0, effective.nextDueMileage - currentMileage) / dailyMileage))
     : null;
   const timeDate = effective.nextDueDate ? parseDate(effective.nextDueDate) : null;
   const firstDate = mileageDate && timeDate
-    ? (mileageDate.getTime() <= timeDate.getTime() ? mileageDate : timeDate)
-    : mileageDate ?? timeDate;
+    ? (parseDate(mileageDate).getTime() <= timeDate.getTime() ? mileageDate : dateKey(timeDate))
+    : mileageDate ?? (timeDate ? dateKey(timeDate) : null);
   const firstTrigger = firstDate
-    ? mileageDate && firstDate.getTime() === mileageDate.getTime()
+    ? mileageDate && firstDate === mileageDate
       ? "mileage"
       : "time"
     : null;
 
   return {
     remainingMiles: effective.nextDueMileage ? effective.nextDueMileage - currentMileage : null,
-    mileageBasedDueDate: mileageDate ? mileageDate.toISOString().slice(0, 10) : null,
+    mileageBasedDueDate: mileageDate,
     timeBasedDueDate: timeDate ? timeDate.toISOString().slice(0, 10) : null,
-    firstDueDate: firstDate ? firstDate.toISOString().slice(0, 10) : null,
+    firstDueDate: firstDate,
     firstTrigger,
   };
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildRevenueOpportunities } from "@/lib/revenue-recovery";
-import { getRecommendedRecords } from "@/lib/demo-calculations";
+import { getRecommendedRecords, getVehicleMaintenanceCondition } from "@/lib/demo-calculations";
 import { resolveMaintenanceInterval } from "@/lib/service-intervals";
 import {
   type DemoState,
@@ -225,7 +225,6 @@ describe("editable vehicle service intervals", () => {
     const outside = resolveMaintenanceInterval({
       record: record({
         serviceId: acDiagnostic.id,
-        serviceName: acDiagnostic.name,
         lastCompletedDate: "2026-07-01",
         lastCompletedMileage: 120_000,
         outreachThresholdValue: 500,
@@ -310,6 +309,77 @@ describe("editable vehicle service intervals", () => {
     expect(timeBased.thresholdCause).toBe("time");
   });
 
+  it("uses shop-local calendar days for due-date boundaries", () => {
+    const timeOnlyService = {
+      ...service,
+      defaultMileageInterval: null,
+      defaultTimeIntervalMonths: null,
+      defaultTimeIntervalValue: 6,
+      defaultTimeIntervalUnit: "MONTHS" as const,
+    };
+    const timeRecord = record({
+      lastCompletedDate: "2026-01-10",
+      lastCompletedMileage: null,
+    });
+
+    expect(resolveMaintenanceInterval({
+      record: timeRecord,
+      service: timeOnlyService,
+      vehicle,
+      asOf: "2026-07-09",
+    }).dueText).toBe("Due in 1 day");
+    expect(resolveMaintenanceInterval({
+      record: timeRecord,
+      service: timeOnlyService,
+      vehicle,
+      asOf: "2026-07-10",
+    }).dueText).toBe("Due today");
+    expect(resolveMaintenanceInterval({
+      record: timeRecord,
+      service: timeOnlyService,
+      vehicle,
+      asOf: "2026-07-11",
+    }).dueText).toBe("Overdue by 1 day");
+    expect(resolveMaintenanceInterval({
+      record: timeRecord,
+      service: timeOnlyService,
+      vehicle,
+      asOf: "2026-08-03",
+    }).daysUntilDue).toBe(-24);
+  });
+
+  it("calculates the QA oil change overdue mileage and days as of August 3", () => {
+    const effective = resolveMaintenanceInterval({
+      record: record({
+        serviceName: "Oil Change",
+        lastCompletedDate: "2026-01-10",
+        lastCompletedMileage: 57_000,
+      }),
+      service,
+      vehicle: { ...vehicle, currentMileage: 57_000 },
+      forecastMileage: {
+        mileage: 65_425,
+        kind: "ESTIMATED",
+        latestKnownMileage: 57_000,
+        latestKnownDate: "2026-01-10",
+        annualMileage: 15_000,
+        dailyMileage: 15_000 / 365,
+        source: "IMPORTED_READINGS",
+        confidence: "MEDIUM",
+        confidenceReason: "Based on historical readings.",
+        daysSinceLatestKnownReading: 205,
+        asOf: "2026-08-03",
+      },
+      asOf: "2026-08-03",
+    });
+
+    expect(effective.nextDueMileage).toBe(62_000);
+    expect(effective.milesUntilDue).toBe(-3_425);
+    expect(effective.nextDueDate).toBe("2026-07-10");
+    expect(effective.daysUntilDue).toBe(-24);
+    expect(effective.status).toBe("OVERDUE");
+  });
+
   it("does not invent due mileage or date when history is missing", () => {
     const missing = resolveMaintenanceInterval({
       record: record({ lastCompletedDate: null, lastCompletedMileage: null }),
@@ -321,6 +391,33 @@ describe("editable vehicle service intervals", () => {
     expect(missing.status).toBe("NOT_ENOUGH_HISTORY");
     expect(missing.nextDueMileage).toBeNull();
     expect(missing.nextDueDate).toBeNull();
+  });
+
+  it("derives vehicle maintenance status from the worst active item", () => {
+    const overdueState = state([
+      record({ serviceName: "Oil Change", lastCompletedMileage: 10_000 }),
+      record({ id: "item-healthy", serviceName: "Brake Fluid", lastCompletedMileage: 14_600, lastCompletedDate: "2026-07-01" }),
+    ]);
+    overdueState.forecastAsOfDate = "2026-07-29";
+    overdueState.mileageReadings.push({
+      id: "reading-overdue",
+      shopId: "shop-a",
+      vehicleId: vehicle.id,
+      readingMileage: 16_000,
+      readingDate: "2026-07-29",
+      source: "SHOP_REPAIR_ORDER",
+      verificationStatus: "VERIFIED",
+      anomalyStatus: "NONE",
+      includedInForecast: true,
+      createdAt: "2026-07-29T00:00:00Z",
+      updatedAt: "2026-07-29T00:00:00Z",
+    });
+
+    expect(getVehicleMaintenanceCondition(overdueState, vehicle.id).condition).toBe("OVERDUE");
+    expect(getVehicleMaintenanceCondition(state([], [service]), vehicle.id).condition).toBe("NO_ACTIVE_PLAN");
+    expect(getVehicleMaintenanceCondition(state([
+      record({ lastCompletedMileage: null, lastCompletedDate: null }),
+    ]), vehicle.id).condition).toBe("LIMITED_DATA");
   });
 
   it("excludes inactive records from derived opportunities", () => {

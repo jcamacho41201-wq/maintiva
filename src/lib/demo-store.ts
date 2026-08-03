@@ -37,6 +37,7 @@ import {
   type NormalizedCsvValue,
 } from "@/lib/csv-import";
 import { calculateDrivingProfile } from "@/lib/adaptive-mileage";
+import { resolveForecastAsOfDate } from "@/lib/forecast-dates";
 import { currentDateInTimeZone } from "@/lib/utils";
 
 const storageKey = "maintiva-demo-state-v2";
@@ -54,6 +55,7 @@ const authenticatedLoadingSnapshot: DemoState = {
     isDemo: false,
     onboardingCompletedAt: null,
   },
+  forecastAsOfDate: undefined,
   currentUserId: undefined,
   users: [],
   customers: [],
@@ -380,6 +382,8 @@ function upsertLocalDrivingProfile(
       ...existing,
       ...patch,
     },
+    asOf: resolveForecastAsOfDate({ shopTimezone: draft.shop.timezone, now: draft.forecastAsOfDate }),
+    shopTimezone: draft.shop.timezone,
   });
   const profile: VehicleDrivingProfile = {
     id: existing?.id ?? `profile-${vehicleId}`,

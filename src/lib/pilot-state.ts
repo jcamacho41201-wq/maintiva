@@ -34,6 +34,7 @@ import {
   resolveEffectiveForecastMileage,
   validateMileageReading,
 } from "@/lib/adaptive-mileage";
+import { resolveForecastAsOfDate } from "@/lib/forecast-dates";
 import { currentDateInTimeZone } from "@/lib/utils";
 import { safeDatabaseError, SafeActionError } from "@/lib/server-diagnostics";
 import { isCustomerBookingEnabled } from "@/lib/feature-flags";
@@ -431,7 +432,7 @@ async function resolveVehicleForecastMileageForSync({
   tx: OpportunitySyncClient;
   context: AuthenticatedShopContext;
   vehicle: Parameters<typeof toStateVehicle>[0];
-  asOf: Date;
+  asOf: Date | string;
 }) {
   const [readings, existingProfile, shopDefaultRows] = await Promise.all([
     tx.vehicleMileageReading.findMany({
@@ -472,6 +473,7 @@ async function resolveVehicleForecastMileageForSync({
         }
       : null,
     asOf,
+    shopTimezone: context.shopTimezone,
   });
 }
 
@@ -637,18 +639,20 @@ async function syncMaintenanceRevenueOpportunities(
     assertSameShop(context, record.vehicle.shopId);
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${context.shopId}:maintenance:${record.id}`}))`;
     const now = new Date();
+    const forecastAsOfDate = resolveForecastAsOfDate({ shopTimezone: context.shopTimezone, now });
     const forecastMileage = await resolveVehicleForecastMileageForSync({
       tx,
       context,
       vehicle: record.vehicle,
-      asOf: now,
+      asOf: forecastAsOfDate,
     });
     const effective = resolveMaintenanceInterval({
       record: toStateMaintenanceRecord(record),
       service: record.serviceDefinition ? toStateServiceDefinition(record.serviceDefinition) : undefined,
       vehicle: toStateVehicle(record.vehicle),
       forecastMileage,
-      asOf: now,
+      asOf: forecastAsOfDate,
+      shopTimezone: context.shopTimezone,
     });
     const computedStatus = maintenanceStatusForDatabase(effective.status);
     if (record.status !== computedStatus) {
@@ -1851,6 +1855,7 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
     loadStateAppointmentBookingMetadata(context.shopId),
   ]);
 
+  const forecastAsOfDate = resolveForecastAsOfDate({ shopTimezone: shop.timezone });
   const services: MaintenanceService[] = serviceDefinitions.map(toStateServiceDefinition);
   const outreachBookingLinkById = new Map(outreachBookingLinkIds.map((record) => [record.id, record.bookingLinkId]));
   const appointmentBookingMetadataById = new Map(appointmentBookingMetadata.map((appointment) => [appointment.id, appointment]));
@@ -1889,7 +1894,7 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
       verificationStatus: reading.verificationStatus,
       anomalyStatus: reading.anomalyStatus,
       includedInForecast: reading.includedInForecast,
-    })));
+    })).filter((reading) => reading.readingDate <= forecastAsOfDate));
     return {
       id: vehicle.id,
       shopId: vehicle.shopId,
@@ -1939,6 +1944,8 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
             manualOverrideSetByUserId: persisted.manualOverrideSetByUserId,
           }
         : null,
+      asOf: forecastAsOfDate,
+      shopTimezone: shop.timezone,
     });
     return {
       id: persisted?.id ?? `profile-${vehicle.id}`,
@@ -2036,6 +2043,38 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
         updatedByUserId: record.updatedByUserId ?? undefined,
       };
       if (!vehicle) return baseRecord;
+      const readingDrafts = (readingsByVehicle.get(vehicle.id) ?? []).map((reading) => ({
+        readingMileage: reading.readingMileage,
+        readingDate: dateOnly(reading.readingDate),
+        source: reading.source,
+        verificationStatus: reading.verificationStatus,
+        anomalyStatus: reading.anomalyStatus,
+        includedInForecast: reading.includedInForecast,
+      }));
+      const persistedProfile = persistedProfileByVehicle.get(vehicle.id);
+      const forecastMileage = resolveEffectiveForecastMileage({
+        shopId: context.shopId,
+        vehicleId: vehicle.id,
+        readings: readingDrafts,
+        shopDefaultAnnualMileage,
+        customerReportedAnnualMileage: persistedProfile?.customerReportedAnnualMileage ?? vehicle.estimatedAnnualMileage,
+        customerReportedAt: persistedProfile ? dateOnly(persistedProfile.customerReportedAt) || null : null,
+        customerReportedByUserId: persistedProfile?.customerReportedByUserId ?? null,
+        existingProfile: persistedProfile
+          ? {
+              customerReportedAnnualMileage: persistedProfile.customerReportedAnnualMileage,
+              customerReportedAt: dateOnly(persistedProfile.customerReportedAt) || null,
+              customerReportedByUserId: persistedProfile.customerReportedByUserId,
+              manualAnnualMileageOverride: persistedProfile.manualAnnualMileageOverride,
+              manualOverrideReason: persistedProfile.manualOverrideReason,
+              manualOverrideNotes: persistedProfile.manualOverrideNotes,
+              manualOverrideSetAt: iso(persistedProfile.manualOverrideSetAt) || null,
+              manualOverrideSetByUserId: persistedProfile.manualOverrideSetByUserId,
+            }
+          : null,
+        asOf: forecastAsOfDate,
+        shopTimezone: shop.timezone,
+      });
       const effective = resolveMaintenanceInterval({
         record: baseRecord,
         service,
@@ -2056,6 +2095,9 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
           overallHealth: vehicle.overallHealth,
           lastServiceDate: vehicle.lastServiceDate,
         },
+        forecastMileage,
+        asOf: forecastAsOfDate,
+        shopTimezone: shop.timezone,
       });
       return {
         ...baseRecord,
@@ -2177,6 +2219,7 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
     bookingWindows,
     bookingBlackouts,
     customerBookingLinks,
+    forecastAsOfDate,
     importHistory: shop.importHistory.map((record): ImportHistoryRecord => {
       const reportSummary = importErrorReportSummary(record.errorReport);
       return {
@@ -2804,6 +2847,7 @@ async function recalculatePersistedDrivingProfile({
   });
   const customerReported = customerReportedAnnualMileage ?? existing?.customerReportedAnnualMileage ?? null;
   const now = new Date();
+  const forecastAsOfDate = resolveForecastAsOfDate({ shopTimezone: context.shopTimezone, now });
   const manualOverride = clearManualOverride
     ? null
     : manualAnnualMileageOverride ?? existing?.manualAnnualMileageOverride ?? null;
@@ -2832,7 +2876,8 @@ async function recalculatePersistedDrivingProfile({
       manualOverrideSetAt: manualAnnualMileageOverride !== undefined ? now.toISOString() : clearManualOverride ? null : iso(existing?.manualOverrideSetAt) || null,
       manualOverrideSetByUserId: manualAnnualMileageOverride !== undefined ? context.userId : clearManualOverride ? null : existing?.manualOverrideSetByUserId ?? null,
     },
-    asOf: now,
+    asOf: forecastAsOfDate,
+    shopTimezone: context.shopTimezone,
   });
 
   await tx.vehicleDrivingProfile.upsert({

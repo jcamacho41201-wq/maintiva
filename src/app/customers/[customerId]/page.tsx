@@ -9,9 +9,11 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import {
   customerName,
+  getVehicleMaintenanceCondition,
   getRecordStatus,
   getRecommendedRecords,
   resolveVehicleForecastMileage,
+  stateForecastAsOfDate,
   vehicleLabel,
 } from "@/lib/demo-calculations";
 import { getOpenRevenueOpportunitiesForCustomer, type RevenueOpportunity } from "@/lib/revenue-recovery";
@@ -284,7 +286,9 @@ export default function CustomerDetailPage() {
         {vehicles.map((vehicle) => {
           const items = state.maintenanceRecords.filter((item) => item.vehicleId === vehicle.id);
           const recommended = getRecommendedRecords(state, vehicle.id);
+          const forecastAsOfDate = stateForecastAsOfDate(state);
           const forecastMileage = resolveVehicleForecastMileage(state, vehicle);
+          const maintenanceCondition = getVehicleMaintenanceCondition(state, vehicle.id, forecastAsOfDate);
           return (
             <Card key={vehicle.id}>
               <CardHeader className="flex flex-row items-start justify-between gap-3">
@@ -292,8 +296,8 @@ export default function CustomerDetailPage() {
                   <h2 className="text-lg font-semibold">{vehicleLabel(vehicle)}</h2>
                   <p className="mt-1 text-sm text-zinc-500">{vehicle.vin}</p>
                 </div>
-                <Badge variant={vehicle.overallHealth < 60 ? "orange" : "green"}>
-                  {vehicle.overallHealth}% health
+                <Badge variant={maintenanceCondition.condition === "OVERDUE" ? "orange" : maintenanceCondition.condition === "HEALTHY" ? "green" : "purple"}>
+                  {maintenanceCondition.label}
                 </Badge>
               </CardHeader>
               <CardContent className="space-y-5">
@@ -302,11 +306,19 @@ export default function CustomerDetailPage() {
                     <Gauge className="mb-2 h-4 w-4 text-violet-900" />
                     <p className="text-zinc-500">Latest known mileage</p>
                     <p className="font-semibold">{formatMileage(vehicleMileageDisplayValue(state, vehicle))}</p>
+                    <p className="mt-1 text-xs text-zinc-500">
+                      {forecastMileage.latestKnownDate ? formatDate(forecastMileage.latestKnownDate) : "Reading date not recorded"}
+                    </p>
                   </div>
                   <div className="rounded-lg border border-zinc-200 p-3">
                     <Gauge className="mb-2 h-4 w-4 text-violet-900" />
                     <p className="text-zinc-500">{forecastMileage.kind === "ACTUAL" ? "Actual current" : "Estimated current"}</p>
                     <p className="font-semibold">{formatMileage(forecastMileage.mileage)}</p>
+                  </div>
+                  <div className="rounded-lg border border-zinc-200 p-3">
+                    <Gauge className="mb-2 h-4 w-4 text-violet-900" />
+                    <p className="text-zinc-500">Estimate as of</p>
+                    <p className="font-semibold">{formatDate(forecastMileage.asOf)}</p>
                   </div>
                   <div className="rounded-lg border border-zinc-200 p-3">
                     <ClipboardCheck className="mb-2 h-4 w-4 text-violet-900" />

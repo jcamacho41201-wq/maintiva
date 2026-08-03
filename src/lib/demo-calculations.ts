@@ -1,5 +1,4 @@
 import {
-  asOfDate,
   calculateAppointmentTotals,
   type Appointment,
   type DemoState,
@@ -10,6 +9,7 @@ import {
 } from "@/lib/demo-data";
 import { resolveEffectiveForecastMileage } from "@/lib/adaptive-mileage";
 import { resolveMaintenanceInterval } from "@/lib/service-intervals";
+import { resolveForecastAsOfDate } from "@/lib/forecast-dates";
 
 function addHours(date: Date, hours: number) {
   return new Date(date.getTime() + hours * 60 * 60 * 1000);
@@ -27,12 +27,13 @@ export function customerName(state: DemoState, customerId: string) {
 export function calculateMaintenanceStatus(
   record: VehicleMaintenanceRecord,
   vehicle: Vehicle,
-  asOf: Date = asOfDate,
+  asOf?: Date | string,
   state?: DemoState,
 ) {
   const service = state?.services.find((item) => item.id === record.serviceId);
-  const forecastMileage = state ? resolveVehicleForecastMileage(state, vehicle, asOf) : undefined;
-  const effective = resolveMaintenanceInterval({ record, service, vehicle, forecastMileage, asOf });
+  const asOfKey = state ? stateForecastAsOfDate(state, asOf) : resolveForecastAsOfDate({ now: asOf });
+  const forecastMileage = state ? resolveVehicleForecastMileage(state, vehicle, asOfKey) : undefined;
+  const effective = resolveMaintenanceInterval({ record, service, vehicle, forecastMileage, asOf: asOfKey, shopTimezone: state?.shop.timezone });
 
   return {
     status: effective.status === "NOT_ENOUGH_HISTORY" ? "HEALTHY" as MaintenanceStatus : effective.status,
@@ -53,7 +54,15 @@ export function calculateMaintenanceStatus(
   };
 }
 
-export function resolveVehicleForecastMileage(state: DemoState, vehicle: Vehicle, asOf: Date | string = asOfDate) {
+export function stateForecastAsOfDate(state: DemoState, asOf?: Date | string) {
+  return resolveForecastAsOfDate({
+    shopTimezone: state.shop.timezone,
+    now: asOf ?? state.forecastAsOfDate,
+  });
+}
+
+export function resolveVehicleForecastMileage(state: DemoState, vehicle: Vehicle, asOf?: Date | string) {
+  const asOfKey = stateForecastAsOfDate(state, asOf);
   const profile = state.drivingProfiles.find((item) => item.vehicleId === vehicle.id);
   return resolveEffectiveForecastMileage({
     shopId: state.shop.id,
@@ -64,7 +73,8 @@ export function resolveVehicleForecastMileage(state: DemoState, vehicle: Vehicle
     customerReportedAt: profile?.customerReportedAt ?? null,
     customerReportedByUserId: profile?.customerReportedByUserId ?? null,
     existingProfile: profile,
-    asOf,
+    asOf: asOfKey,
+    shopTimezone: state.shop.timezone,
   });
 }
 
@@ -80,7 +90,7 @@ export function getRecordStatus(state: DemoState, record: VehicleMaintenanceReco
     };
   }
 
-  return calculateMaintenanceStatus(record, vehicle, asOfDate, state);
+  return calculateMaintenanceStatus(record, vehicle, undefined, state);
 }
 
 export function getRecommendedRecords(state: DemoState, vehicleId?: string) {
@@ -90,6 +100,69 @@ export function getRecommendedRecords(state: DemoState, vehicleId?: string) {
     .map((record) => ({ record, calculation: getRecordStatus(state, record) }))
     .filter(({ calculation }) => calculation.status !== "HEALTHY")
     .sort((a, b) => a.calculation.lifeRemaining - b.calculation.lifeRemaining);
+}
+
+export type VehicleMaintenanceCondition =
+  | "OVERDUE"
+  | "DUE_SOON"
+  | "APPROACHING"
+  | "HEALTHY"
+  | "LIMITED_DATA"
+  | "NO_ACTIVE_PLAN";
+
+export function vehicleMaintenanceConditionLabel(condition: VehicleMaintenanceCondition) {
+  return {
+    OVERDUE: "Maintenance overdue",
+    DUE_SOON: "Due soon",
+    APPROACHING: "Approaching",
+    HEALTHY: "Healthy",
+    LIMITED_DATA: "Limited data",
+    NO_ACTIVE_PLAN: "No maintenance plan",
+  }[condition];
+}
+
+export function getVehicleMaintenanceCondition(state: DemoState, vehicleId: string, asOf?: Date | string) {
+  const vehicle = state.vehicles.find((item) => item.id === vehicleId);
+  const activeRecords = state.maintenanceRecords.filter((record) =>
+    record.vehicleId === vehicleId && record.isActive !== false,
+  );
+
+  if (!vehicle || activeRecords.length === 0) {
+    return {
+      condition: "NO_ACTIVE_PLAN" as const,
+      label: vehicleMaintenanceConditionLabel("NO_ACTIVE_PLAN"),
+      worstCalculation: null,
+      activeRecordCount: activeRecords.length,
+    };
+  }
+
+  const calculations = activeRecords.map((record) => ({
+    record,
+    calculation: calculateMaintenanceStatus(record, vehicle, asOf, state),
+  }));
+  const worst = calculations.find((item) => item.calculation.displayStatus === "OVERDUE")
+    ?? calculations.find((item) => item.calculation.displayStatus === "DUE")
+    ?? calculations.find((item) => item.calculation.displayStatus === "DUE_SOON")
+    ?? calculations.find((item) => item.calculation.displayStatus === "NOT_ENOUGH_HISTORY")
+    ?? calculations.find((item) => item.calculation.lifeRemaining <= 25)
+    ?? calculations[0];
+  const condition: VehicleMaintenanceCondition =
+    worst.calculation.displayStatus === "OVERDUE"
+      ? "OVERDUE"
+      : worst.calculation.displayStatus === "DUE" || worst.calculation.displayStatus === "DUE_SOON"
+        ? "DUE_SOON"
+        : worst.calculation.displayStatus === "NOT_ENOUGH_HISTORY"
+          ? "LIMITED_DATA"
+          : worst.calculation.lifeRemaining <= 25
+            ? "APPROACHING"
+            : "HEALTHY";
+
+  return {
+    condition,
+    label: vehicleMaintenanceConditionLabel(condition),
+    worstCalculation: worst,
+    activeRecordCount: activeRecords.length,
+  };
 }
 
 export function getOpportunityStatus(records: VehicleMaintenanceRecord[]): OutreachStatus {
@@ -171,7 +244,7 @@ export function getDashboardMetrics(state: DemoState) {
     (sum, item) => sum + item.record.priceCents,
     0,
   );
-  const today = asOfDate.toISOString().slice(0, 10);
+  const today = stateForecastAsOfDate(state);
   const appointmentsToday = state.appointments.filter((appointment) =>
     appointment.scheduledStart.startsWith(today),
   );

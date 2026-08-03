@@ -234,7 +234,7 @@ describe("revenue recovery engine", () => {
       daysOverdue: 66,
       followUpDate: "2026-07-01T12:00:00.000Z",
       sourceLabel: "Declined work",
-    })).toBe("Follow-up overdue by 27 days");
+    }, "2026-07-28")).toBe("Follow-up overdue by 27 days");
   });
 
   it("uses one labor formatter for minutes and decimal hours", () => {
