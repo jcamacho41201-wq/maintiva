@@ -143,6 +143,9 @@ export type SmartMaintenanceBlockBlackoutInput = {
   blockId?: string | null;
   startsAt: string;
   endsAt: string;
+  localDate?: string;
+  startMinute?: number;
+  endMinute?: number;
   reason?: string;
   isFullDay?: boolean;
 };
@@ -671,6 +674,9 @@ export function useDemoStore() {
             blockId: input.blockId ?? null,
             startsAt: input.startsAt,
             endsAt: input.endsAt,
+            localDate: input.localDate,
+            startMinute: input.startMinute,
+            endMinute: input.endMinute,
             reason: input.reason?.trim() || "Unavailable",
             isFullDay: input.isFullDay ?? false,
             createdByUserId: existing?.createdByUserId ?? actorUserId(draft),

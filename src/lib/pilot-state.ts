@@ -198,6 +198,9 @@ const smartMaintenanceBlockBlackoutSchema = z.object({
   blockId: z.string().min(1).nullable().optional(),
   startsAt: z.string().min(8),
   endsAt: z.string().min(8),
+  localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  startMinute: z.number().int().min(0).max(1439).optional(),
+  endMinute: z.number().int().min(1).max(1440).optional(),
   reason: z.string().trim().max(240).optional(),
   isFullDay: z.boolean().optional(),
 }).refine((value) => {
@@ -1034,6 +1037,9 @@ type StateSmartMaintenanceBlockBlackout = {
   blockId: string | null;
   startsAt: Date;
   endsAt: Date;
+  localDate: Date | null;
+  startMinute: number | null;
+  endMinute: number | null;
   reason: string | null;
   isFullDay: boolean;
   createdByUserId: string | null;
@@ -1704,6 +1710,9 @@ function toStateSmartMaintenanceBlockBlackout(blackout: StateSmartMaintenanceBlo
     blockId: blackout.blockId,
     startsAt: iso(blackout.startsAt),
     endsAt: iso(blackout.endsAt),
+    localDate: dateOnly(blackout.localDate) || undefined,
+    startMinute: blackout.startMinute ?? undefined,
+    endMinute: blackout.endMinute ?? undefined,
     reason: blackout.reason ?? "",
     isFullDay: blackout.isFullDay,
     createdByUserId: blackout.createdByUserId ?? undefined,
@@ -4088,6 +4097,9 @@ export async function savePilotSmartMaintenanceBlockBlackout(context: Authentica
     blockId: parsed.blockId ?? null,
     startsAt: new Date(parsed.startsAt),
     endsAt: new Date(parsed.endsAt),
+    localDate: parsed.localDate ? dateFromDateOnly(parsed.localDate) : null,
+    startMinute: parsed.startMinute ?? null,
+    endMinute: parsed.endMinute ?? null,
     reason: parsed.reason || null,
     isFullDay: parsed.isFullDay ?? false,
   };

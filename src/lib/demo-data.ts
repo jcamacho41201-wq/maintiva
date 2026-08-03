@@ -410,6 +410,9 @@ export type SmartMaintenanceBlockBlackout = {
   blockId?: string | null;
   startsAt: string;
   endsAt: string;
+  localDate?: string;
+  startMinute?: number;
+  endMinute?: number;
   reason: string;
   isFullDay: boolean;
   createdByUserId?: string;

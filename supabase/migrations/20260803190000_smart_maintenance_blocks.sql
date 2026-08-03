@@ -101,6 +101,9 @@ CREATE TABLE IF NOT EXISTS public."SmartMaintenanceBlockBlackout" (
   "blockId" TEXT,
   "startsAt" TIMESTAMP(3) NOT NULL,
   "endsAt" TIMESTAMP(3) NOT NULL,
+  "localDate" DATE,
+  "startMinute" INTEGER,
+  "endMinute" INTEGER,
   "reason" TEXT,
   "isFullDay" BOOLEAN NOT NULL DEFAULT false,
   "createdByUserId" TEXT,
@@ -113,6 +116,9 @@ ALTER TABLE public."SmartMaintenanceBlockBlackout" ADD COLUMN IF NOT EXISTS "sho
 ALTER TABLE public."SmartMaintenanceBlockBlackout" ADD COLUMN IF NOT EXISTS "blockId" TEXT;
 ALTER TABLE public."SmartMaintenanceBlockBlackout" ADD COLUMN IF NOT EXISTS "startsAt" TIMESTAMP(3);
 ALTER TABLE public."SmartMaintenanceBlockBlackout" ADD COLUMN IF NOT EXISTS "endsAt" TIMESTAMP(3);
+ALTER TABLE public."SmartMaintenanceBlockBlackout" ADD COLUMN IF NOT EXISTS "localDate" DATE;
+ALTER TABLE public."SmartMaintenanceBlockBlackout" ADD COLUMN IF NOT EXISTS "startMinute" INTEGER;
+ALTER TABLE public."SmartMaintenanceBlockBlackout" ADD COLUMN IF NOT EXISTS "endMinute" INTEGER;
 ALTER TABLE public."SmartMaintenanceBlockBlackout" ADD COLUMN IF NOT EXISTS "reason" TEXT;
 ALTER TABLE public."SmartMaintenanceBlockBlackout" ADD COLUMN IF NOT EXISTS "isFullDay" BOOLEAN DEFAULT false;
 ALTER TABLE public."SmartMaintenanceBlockBlackout" ADD COLUMN IF NOT EXISTS "createdByUserId" TEXT;
@@ -139,6 +145,7 @@ BEGIN
   ALTER TABLE public."SmartMaintenanceBlock" DROP CONSTRAINT IF EXISTS "SmartMaintenanceBlock_approval_required_check";
   ALTER TABLE public."SmartMaintenanceBlock" DROP CONSTRAINT IF EXISTS "SmartMaintenanceBlock_days_check";
   ALTER TABLE public."SmartMaintenanceBlockBlackout" DROP CONSTRAINT IF EXISTS "SmartMaintenanceBlockBlackout_time_check";
+  ALTER TABLE public."SmartMaintenanceBlockBlackout" DROP CONSTRAINT IF EXISTS "SmartMaintenanceBlockBlackout_local_time_check";
 
   ALTER TABLE public."SmartMaintenanceBlock" ADD CONSTRAINT "SmartMaintenanceBlock_name_check"
     CHECK (length(btrim("name")) > 0);
@@ -156,6 +163,16 @@ BEGIN
     CHECK (cardinality("daysOfWeek") > 0 AND "daysOfWeek" <@ ARRAY[0, 1, 2, 3, 4, 5, 6]);
   ALTER TABLE public."SmartMaintenanceBlockBlackout" ADD CONSTRAINT "SmartMaintenanceBlockBlackout_time_check"
     CHECK ("endsAt" > "startsAt");
+  ALTER TABLE public."SmartMaintenanceBlockBlackout" ADD CONSTRAINT "SmartMaintenanceBlockBlackout_local_time_check"
+    CHECK (
+      ("localDate" IS NULL AND "startMinute" IS NULL AND "endMinute" IS NULL) OR
+      (
+        "localDate" IS NOT NULL AND
+        "startMinute" IS NOT NULL AND "startMinute" >= 0 AND "startMinute" <= 1439 AND
+        "endMinute" IS NOT NULL AND "endMinute" >= 1 AND "endMinute" <= 1440 AND
+        "endMinute" > "startMinute"
+      )
+    );
 END $$;
 
 CREATE UNIQUE INDEX IF NOT EXISTS "SmartMaintenanceBlock_id_shop_key" ON public."SmartMaintenanceBlock" ("id", "shopId");
@@ -199,6 +216,8 @@ CREATE INDEX IF NOT EXISTS "SmartMaintenanceBlockBlackout_shop_time_idx" ON publ
 CREATE INDEX IF NOT EXISTS "SmartMaintenanceBlockBlackout_shop_block_idx" ON public."SmartMaintenanceBlockBlackout" ("shopId", "blockId");
 CREATE UNIQUE INDEX IF NOT EXISTS "SmartMaintenanceBlockBlackout_block_time_key" ON public."SmartMaintenanceBlockBlackout" ("shopId", "blockId", "startsAt", "endsAt") WHERE "blockId" IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS "SmartMaintenanceBlockBlackout_shop_time_key" ON public."SmartMaintenanceBlockBlackout" ("shopId", "startsAt", "endsAt") WHERE "blockId" IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS "SmartMaintenanceBlockBlackout_block_local_time_key" ON public."SmartMaintenanceBlockBlackout" ("shopId", "blockId", "localDate", "startMinute", "endMinute") WHERE "blockId" IS NOT NULL AND "localDate" IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS "SmartMaintenanceBlockBlackout_shop_local_time_key" ON public."SmartMaintenanceBlockBlackout" ("shopId", "localDate", "startMinute", "endMinute") WHERE "blockId" IS NULL AND "localDate" IS NOT NULL;
 
 DO $$
 BEGIN

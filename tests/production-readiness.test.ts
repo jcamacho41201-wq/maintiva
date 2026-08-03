@@ -57,6 +57,9 @@ describe("production readiness safeguards", () => {
     expect(migration).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "SmartMaintenanceBlockService_block_service_key"');
     expect(migration).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "SmartMaintenanceBlockBlackout_block_time_key"');
     expect(migration).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "SmartMaintenanceBlockBlackout_shop_time_key"');
+    expect(migration).toContain('ALTER TABLE public."SmartMaintenanceBlockBlackout" ADD COLUMN IF NOT EXISTS "localDate" DATE');
+    expect(migration).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "SmartMaintenanceBlockBlackout_block_local_time_key"');
+    expect(migration).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "SmartMaintenanceBlockBlackout_shop_local_time_key"');
     expect(migration).toContain('FOREIGN KEY ("blockId", "shopId") REFERENCES public."SmartMaintenanceBlock"("id", "shopId")');
     expect(migration).toContain('FOREIGN KEY ("serviceDefinitionId", "shopId") REFERENCES public."ServiceDefinition"("id", "shopId")');
     expect(migration).toContain('DROP POLICY IF EXISTS "Members can delete smart maintenance blocks"');

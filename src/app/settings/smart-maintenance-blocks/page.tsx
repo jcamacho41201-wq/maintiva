@@ -234,18 +234,23 @@ export default function SmartMaintenanceBlocksPage() {
   }
 
   async function saveBlackout() {
+    const startMinute = timeToMinutes(blackout.isFullDay ? "00:00" : blackout.startsAt);
+    const endMinute = timeToMinutes(blackout.isFullDay ? "23:59" : blackout.endsAt);
     const result = await store.saveSmartMaintenanceBlockBlackout({
       blockId: blackout.blockId || null,
       startsAt: zonedTimeToUtcIso(
         blackout.date,
-        timeToMinutes(blackout.isFullDay ? "00:00" : blackout.startsAt),
+        startMinute,
         state.shop.timezone,
       ),
       endsAt: zonedTimeToUtcIso(
         blackout.date,
-        timeToMinutes(blackout.isFullDay ? "23:59" : blackout.endsAt),
+        endMinute,
         state.shop.timezone,
       ),
+      localDate: blackout.date,
+      startMinute,
+      endMinute,
       reason: blackout.reason,
       isFullDay: blackout.isFullDay,
     });
