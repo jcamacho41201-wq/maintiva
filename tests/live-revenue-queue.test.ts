@@ -248,8 +248,15 @@ describe("revenue queue synchronization guardrails", () => {
     expect(importPageSource).toContain("Import ${readyRows} rows and hold ${heldRows} for review");
     expect(importPageSource).toContain("Save ${heldRows} rows for review");
     expect(importPageSource).toContain("Needs review");
-    expect(pilotStateSource).toMatch(/row.status === "INVALID" \|\| row.status === "HELD"[\s\S]+return override === "SKIP"/);
+    expect(pilotStateSource).toContain("effectiveImportRowAction(row, rowActions, input.duplicateMode)");
     expect(pilotStateSource).toMatch(/row.status !== "INVALID" &&[\s\S]+row.status !== "HELD"/);
+  });
+
+  it("keeps CSV duplicate and vehicle-match decisions consistent between preview and persistence", () => {
+    expect(pilotStateSource).toContain("effectiveImportRowAction(row, rowActions, input.duplicateMode)");
+    expect(pilotStateSource).toMatch(/tx\.vehicle\.findFirst\(\{\s+where: \{\s+shopId: context\.shopId,[\s\S]+customerId: customer\.id,[\s\S]+year: numberValue\(normalized, "vehicleYear"\),[\s\S]+make: stringValue\(normalized, "vehicleMake"\),[\s\S]+model: stringValue\(normalized, "vehicleModel"\)/);
+    expect(importPageSource).toContain("Duplicate skipped");
+    expect(importPageSource).toContain("importResultMessage(summary)");
   });
 
   it("uses shared missing-mileage display helpers for customer and vehicle pages", () => {

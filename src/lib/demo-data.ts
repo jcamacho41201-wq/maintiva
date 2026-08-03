@@ -258,6 +258,7 @@ export type ImportHistoryRecord = {
   failedRows: number;
   heldRows?: number;
   invalidRows?: number;
+  resultMessage?: string;
   errorReportUrl?: string;
 };
 

@@ -185,22 +185,78 @@ describe("CSV import workflow", () => {
     });
 
     expect(preview.rows[0].entities.customer.status).toBe("MATCH");
+    expect(preview.rows[0].entities.customer.message).toBe("Matched existing customer using email.");
     expect(preview.rows[0].entities.vehicle.status).toBe("MATCH");
+    expect(preview.rows[0].entities.vehicle.message).toBe("Matched existing vehicle using VIN.");
     expect(preview.rows[0].entities.child.status).toBe("DUPLICATE");
     expect(summarizeImport(preview.rows, "SKIP")).toMatchObject({
       skippedRows: 1,
       successfulRows: 0,
+      importedRows: 0,
+      duplicateSkippedRows: 1,
       updatedRows: 0,
+      totalProcessedRows: 1,
+      resultMessage: "Skipped 1 duplicate row.",
+    });
+    expect(summarizeImport(preview.rows, "SKIP", { [preview.rows[0].rowNumber]: "IMPORT" })).toMatchObject({
+      skippedRows: 1,
+      successfulRows: 0,
+      importedRows: 0,
+      duplicateSkippedRows: 1,
+      updatedRows: 0,
+      totalProcessedRows: 1,
     });
     expect(summarizeImport(preview.rows, "UPDATE")).toMatchObject({
       skippedRows: 0,
       successfulRows: 0,
       updatedRows: 1,
+      totalProcessedRows: 1,
     });
     expect(summarizeImport(preview.rows, "IMPORT_AS_NEW")).toMatchObject({
       skippedRows: 0,
       successfulRows: 1,
+      importedRows: 1,
       updatedRows: 0,
+      totalProcessedRows: 1,
+    });
+  });
+
+  it("reports exact phone and vehicle-detail match identifiers", () => {
+    const rows = parseCsv(
+      "First Name,Last Name,Email,Phone,VIN,Year,Make,Model,Current Mileage,Service Name,Service Date,Service Mileage,Price,Labor Hours\nJustin,Camacho,,(404) 555-0187,,2003,Jeep,Wrangler,,Coolant Flush,2026-07-10,,180,1.0",
+    );
+    const preview = previewImport({
+      rows,
+      mapping: detectColumnMapping(Object.keys(rows[0])),
+      importType: "COMBINED",
+      state: createInitialDemoState(),
+    });
+
+    expect(preview.rows[0].status).toBe("VALID");
+    expect(preview.rows[0].entities.customer.message).toBe("Matched existing customer using phone.");
+    expect(preview.rows[0].entities.vehicle.message).toBe("Matched existing vehicle using customer-scoped year, make, and model.");
+  });
+
+  it("holds conflicting customer identifiers for review instead of silently attaching", () => {
+    const rows = parseCsv(
+      "First Name,Last Name,Email,Phone,VIN,Year,Make,Model,Current Mileage,Service Name,Service Date,Service Mileage,Price,Labor Hours\nWrong,Name,justin@example.com,(404) 555-9999,,2021,Honda,CR-V,,Check Engine Diagnostic,2026-07-03,,160,1.01",
+    );
+    const preview = previewImport({
+      rows,
+      mapping: detectColumnMapping(Object.keys(rows[0])),
+      importType: "COMBINED",
+      state: createInitialDemoState(),
+    });
+
+    expect(preview.rows[0].status).toBe("HELD");
+    expect(preview.rows[0].action).toBe("HOLD");
+    expect(preview.rows[0].entities.customer.message).toBe("Matched existing customer using email.");
+    expect(preview.rows[0].errors).toContain("Customer identity conflict: email matches an existing customer, but phone and name differ.");
+    expect(summarizeImport(preview.rows)).toMatchObject({
+      readyRows: 0,
+      heldRows: 1,
+      totalProcessedRows: 1,
+      resultMessage: "Held 1 row for review.",
     });
   });
 

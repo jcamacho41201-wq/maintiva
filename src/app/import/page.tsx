@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import {
   buildImportErrorCsv,
   detectColumnMapping,
+  importResultMessage,
   importRowLimitMessage,
   isImportRowLimitExceeded,
   maintivaCsvTemplate,
@@ -345,7 +346,7 @@ export default function ImportPage() {
             </div>
             {completed && (
               <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700">
-                Import results saved. Ready rows created operational records; held rows remain available for review in Import History.
+                {importResultMessage(summary)}
               </div>
             )}
             {saveError && (
@@ -368,8 +369,8 @@ export default function ImportPage() {
                 <th className="px-5 py-3">File</th>
                 <th className="px-5 py-3">Type</th>
                 <th className="px-5 py-3">Status</th>
-                <th className="px-5 py-3">Successful</th>
-                <th className="px-5 py-3">Duplicates</th>
+                <th className="px-5 py-3">Imported</th>
+                <th className="px-5 py-3">Duplicate skipped</th>
                 <th className="px-5 py-3">Held</th>
                 <th className="px-5 py-3">Failed</th>
               </tr>
@@ -377,7 +378,10 @@ export default function ImportPage() {
             <tbody className="divide-y divide-zinc-100">
               {state.importHistory.map((item) => (
                 <tr key={item.id}>
-                  <td className="px-5 py-4 font-medium">{item.fileName}</td>
+                  <td className="px-5 py-4">
+                    <p className="font-medium">{item.fileName}</p>
+                    {item.resultMessage && <p className="mt-1 text-xs text-zinc-500">{item.resultMessage}</p>}
+                  </td>
                   <td className="px-5 py-4">{item.importType}</td>
                   <td className="px-5 py-4">
                     <Badge variant={(item.displayStatus ?? item.status) === "COMPLETED" ? "green" : (item.displayStatus ?? item.status) === "FAILED" ? "red" : "yellow"}>

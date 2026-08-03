@@ -26,6 +26,7 @@ import { hasActiveVehicleAppointmentAt } from "@/lib/appointment";
 import { createAppointmentFromRecords } from "@/lib/demo-calculations";
 import {
   classifyImportRowEvent,
+  effectiveImportRowAction,
   summarizeImport,
   type CsvRow,
   type DuplicateImportMode,
@@ -1653,17 +1654,7 @@ export function useDemoStore() {
 
         const summary = summarizeImport(input.previewRows, input.duplicateMode, input.rowActions);
         update((draft) => {
-          function actionFor(row: ImportPreviewRow) {
-            const override = input.rowActions?.[row.rowNumber];
-            if (row.status === "INVALID" || row.status === "HELD") return override === "SKIP" ? "SKIP" as const : "HOLD" as const;
-            if (override) return override;
-            if (row.entities.child.status === "DUPLICATE") {
-              if (input.duplicateMode === "UPDATE") return "UPDATE" as const;
-              if (input.duplicateMode === "IMPORT_AS_NEW") return "IMPORT_AS_NEW" as const;
-              return "SKIP" as const;
-            }
-            return row.action;
-          }
+          const actionFor = (row: ImportPreviewRow) => effectiveImportRowAction(row, input.rowActions, input.duplicateMode);
           const importedRows = input.previewRows.filter((row) =>
             row.status !== "INVALID" &&
             row.status !== "HELD" &&
@@ -1889,13 +1880,14 @@ export function useDemoStore() {
                     : "COMPLETED",
                 importedAt: new Date().toISOString(),
                 totalRows: summary.totalRows,
-                successfulRows: summary.successfulRows,
-                duplicateRows: summary.duplicateRows,
+                successfulRows: summary.importedRows,
+                duplicateRows: summary.duplicateSkippedRows,
                 updatedRows: summary.updatedRows,
                 skippedRows: summary.skippedRows,
                 failedRows: 0,
                 heldRows: summary.heldRows,
                 invalidRows: summary.invalidRows,
+                resultMessage: summary.resultMessage,
                 errorReportUrl: summary.heldRows > 0 || summary.skippedRows > 0 ? "downloadable-result-report" : undefined,
               },
               ...draft.importHistory,

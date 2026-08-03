@@ -41,6 +41,7 @@ import {
   importRowLimitMessage,
   isImportRowLimitExceeded,
   classifyImportRowEvent,
+  effectiveImportRowAction,
   previewImport,
   summarizeImport,
   type CsvRow,
@@ -800,11 +801,13 @@ function importErrorReportSummary(value: unknown) {
     displayStatus?: ImportHistoryRecord["displayStatus"];
     heldRows?: number;
     invalidRows?: number;
+    resultMessage?: string;
   };
   return {
     displayStatus: report.displayStatus,
     heldRows: typeof report.heldRows === "number" ? report.heldRows : undefined,
     invalidRows: typeof report.invalidRows === "number" ? report.invalidRows : undefined,
+    resultMessage: typeof report.resultMessage === "string" ? report.resultMessage : undefined,
   };
 }
 
@@ -2119,6 +2122,7 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
         failedRows: record.failedRows,
         heldRows: reportSummary.heldRows,
         invalidRows: reportSummary.invalidRows,
+        resultMessage: reportSummary.resultMessage,
         errorReportUrl: record.errorReportUrl ?? undefined,
       };
     }),
@@ -4105,17 +4109,7 @@ export async function importPilotCsvRows(
     Object.entries(input.rowActions ?? {}).map(([rowNumber, action]) => [Number(rowNumber), action]),
   ) as Record<number, ImportRowAction>;
   const summary = summarizeImport(preview.rows, input.duplicateMode, rowActions);
-  const rowAction = (row: (typeof preview.rows)[number]) => {
-    const override = rowActions[row.rowNumber];
-    if (row.status === "INVALID" || row.status === "HELD") return override === "SKIP" ? "SKIP" as const : "HOLD" as const;
-    if (override) return override;
-    if (row.entities.child.status === "DUPLICATE") {
-      if (input.duplicateMode === "UPDATE") return "UPDATE" as const;
-      if (input.duplicateMode === "IMPORT_AS_NEW") return "IMPORT_AS_NEW" as const;
-      return "SKIP" as const;
-    }
-    return row.action;
-  };
+  const rowAction = (row: (typeof preview.rows)[number]) => effectiveImportRowAction(row, rowActions, input.duplicateMode);
   const rowsToImport = preview.rows.filter((row) => {
     const action = rowAction(row);
     return (
@@ -4191,12 +4185,24 @@ export async function importPilotCsvRows(
       });
       if (row.entities.customer.key) customerByKey.set(row.entities.customer.key, customer);
 
-      const existingVinVehicle = vin
+      const shouldCreateSeparateVehicle = action === "IMPORT_AS_NEW" && row.entities.vehicle.status !== "MATCH";
+      const existingVinVehicle = !shouldCreateSeparateVehicle && vin
         ? await tx.vehicle.findFirst({ where: { shopId: context.shopId, vin } })
         : null;
       const vehicleVin = existingVinVehicle && action === "IMPORT_AS_NEW" && row.entities.vehicle.status !== "MATCH" ? null : vin || null;
       let vehicle = row.entities.vehicle.key ? vehicleByKey.get(row.entities.vehicle.key) ?? null : null;
       vehicle ??= existingVinVehicle;
+      vehicle ??= !shouldCreateSeparateVehicle
+        ? await tx.vehicle.findFirst({
+          where: {
+            shopId: context.shopId,
+            customerId: customer.id,
+            year: numberValue(normalized, "vehicleYear"),
+            make: stringValue(normalized, "vehicleMake"),
+            model: stringValue(normalized, "vehicleModel"),
+          },
+        })
+        : null;
 
       if (vehicle) {
         const nextCurrentMileage = currentMileage ?? (
@@ -4485,8 +4491,8 @@ export async function importPilotCsvRows(
         importType: input.importType,
         status: summary.heldRows > 0 ? "PARTIAL" : "COMPLETED",
         totalRows: summary.totalRows,
-        successfulRows: summary.successfulRows,
-        duplicateRows: summary.duplicateRows,
+        successfulRows: summary.importedRows,
+        duplicateRows: summary.duplicateSkippedRows,
         updatedRows: summary.updatedRows,
         skippedRows: summary.skippedRows,
         failedRows: 0,
@@ -4503,6 +4509,44 @@ export async function importPilotCsvRows(
           reviewRows: summary.reviewRows,
           invalidRows: summary.invalidRows,
           duplicateSkippedRows: summary.duplicateSkippedRows,
+          importedRows: summary.importedRows,
+          matchedExistingRows: summary.matchedExistingRows,
+          needsReviewRows: summary.needsReviewRows,
+          skippedByUserRows: summary.skippedByUserRows,
+          totalProcessedRows: summary.totalProcessedRows,
+          resultMessage: summary.resultMessage,
+          rows: preview.rows.map((row) => {
+            const action = rowAction(row);
+            return {
+              rowNumber: row.rowNumber,
+              primaryOutcome: row.status === "INVALID"
+                ? "INVALID"
+                : row.status === "HELD" || action === "HOLD"
+                  ? "NEEDS_REVIEW"
+                  : action === "SKIP" && row.entities.child.status === "DUPLICATE"
+                    ? "DUPLICATE_SKIPPED"
+                    : action === "SKIP"
+                      ? "SKIPPED_BY_USER"
+                      : action === "UPDATE"
+                        ? "MATCHED_EXISTING"
+                        : "IMPORTED",
+              customer: {
+                status: row.entities.customer.status,
+                matchField: row.entities.customer.matchField,
+                message: row.entities.customer.message,
+              },
+              vehicle: {
+                status: row.entities.vehicle.status,
+                matchField: row.entities.vehicle.matchField,
+                message: row.entities.vehicle.message,
+              },
+              child: {
+                entity: row.entities.child.entity,
+                status: row.entities.child.status,
+                message: row.entities.child.message,
+              },
+            };
+          }),
         },
       },
     });

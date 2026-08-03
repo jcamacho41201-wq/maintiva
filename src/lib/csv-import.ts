@@ -57,6 +57,8 @@ export type EntityImportResult = {
   status: "CREATE" | "MATCH" | "DUPLICATE" | "UPDATE" | "HOLD" | "SKIP" | "ERROR" | "NONE";
   message: string;
   key?: string;
+  matchField?: "customerExternalId" | "vehicleExternalId" | "email" | "phone" | "name" | "vin" | "vehicleDetails" | "batch";
+  reviewIssue?: string;
 };
 
 export type ImportPreviewRow = {
@@ -97,6 +99,13 @@ export type ImportSummary = {
   skippedRows: number;
   successfulRows: number;
   updatedRows: number;
+  importedRows: number;
+  matchedExistingRows: number;
+  needsReviewRows: number;
+  invalidRowsPrimary: number;
+  skippedByUserRows: number;
+  totalProcessedRows: number;
+  resultMessage: string;
 };
 
 export const maintivaCsvTemplate = [
@@ -369,12 +378,67 @@ function existingCustomerResult(state: DemoState, normalized: Record<string, Nor
   const phone = normalizePhone(normalized.customerPhone);
   const first = normalizeText(normalized.customerFirstName);
   const last = normalizeText(normalized.customerLastName);
-  const match = state.customers.find((customer) =>
-    (email && normalizeText(customer.email) === email) ||
-    (phone && normalizePhone(customer.phone) === phone) ||
-    (first && last && normalizeText(customer.firstName) === first && normalizeText(customer.lastName) === last),
-  );
-  return match ? { match, key: `existing:${match.id}` } : undefined;
+  const emailMatch = email ? state.customers.find((customer) => normalizeText(customer.email) === email) : undefined;
+  const phoneMatch = phone ? state.customers.find((customer) => normalizePhone(customer.phone) === phone) : undefined;
+  const nameMatch = first && last
+    ? state.customers.find((customer) => normalizeText(customer.firstName) === first && normalizeText(customer.lastName) === last)
+    : undefined;
+
+  if (emailMatch && phoneMatch && emailMatch.id !== phoneMatch.id) {
+    return {
+      match: emailMatch,
+      key: `existing:${emailMatch.id}`,
+      matchField: "email" as const,
+      message: "Matched existing customer using email.",
+      reviewIssue: "Customer identity conflict: email and phone match different existing customers.",
+    };
+  }
+  if (emailMatch) {
+    const matchPhone = normalizePhone(emailMatch.phone);
+    const matchFirst = normalizeText(emailMatch.firstName);
+    const matchLast = normalizeText(emailMatch.lastName);
+    const conflicts = [
+      phone && matchPhone && matchPhone !== phone ? "phone" : "",
+      first && last && matchFirst && matchLast && (matchFirst !== first || matchLast !== last) ? "name" : "",
+    ].filter(Boolean);
+    return {
+      match: emailMatch,
+      key: `existing:${emailMatch.id}`,
+      matchField: "email" as const,
+      message: "Matched existing customer using email.",
+      reviewIssue: conflicts.length > 0
+        ? `Customer identity conflict: email matches an existing customer, but ${conflicts.join(" and ")} differ.`
+        : undefined,
+    };
+  }
+  if (phoneMatch) {
+    const matchEmail = normalizeText(phoneMatch.email);
+    const matchFirst = normalizeText(phoneMatch.firstName);
+    const matchLast = normalizeText(phoneMatch.lastName);
+    const conflicts = [
+      email && matchEmail && matchEmail !== email ? "email" : "",
+      first && last && matchFirst && matchLast && (matchFirst !== first || matchLast !== last) ? "name" : "",
+    ].filter(Boolean);
+    return {
+      match: phoneMatch,
+      key: `existing:${phoneMatch.id}`,
+      matchField: "phone" as const,
+      message: "Matched existing customer using phone.",
+      reviewIssue: conflicts.length > 0
+        ? `Customer identity conflict: phone matches an existing customer, but ${conflicts.join(" and ")} differ.`
+        : undefined,
+    };
+  }
+  if (nameMatch) {
+    return {
+      match: nameMatch,
+      key: `existing:${nameMatch.id}`,
+      matchField: "name" as const,
+      message: "Potential existing customer matched by name.",
+      reviewIssue: "Name-only customer match needs review before attaching imported records.",
+    };
+  }
+  return undefined;
 }
 
 function existingVehicleResult(state: DemoState, normalized: Record<string, NormalizedCsvValue>, customerId?: string) {
@@ -382,11 +446,38 @@ function existingVehicleResult(state: DemoState, normalized: Record<string, Norm
   const year = Number(normalized.vehicleYear);
   const make = normalizeText(normalized.vehicleMake);
   const model = normalizeText(normalized.vehicleModel);
-  const match = state.vehicles.find((vehicle) =>
-    (vin && normalizeVin(vehicle.vin) === vin) ||
-    (customerId && vehicle.customerId === customerId && vehicle.year === year && normalizeText(vehicle.make) === make && normalizeText(vehicle.model) === model),
-  );
-  return match ? { match, key: `existing:${match.id}` } : undefined;
+  const vinMatch = vin ? state.vehicles.find((vehicle) => normalizeVin(vehicle.vin) === vin) : undefined;
+  if (vinMatch) {
+    return {
+      match: vinMatch,
+      key: `existing:${vinMatch.id}`,
+      matchField: "vin" as const,
+      message: "Matched existing vehicle using VIN.",
+      reviewIssue: customerId && vinMatch.customerId !== customerId
+        ? "Vehicle identity conflict: VIN belongs to a different customer in this shop."
+        : undefined,
+    };
+  }
+  const detailMatches = customerId
+    ? state.vehicles.filter((vehicle) =>
+      vehicle.customerId === customerId &&
+      vehicle.year === year &&
+      normalizeText(vehicle.make) === make &&
+      normalizeText(vehicle.model) === model,
+    )
+    : [];
+  const match = detailMatches[0];
+  return match
+    ? {
+        match,
+        key: `existing:${match.id}`,
+        matchField: "vehicleDetails" as const,
+        message: "Matched existing vehicle using customer-scoped year, make, and model.",
+        reviewIssue: detailMatches.length > 1
+          ? "Vehicle identity conflict: multiple vehicles match this customer, year, make, and model."
+          : undefined,
+      }
+    : undefined;
 }
 
 function existingChildResult(state: DemoState, kind: EntityImportResult["entity"], vehicleId: string | undefined, normalized: Record<string, NormalizedCsvValue>) {
@@ -506,23 +597,25 @@ export function previewImport({
     }
 
     const customerMatch = existingCustomerResult(state, normalized);
+    if (customerMatch?.reviewIssue) reviewIssues.push(customerMatch.reviewIssue);
     const cKey = customerMatch?.key ?? customerKey(normalized);
     const customerAlreadyInBatch = customerBatch.has(cKey);
     if (!customerMatch && !customerAlreadyInBatch) customerBatch.set(cKey, `batch-customer-${index}`);
     const customer: EntityImportResult = customerMatch
-      ? { entity: "Customer", status: "MATCH", message: "Matched existing customer using email, phone, or name.", key: cKey }
+      ? { entity: "Customer", status: "MATCH", message: customerMatch.message, key: cKey, matchField: customerMatch.matchField, reviewIssue: customerMatch.reviewIssue }
       : customerAlreadyInBatch
-        ? { entity: "Customer", status: "MATCH", message: "Reuses customer created earlier in this import.", key: cKey }
+        ? { entity: "Customer", status: "MATCH", message: "Reuses customer created earlier in this import.", key: cKey, matchField: "batch" }
         : { entity: "Customer", status: "CREATE", message: "New customer will be created.", key: cKey };
 
     const vehicleMatch = existingVehicleResult(state, normalized, customerMatch?.match.id);
+    if (vehicleMatch?.reviewIssue) reviewIssues.push(vehicleMatch.reviewIssue);
     const vKey = vehicleMatch?.key ?? vehicleKey(normalized, cKey);
     const vehicleAlreadyInBatch = vehicleBatch.has(vKey);
     if (!vehicleMatch && !vehicleAlreadyInBatch) vehicleBatch.set(vKey, `batch-vehicle-${index}`);
     const vehicle: EntityImportResult = vehicleMatch
-      ? { entity: "Vehicle", status: "MATCH", message: "Matched existing vehicle using VIN or customer plus vehicle details.", key: vKey }
+      ? { entity: "Vehicle", status: "MATCH", message: vehicleMatch.message, key: vKey, matchField: vehicleMatch.matchField, reviewIssue: vehicleMatch.reviewIssue }
       : vehicleAlreadyInBatch
-        ? { entity: "Vehicle", status: "MATCH", message: "Reuses vehicle created earlier in this import.", key: vKey }
+        ? { entity: "Vehicle", status: "MATCH", message: "Reuses vehicle created earlier in this import.", key: vKey, matchField: "batch" }
         : { entity: "Vehicle", status: "CREATE", message: "New vehicle will be created under the resolved customer.", key: vKey };
 
     const kind = childKind(importType, normalized, eventClassification);
@@ -564,18 +657,37 @@ export function previewImport({
   return { rows: previewRows, summary };
 }
 
-function effectiveAction(row: ImportPreviewRow, rowActions?: Record<number, ImportRowAction>, duplicateMode: DuplicateImportMode = "SKIP") {
+export function effectiveImportRowAction(row: ImportPreviewRow, rowActions?: Record<number, ImportRowAction>, duplicateMode: DuplicateImportMode = "SKIP") {
   const override = rowActions?.[row.rowNumber];
   if (row.status === "INVALID" || row.status === "HELD") {
     return override === "SKIP" ? "SKIP" : "HOLD";
   }
-  if (override) return override;
-  if (row.entities.child.status === "DUPLICATE") {
-    if (duplicateMode === "UPDATE") return "UPDATE";
-    if (duplicateMode === "IMPORT_AS_NEW") return "IMPORT_AS_NEW";
+  if (row.status === "DUPLICATE" || row.entities.child.status === "DUPLICATE") {
+    if (override === "HOLD") return "HOLD";
+    if (override === "UPDATE" || duplicateMode === "UPDATE") return "UPDATE";
+    if (override === "IMPORT_AS_NEW" || duplicateMode === "IMPORT_AS_NEW") return "IMPORT_AS_NEW";
     return "SKIP";
   }
+  if (override) return override;
   return row.action;
+}
+
+function pluralize(count: number, singular: string, plural = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+export function importResultMessage(summary: Pick<ImportSummary, "importedRows" | "updatedRows" | "duplicateSkippedRows" | "heldRows" | "invalidRows" | "skippedByUserRows">) {
+  const parts = [
+    summary.importedRows > 0 ? `Imported ${pluralize(summary.importedRows, "row")}` : "",
+    summary.updatedRows > 0 ? `updated ${pluralize(summary.updatedRows, "row")}` : "",
+    summary.duplicateSkippedRows > 0 ? `skipped ${pluralize(summary.duplicateSkippedRows, "duplicate row")}` : "",
+    summary.heldRows > 0 ? `held ${pluralize(summary.heldRows, "row")} for review` : "",
+    summary.invalidRows > 0 ? `found ${pluralize(summary.invalidRows, "invalid row")}` : "",
+    summary.skippedByUserRows > 0 ? `skipped ${pluralize(summary.skippedByUserRows, "row")} by user action` : "",
+  ].filter(Boolean);
+  if (parts.length === 0) return "No rows were processed.";
+  const sentence = parts.join(", ").replace(/, ([^,]*)$/, parts.length > 1 ? ", and $1" : "$1");
+  return `${sentence.charAt(0).toUpperCase()}${sentence.slice(1)}.`;
 }
 
 export function summarizeImport(
@@ -583,27 +695,49 @@ export function summarizeImport(
   duplicateMode: DuplicateImportMode = "SKIP",
   rowActions: Record<number, ImportRowAction> = {},
 ): ImportSummary {
-  const actionFor = (row: ImportPreviewRow) => effectiveAction(row, rowActions, duplicateMode);
+  const actionFor = (row: ImportPreviewRow) => effectiveImportRowAction(row, rowActions, duplicateMode);
   const importable = rows.filter((row) =>
     ["IMPORT", "UPDATE", "IMPORT_AS_NEW"].includes(actionFor(row)) &&
     row.status !== "INVALID" &&
     row.status !== "HELD",
   );
+  const importedRows = importable.filter((row) => actionFor(row) !== "UPDATE").length;
+  const updatedRows = rows.filter((row) => actionFor(row) === "UPDATE").length;
   const customersToCreate = new Set(importable.filter((row) => row.entities.customer.status === "CREATE").map((row) => row.entities.customer.key)).size;
   const customersMatched = new Set(importable.filter((row) => row.entities.customer.status === "MATCH").map((row) => row.entities.customer.key)).size;
   const vehiclesToCreate = new Set(importable.filter((row) => row.entities.vehicle.status === "CREATE").map((row) => row.entities.vehicle.key)).size;
   const vehiclesMatched = new Set(importable.filter((row) => row.entities.vehicle.status === "MATCH").map((row) => row.entities.vehicle.key)).size;
   const skippedDuplicateRows = rows.filter((row) => row.entities.child.status === "DUPLICATE" && actionFor(row) === "SKIP").length;
+  const heldRows = rows.filter((row) => actionFor(row) === "HOLD").length;
+  const skippedRows = rows.filter((row) => actionFor(row) === "SKIP").length;
+  const invalidRows = rows.filter((row) => row.status === "INVALID").length;
+  const skippedByUserRows = rows.filter((row) => actionFor(row) === "SKIP" && row.entities.child.status !== "DUPLICATE").length;
+  const matchedExistingRows = rows.filter((row) =>
+    actionFor(row) === "UPDATE" ||
+    (
+      actionFor(row) === "SKIP" &&
+      row.entities.child.status !== "DUPLICATE" &&
+      (row.entities.customer.status === "MATCH" || row.entities.vehicle.status === "MATCH")
+    ),
+  ).length;
+  const resultSummary = {
+    importedRows,
+    updatedRows,
+    duplicateSkippedRows: skippedDuplicateRows,
+    heldRows,
+    invalidRows,
+    skippedByUserRows,
+  };
 
   return {
     totalRows: rows.length,
     readyRows: importable.length,
     validRows: rows.filter((row) => row.status === "VALID").length,
     reviewRows: rows.filter((row) => row.status === "HELD").length,
-    invalidRows: rows.filter((row) => row.status === "INVALID").length,
+    invalidRows,
     duplicateRows: rows.filter((row) => row.entities.child.status === "DUPLICATE").length,
     duplicateSkippedRows: skippedDuplicateRows,
-    failedRows: rows.filter((row) => row.status === "INVALID").length,
+    failedRows: invalidRows,
     customersToCreate,
     customersMatched,
     vehiclesToCreate,
@@ -611,12 +745,19 @@ export function summarizeImport(
     servicesToImport: importable.filter((row) => row.entities.child.entity === "Service" && row.entities.child.status !== "DUPLICATE").length,
     declinedWorkToImport: importable.filter((row) => row.entities.child.entity === "Declined work" && row.entities.child.status !== "DUPLICATE").length,
     appointmentsToImport: importable.filter((row) => row.entities.child.entity === "Appointment" && row.entities.child.status !== "DUPLICATE").length,
-    recordsToUpdate: rows.filter((row) => actionFor(row) === "UPDATE").length,
+    recordsToUpdate: updatedRows,
     duplicateChildRecordsToSkip: skippedDuplicateRows,
-    heldRows: rows.filter((row) => actionFor(row) === "HOLD").length,
-    skippedRows: rows.filter((row) => actionFor(row) === "SKIP").length,
-    successfulRows: importable.filter((row) => actionFor(row) !== "UPDATE").length,
-    updatedRows: rows.filter((row) => actionFor(row) === "UPDATE").length,
+    heldRows,
+    skippedRows,
+    successfulRows: importedRows,
+    updatedRows,
+    importedRows,
+    matchedExistingRows,
+    needsReviewRows: heldRows,
+    invalidRowsPrimary: invalidRows,
+    skippedByUserRows,
+    totalProcessedRows: importedRows + updatedRows + skippedDuplicateRows + heldRows + invalidRows + skippedByUserRows,
+    resultMessage: importResultMessage(resultSummary),
   };
 }
 
