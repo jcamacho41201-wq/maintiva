@@ -5,11 +5,12 @@ import { CalendarX, Copy, Plus, Save, Trash2 } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { useDemoStore, type SmartMaintenanceBlockInput } from "@/lib/demo-store";
 import type { SmartMaintenanceBlock } from "@/lib/demo-data";
-import { isSmartMaintenanceBlocksEnabled } from "@/lib/feature-flags";
+import { isSmartMaintenanceBlocksUiEnabled } from "@/lib/feature-flags";
 import {
   calculateSmartMaintenanceBlockAvailability,
   minutesToTime,
   timeToMinutes,
+  zonedTimeToUtcIso,
 } from "@/lib/smart-maintenance-blocks";
 import { currentDateInTimeZone, formatHours } from "@/lib/utils";
 
@@ -75,10 +76,6 @@ function addDays(date: string, days: number) {
   return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
 }
 
-function dateTimeLocalToIso(date: string, time: string) {
-  return new Date(`${date}T${time}:00`).toISOString();
-}
-
 function formToInput(form: FormState, timezone: string): SmartMaintenanceBlockInput {
   return {
     id: form.id,
@@ -102,9 +99,23 @@ function formToInput(form: FormState, timezone: string): SmartMaintenanceBlockIn
 export default function SmartMaintenanceBlocksPage() {
   const store = useDemoStore();
   const { state } = store;
-  const enabled = isSmartMaintenanceBlocksEnabled();
-  const activeServices = state.services.filter((service) => service.isActive);
-  const firstServiceIds = activeServices.slice(0, 2).map((service) => service.id);
+  const enabled = isSmartMaintenanceBlocksUiEnabled();
+  const activeServices = useMemo(
+    () => state.services.filter((service) => service.isActive),
+    [state.services],
+  );
+  const activeBlocks = useMemo(
+    () => state.smartMaintenanceBlocks.filter((block) => !block.archivedAt),
+    [state.smartMaintenanceBlocks],
+  );
+  const archivedBlocks = useMemo(
+    () => state.smartMaintenanceBlocks.filter((block) => block.archivedAt),
+    [state.smartMaintenanceBlocks],
+  );
+  const firstServiceIds = useMemo(
+    () => activeServices.slice(0, 2).map((service) => service.id),
+    [activeServices],
+  );
   const [form, setForm] = useState<FormState>(() => {
     const firstBlock = state.smartMaintenanceBlocks.find((block) => !block.archivedAt);
     return firstBlock ? formFromBlock(firstBlock) : blankForm(state.shop.timezone, firstServiceIds);
@@ -225,8 +236,16 @@ export default function SmartMaintenanceBlocksPage() {
   async function saveBlackout() {
     const result = await store.saveSmartMaintenanceBlockBlackout({
       blockId: blackout.blockId || null,
-      startsAt: dateTimeLocalToIso(blackout.date, blackout.isFullDay ? "00:00" : blackout.startsAt),
-      endsAt: dateTimeLocalToIso(blackout.date, blackout.isFullDay ? "23:59" : blackout.endsAt),
+      startsAt: zonedTimeToUtcIso(
+        blackout.date,
+        timeToMinutes(blackout.isFullDay ? "00:00" : blackout.startsAt),
+        state.shop.timezone,
+      ),
+      endsAt: zonedTimeToUtcIso(
+        blackout.date,
+        timeToMinutes(blackout.isFullDay ? "23:59" : blackout.endsAt),
+        state.shop.timezone,
+      ),
       reason: blackout.reason,
       isFullDay: blackout.isFullDay,
     });
@@ -270,7 +289,7 @@ export default function SmartMaintenanceBlocksPage() {
             <h2 className="text-lg font-semibold">Blocks</h2>
           </CardHeader>
           <CardContent className="space-y-3">
-            {state.smartMaintenanceBlocks.filter((block) => !block.archivedAt).map((block) => (
+            {activeBlocks.map((block) => (
               <button
                 key={block.id}
                 onClick={() => editBlock(block)}
@@ -285,8 +304,25 @@ export default function SmartMaintenanceBlocksPage() {
                 <p className="mt-2 text-sm text-zinc-500">{block.serviceDefinitionIds.length} services · {block.maxVehicles} vehicles · {formatHours(block.maxLaborMinutes)}</p>
               </button>
             ))}
-            {state.smartMaintenanceBlocks.filter((block) => !block.archivedAt).length === 0 && (
+            {activeBlocks.length === 0 && (
               <p className="text-sm text-zinc-500">No blocks configured.</p>
+            )}
+            {archivedBlocks.length > 0 && (
+              <div className="border-t border-zinc-100 pt-3">
+                <p className="mb-2 text-xs font-semibold uppercase text-zinc-500">Archived</p>
+                <div className="space-y-2">
+                  {archivedBlocks.map((block) => (
+                    <button
+                      key={block.id}
+                      onClick={() => editBlock(block)}
+                      className={`w-full rounded-lg border p-3 text-left ${selectedBlockId === block.id ? "border-violet-950 bg-violet-50" : "border-zinc-200 bg-white"}`}
+                    >
+                      <p className="font-semibold">{block.name}</p>
+                      <p className="mt-1 text-sm text-zinc-500">{block.serviceDefinitionIds.length} services · archived</p>
+                    </button>
+                  ))}
+                </div>
+              </div>
             )}
           </CardContent>
         </Card>
@@ -439,7 +475,7 @@ export default function SmartMaintenanceBlocksPage() {
                 Scope
                 <select value={blackout.blockId} onChange={(event) => setBlackout({ ...blackout, blockId: event.target.value })} className="mt-2 h-10 w-full rounded-lg border border-zinc-200 px-3 outline-none focus:border-violet-500">
                   <option value="">All smart blocks</option>
-                  {state.smartMaintenanceBlocks.filter((block) => !block.archivedAt).map((block) => (
+                  {activeBlocks.map((block) => (
                     <option key={block.id} value={block.id}>{block.name}</option>
                   ))}
                 </select>

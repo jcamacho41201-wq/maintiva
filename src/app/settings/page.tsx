@@ -5,7 +5,7 @@ import { useState } from "react";
 import { CalendarClock, FileUp, Save, ShieldCheck, SquareStack } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { useDemoStore } from "@/lib/demo-store";
-import { isCustomerBookingEnabled, isSmartMaintenanceBlocksEnabled } from "@/lib/feature-flags";
+import { isCustomerBookingEnabled, isSmartMaintenanceBlocksUiEnabled } from "@/lib/feature-flags";
 import { formatDate } from "@/lib/utils";
 
 const dayLabels = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -22,7 +22,7 @@ function timeToMinutes(value: string) {
 export default function SettingsPage() {
   const { state, saveBookingSettings } = useDemoStore();
   const customerBookingEnabled = isCustomerBookingEnabled();
-  const smartMaintenanceBlocksEnabled = isSmartMaintenanceBlocksEnabled();
+  const smartMaintenanceBlocksEnabled = isSmartMaintenanceBlocksUiEnabled();
   const settings = state.bookingSettings!;
   const [form, setForm] = useState({
     onlineBookingEnabled: settings.onlineBookingEnabled,

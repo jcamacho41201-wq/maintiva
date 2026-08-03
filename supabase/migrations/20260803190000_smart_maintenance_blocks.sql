@@ -131,70 +131,63 @@ ALTER TABLE public."SmartMaintenanceBlockBlackout" ALTER COLUMN "updatedAt" SET 
 
 DO $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'SmartMaintenanceBlock_time_check') THEN
-    ALTER TABLE public."SmartMaintenanceBlock" ADD CONSTRAINT "SmartMaintenanceBlock_time_check"
-      CHECK ("startMinute" >= 0 AND "startMinute" <= 1439 AND "endMinute" >= 1 AND "endMinute" <= 1440 AND "endMinute" > "startMinute");
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'SmartMaintenanceBlock_capacity_check') THEN
-    ALTER TABLE public."SmartMaintenanceBlock" ADD CONSTRAINT "SmartMaintenanceBlock_capacity_check"
-      CHECK ("maxVehicles" >= 1 AND "maxLaborMinutes" >= 15);
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'SmartMaintenanceBlock_notice_horizon_check') THEN
-    ALTER TABLE public."SmartMaintenanceBlock" ADD CONSTRAINT "SmartMaintenanceBlock_notice_horizon_check"
-      CHECK ("minimumNoticeMinutes" >= 0 AND "maximumHorizonDays" >= 1);
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'SmartMaintenanceBlock_slot_interval_check') THEN
-    ALTER TABLE public."SmartMaintenanceBlock" ADD CONSTRAINT "SmartMaintenanceBlock_slot_interval_check"
-      CHECK ("slotIntervalMinutes" IN (15, 30, 60));
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'SmartMaintenanceBlock_approval_required_check') THEN
-    ALTER TABLE public."SmartMaintenanceBlock" ADD CONSTRAINT "SmartMaintenanceBlock_approval_required_check"
-      CHECK ("approvalRequired" = true);
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'SmartMaintenanceBlock_days_check') THEN
-    ALTER TABLE public."SmartMaintenanceBlock" ADD CONSTRAINT "SmartMaintenanceBlock_days_check"
-      CHECK ("daysOfWeek" <@ ARRAY[0, 1, 2, 3, 4, 5, 6]);
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'SmartMaintenanceBlockBlackout_time_check') THEN
-    ALTER TABLE public."SmartMaintenanceBlockBlackout" ADD CONSTRAINT "SmartMaintenanceBlockBlackout_time_check"
-      CHECK ("endsAt" > "startsAt");
-  END IF;
+  ALTER TABLE public."SmartMaintenanceBlock" DROP CONSTRAINT IF EXISTS "SmartMaintenanceBlock_name_check";
+  ALTER TABLE public."SmartMaintenanceBlock" DROP CONSTRAINT IF EXISTS "SmartMaintenanceBlock_time_check";
+  ALTER TABLE public."SmartMaintenanceBlock" DROP CONSTRAINT IF EXISTS "SmartMaintenanceBlock_capacity_check";
+  ALTER TABLE public."SmartMaintenanceBlock" DROP CONSTRAINT IF EXISTS "SmartMaintenanceBlock_notice_horizon_check";
+  ALTER TABLE public."SmartMaintenanceBlock" DROP CONSTRAINT IF EXISTS "SmartMaintenanceBlock_slot_interval_check";
+  ALTER TABLE public."SmartMaintenanceBlock" DROP CONSTRAINT IF EXISTS "SmartMaintenanceBlock_approval_required_check";
+  ALTER TABLE public."SmartMaintenanceBlock" DROP CONSTRAINT IF EXISTS "SmartMaintenanceBlock_days_check";
+  ALTER TABLE public."SmartMaintenanceBlockBlackout" DROP CONSTRAINT IF EXISTS "SmartMaintenanceBlockBlackout_time_check";
+
+  ALTER TABLE public."SmartMaintenanceBlock" ADD CONSTRAINT "SmartMaintenanceBlock_name_check"
+    CHECK (length(btrim("name")) > 0);
+  ALTER TABLE public."SmartMaintenanceBlock" ADD CONSTRAINT "SmartMaintenanceBlock_time_check"
+    CHECK ("startMinute" >= 0 AND "startMinute" <= 1439 AND "endMinute" >= 1 AND "endMinute" <= 1440 AND "endMinute" > "startMinute");
+  ALTER TABLE public."SmartMaintenanceBlock" ADD CONSTRAINT "SmartMaintenanceBlock_capacity_check"
+    CHECK ("maxVehicles" >= 1 AND "maxLaborMinutes" >= 1);
+  ALTER TABLE public."SmartMaintenanceBlock" ADD CONSTRAINT "SmartMaintenanceBlock_notice_horizon_check"
+    CHECK ("minimumNoticeMinutes" >= 0 AND "maximumHorizonDays" >= 1 AND ("maximumHorizonDays" * 1440) > "minimumNoticeMinutes");
+  ALTER TABLE public."SmartMaintenanceBlock" ADD CONSTRAINT "SmartMaintenanceBlock_slot_interval_check"
+    CHECK ("slotIntervalMinutes" IN (15, 30, 60));
+  ALTER TABLE public."SmartMaintenanceBlock" ADD CONSTRAINT "SmartMaintenanceBlock_approval_required_check"
+    CHECK ("approvalRequired" = true);
+  ALTER TABLE public."SmartMaintenanceBlock" ADD CONSTRAINT "SmartMaintenanceBlock_days_check"
+    CHECK (cardinality("daysOfWeek") > 0 AND "daysOfWeek" <@ ARRAY[0, 1, 2, 3, 4, 5, 6]);
+  ALTER TABLE public."SmartMaintenanceBlockBlackout" ADD CONSTRAINT "SmartMaintenanceBlockBlackout_time_check"
+    CHECK ("endsAt" > "startsAt");
 END $$;
+
+CREATE UNIQUE INDEX IF NOT EXISTS "SmartMaintenanceBlock_id_shop_key" ON public."SmartMaintenanceBlock" ("id", "shopId");
+CREATE UNIQUE INDEX IF NOT EXISTS "ServiceDefinition_id_shop_key" ON public."ServiceDefinition" ("id", "shopId");
 
 DO $$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'SmartMaintenanceBlock_shopId_fkey') THEN
-    ALTER TABLE public."SmartMaintenanceBlock" ADD CONSTRAINT "SmartMaintenanceBlock_shopId_fkey"
-      FOREIGN KEY ("shopId") REFERENCES public."Shop"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'SmartMaintenanceBlock_createdByUserId_fkey') THEN
-    ALTER TABLE public."SmartMaintenanceBlock" ADD CONSTRAINT "SmartMaintenanceBlock_createdByUserId_fkey"
-      FOREIGN KEY ("createdByUserId") REFERENCES public."User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'SmartMaintenanceBlockService_shopId_fkey') THEN
-    ALTER TABLE public."SmartMaintenanceBlockService" ADD CONSTRAINT "SmartMaintenanceBlockService_shopId_fkey"
-      FOREIGN KEY ("shopId") REFERENCES public."Shop"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'SmartMaintenanceBlockService_blockId_fkey') THEN
-    ALTER TABLE public."SmartMaintenanceBlockService" ADD CONSTRAINT "SmartMaintenanceBlockService_blockId_fkey"
-      FOREIGN KEY ("blockId") REFERENCES public."SmartMaintenanceBlock"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'SmartMaintenanceBlockService_serviceDefinitionId_fkey') THEN
-    ALTER TABLE public."SmartMaintenanceBlockService" ADD CONSTRAINT "SmartMaintenanceBlockService_serviceDefinitionId_fkey"
-      FOREIGN KEY ("serviceDefinitionId") REFERENCES public."ServiceDefinition"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'SmartMaintenanceBlockBlackout_shopId_fkey') THEN
-    ALTER TABLE public."SmartMaintenanceBlockBlackout" ADD CONSTRAINT "SmartMaintenanceBlockBlackout_shopId_fkey"
-      FOREIGN KEY ("shopId") REFERENCES public."Shop"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'SmartMaintenanceBlockBlackout_blockId_fkey') THEN
-    ALTER TABLE public."SmartMaintenanceBlockBlackout" ADD CONSTRAINT "SmartMaintenanceBlockBlackout_blockId_fkey"
-      FOREIGN KEY ("blockId") REFERENCES public."SmartMaintenanceBlock"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'SmartMaintenanceBlockBlackout_createdByUserId_fkey') THEN
-    ALTER TABLE public."SmartMaintenanceBlockBlackout" ADD CONSTRAINT "SmartMaintenanceBlockBlackout_createdByUserId_fkey"
-      FOREIGN KEY ("createdByUserId") REFERENCES public."User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
-  END IF;
+  ALTER TABLE public."SmartMaintenanceBlock" DROP CONSTRAINT IF EXISTS "SmartMaintenanceBlock_shopId_fkey";
+  ALTER TABLE public."SmartMaintenanceBlock" DROP CONSTRAINT IF EXISTS "SmartMaintenanceBlock_createdByUserId_fkey";
+  ALTER TABLE public."SmartMaintenanceBlockService" DROP CONSTRAINT IF EXISTS "SmartMaintenanceBlockService_shopId_fkey";
+  ALTER TABLE public."SmartMaintenanceBlockService" DROP CONSTRAINT IF EXISTS "SmartMaintenanceBlockService_blockId_fkey";
+  ALTER TABLE public."SmartMaintenanceBlockService" DROP CONSTRAINT IF EXISTS "SmartMaintenanceBlockService_serviceDefinitionId_fkey";
+  ALTER TABLE public."SmartMaintenanceBlockBlackout" DROP CONSTRAINT IF EXISTS "SmartMaintenanceBlockBlackout_shopId_fkey";
+  ALTER TABLE public."SmartMaintenanceBlockBlackout" DROP CONSTRAINT IF EXISTS "SmartMaintenanceBlockBlackout_blockId_fkey";
+  ALTER TABLE public."SmartMaintenanceBlockBlackout" DROP CONSTRAINT IF EXISTS "SmartMaintenanceBlockBlackout_createdByUserId_fkey";
+
+  ALTER TABLE public."SmartMaintenanceBlock" ADD CONSTRAINT "SmartMaintenanceBlock_shopId_fkey"
+    FOREIGN KEY ("shopId") REFERENCES public."Shop"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  ALTER TABLE public."SmartMaintenanceBlock" ADD CONSTRAINT "SmartMaintenanceBlock_createdByUserId_fkey"
+    FOREIGN KEY ("createdByUserId") REFERENCES public."User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+  ALTER TABLE public."SmartMaintenanceBlockService" ADD CONSTRAINT "SmartMaintenanceBlockService_shopId_fkey"
+    FOREIGN KEY ("shopId") REFERENCES public."Shop"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  ALTER TABLE public."SmartMaintenanceBlockService" ADD CONSTRAINT "SmartMaintenanceBlockService_blockId_fkey"
+    FOREIGN KEY ("blockId", "shopId") REFERENCES public."SmartMaintenanceBlock"("id", "shopId") ON DELETE CASCADE ON UPDATE CASCADE;
+  ALTER TABLE public."SmartMaintenanceBlockService" ADD CONSTRAINT "SmartMaintenanceBlockService_serviceDefinitionId_fkey"
+    FOREIGN KEY ("serviceDefinitionId", "shopId") REFERENCES public."ServiceDefinition"("id", "shopId") ON DELETE CASCADE ON UPDATE CASCADE;
+  ALTER TABLE public."SmartMaintenanceBlockBlackout" ADD CONSTRAINT "SmartMaintenanceBlockBlackout_shopId_fkey"
+    FOREIGN KEY ("shopId") REFERENCES public."Shop"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+  ALTER TABLE public."SmartMaintenanceBlockBlackout" ADD CONSTRAINT "SmartMaintenanceBlockBlackout_blockId_fkey"
+    FOREIGN KEY ("blockId", "shopId") REFERENCES public."SmartMaintenanceBlock"("id", "shopId") ON DELETE CASCADE ON UPDATE CASCADE;
+  ALTER TABLE public."SmartMaintenanceBlockBlackout" ADD CONSTRAINT "SmartMaintenanceBlockBlackout_createdByUserId_fkey"
+    FOREIGN KEY ("createdByUserId") REFERENCES public."User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 END $$;
 
 CREATE INDEX IF NOT EXISTS "SmartMaintenanceBlock_shop_active_idx" ON public."SmartMaintenanceBlock" ("shopId", "isActive", "archivedAt");
@@ -204,6 +197,8 @@ CREATE INDEX IF NOT EXISTS "SmartMaintenanceBlockService_shop_block_idx" ON publ
 CREATE INDEX IF NOT EXISTS "SmartMaintenanceBlockService_shop_service_idx" ON public."SmartMaintenanceBlockService" ("shopId", "serviceDefinitionId");
 CREATE INDEX IF NOT EXISTS "SmartMaintenanceBlockBlackout_shop_time_idx" ON public."SmartMaintenanceBlockBlackout" ("shopId", "startsAt", "endsAt");
 CREATE INDEX IF NOT EXISTS "SmartMaintenanceBlockBlackout_shop_block_idx" ON public."SmartMaintenanceBlockBlackout" ("shopId", "blockId");
+CREATE UNIQUE INDEX IF NOT EXISTS "SmartMaintenanceBlockBlackout_block_time_key" ON public."SmartMaintenanceBlockBlackout" ("shopId", "blockId", "startsAt", "endsAt") WHERE "blockId" IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS "SmartMaintenanceBlockBlackout_shop_time_key" ON public."SmartMaintenanceBlockBlackout" ("shopId", "startsAt", "endsAt") WHERE "blockId" IS NULL;
 
 DO $$
 BEGIN
@@ -242,9 +237,6 @@ USING (public.maintiva_is_shop_member("shopId"))
 WITH CHECK (public.maintiva_is_shop_member("shopId"));
 
 DROP POLICY IF EXISTS "Members can delete smart maintenance blocks" ON public."SmartMaintenanceBlock";
-CREATE POLICY "Members can delete smart maintenance blocks"
-ON public."SmartMaintenanceBlock" FOR DELETE TO authenticated
-USING (public.maintiva_is_shop_member("shopId"));
 
 DROP POLICY IF EXISTS "Members can read smart block services" ON public."SmartMaintenanceBlockService";
 CREATE POLICY "Members can read smart block services"
@@ -263,9 +255,6 @@ USING (public.maintiva_is_shop_member("shopId"))
 WITH CHECK (public.maintiva_is_shop_member("shopId"));
 
 DROP POLICY IF EXISTS "Members can delete smart block services" ON public."SmartMaintenanceBlockService";
-CREATE POLICY "Members can delete smart block services"
-ON public."SmartMaintenanceBlockService" FOR DELETE TO authenticated
-USING (public.maintiva_is_shop_member("shopId"));
 
 DROP POLICY IF EXISTS "Members can read smart block blackouts" ON public."SmartMaintenanceBlockBlackout";
 CREATE POLICY "Members can read smart block blackouts"
@@ -288,8 +277,16 @@ CREATE POLICY "Members can delete smart block blackouts"
 ON public."SmartMaintenanceBlockBlackout" FOR DELETE TO authenticated
 USING (public.maintiva_is_shop_member("shopId"));
 
-GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE
+REVOKE DELETE ON TABLE
   public."SmartMaintenanceBlock",
-  public."SmartMaintenanceBlockService",
+  public."SmartMaintenanceBlockService"
+FROM authenticated;
+
+GRANT SELECT, INSERT, UPDATE ON TABLE
+  public."SmartMaintenanceBlock",
+  public."SmartMaintenanceBlockService"
+TO authenticated;
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE
   public."SmartMaintenanceBlockBlackout"
 TO authenticated;

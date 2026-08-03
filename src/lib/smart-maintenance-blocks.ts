@@ -41,7 +41,7 @@ export type SmartBlockAvailabilitySlot = {
 export type SmartBlockAvailabilityInput = {
   shop: { id: string; timezone: string };
   blocks: SmartMaintenanceBlock[];
-  services: Pick<MaintenanceService, "id" | "isActive" | "estimatedLaborMinutes">[];
+  services: Pick<MaintenanceService, "id" | "shopId" | "isActive" | "estimatedLaborMinutes">[];
   selectedServiceIds: string[];
   appointments: Pick<Appointment, "shopId" | "scheduledStart" | "scheduledEnd" | "status" | "totalLaborHours">[];
   blackouts: SmartMaintenanceBlockBlackout[];
@@ -89,12 +89,16 @@ function timeZoneOffsetMs(date: Date, timeZone: string) {
   return utc - date.getTime();
 }
 
-function zonedTimeToUtc(date: string, minuteOfDay: number, timeZone: string) {
+export function zonedTimeToUtc(date: string, minuteOfDay: number, timeZone: string) {
   const [year, month, day] = date.split("-").map(Number);
   const hour = Math.floor(minuteOfDay / 60);
   const minute = minuteOfDay % 60;
   const guessed = new Date(Date.UTC(year, month - 1, day, hour, minute, 0));
   return new Date(guessed.getTime() - timeZoneOffsetMs(guessed, timeZone));
+}
+
+export function zonedTimeToUtcIso(date: string, minuteOfDay: number, timeZone: string) {
+  return zonedTimeToUtc(date, minuteOfDay, timeZone).toISOString();
 }
 
 function dayOfWeek(date: string) {
@@ -137,25 +141,30 @@ function slotLabel(date: Date, timeZone: string) {
 }
 
 function selectedServiceLaborMinutes(
-  services: Pick<MaintenanceService, "id" | "isActive" | "estimatedLaborMinutes">[],
+  services: Pick<MaintenanceService, "id" | "shopId" | "isActive" | "estimatedLaborMinutes">[],
+  shopId: string,
   selectedServiceIds: string[],
 ) {
   return services
-    .filter((service) => selectedServiceIds.includes(service.id) && service.isActive)
+    .filter((service) => service.shopId === shopId && selectedServiceIds.includes(service.id) && service.isActive)
     .reduce((sum, service) => sum + service.estimatedLaborMinutes, 0);
 }
 
 export function blockEligibleServices(
   block: SmartMaintenanceBlock,
-  services: Pick<MaintenanceService, "id" | "isActive">[],
+  services: Pick<MaintenanceService, "id" | "shopId" | "isActive">[],
 ) {
-  const activeIds = new Set(services.filter((service) => service.isActive).map((service) => service.id));
+  const activeIds = new Set(
+    services
+      .filter((service) => service.shopId === block.shopId && service.isActive)
+      .map((service) => service.id),
+  );
   return block.serviceDefinitionIds.filter((id) => activeIds.has(id));
 }
 
 function blockSupportsSelection(
   block: SmartMaintenanceBlock,
-  services: Pick<MaintenanceService, "id" | "isActive">[],
+  services: Pick<MaintenanceService, "id" | "shopId" | "isActive">[],
   selectedServiceIds: string[],
 ) {
   if (!block.isActive || block.archivedAt) return false;
@@ -221,7 +230,7 @@ function capacityUsedBySlot(input: {
 }
 
 export function calculateSmartMaintenanceBlockAvailability(input: SmartBlockAvailabilityInput) {
-  const serviceLaborMinutes = selectedServiceLaborMinutes(input.services, input.selectedServiceIds);
+  const serviceLaborMinutes = selectedServiceLaborMinutes(input.services, input.shop.id, input.selectedServiceIds);
   if (serviceLaborMinutes <= 0) return [];
 
   const now = input.now ?? new Date();

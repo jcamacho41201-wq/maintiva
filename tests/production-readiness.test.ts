@@ -39,12 +39,29 @@ describe("production readiness safeguards", () => {
 
     expect(envExample).toContain('SMART_MAINTENANCE_BLOCKS_ENABLED="false"');
     expect(envExample).toContain('NEXT_PUBLIC_SMART_MAINTENANCE_BLOCKS_ENABLED="false"');
-    expect(flags).toContain('SMART_MAINTENANCE_BLOCKS_ENABLED === "true"');
-    expect(flags).toContain('NEXT_PUBLIC_SMART_MAINTENANCE_BLOCKS_ENABLED === "true"');
+    expect(flags).toContain("isSmartMaintenanceBlocksServerEnabled");
+    expect(flags).toContain("isSmartMaintenanceBlocksUiEnabled");
+    expect(flags).toContain('process.env.SMART_MAINTENANCE_BLOCKS_ENABLED === "true"');
+    expect(flags).toContain('process.env.NEXT_PUBLIC_SMART_MAINTENANCE_BLOCKS_ENABLED === "true"');
     expect(pilotState).toContain("assertSmartMaintenanceBlocksFeatureEnabled");
-    expect(pilotState).toContain("if (!isSmartMaintenanceBlocksEnabled())");
+    expect(pilotState).toContain("if (!isSmartMaintenanceBlocksServerEnabled())");
     expect(pilotState).toContain("isMissingSmartMaintenanceBlocksSchema");
-    expect(settingsPage).toContain("isSmartMaintenanceBlocksEnabled");
+    expect(settingsPage).toContain("isSmartMaintenanceBlocksUiEnabled");
+  });
+
+  it("keeps the Smart Maintenance Blocks migration tenant-scoped and non-destructive", () => {
+    const migration = source("supabase/migrations/20260803190000_smart_maintenance_blocks.sql");
+
+    expect(migration).toContain('CHECK (length(btrim("name")) > 0)');
+    expect(migration).toContain('("maximumHorizonDays" * 1440) > "minimumNoticeMinutes"');
+    expect(migration).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "SmartMaintenanceBlockService_block_service_key"');
+    expect(migration).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "SmartMaintenanceBlockBlackout_block_time_key"');
+    expect(migration).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "SmartMaintenanceBlockBlackout_shop_time_key"');
+    expect(migration).toContain('FOREIGN KEY ("blockId", "shopId") REFERENCES public."SmartMaintenanceBlock"("id", "shopId")');
+    expect(migration).toContain('FOREIGN KEY ("serviceDefinitionId", "shopId") REFERENCES public."ServiceDefinition"("id", "shopId")');
+    expect(migration).toContain('DROP POLICY IF EXISTS "Members can delete smart maintenance blocks"');
+    expect(migration).toContain('REVOKE DELETE ON TABLE');
+    expect(migration).not.toContain('CREATE POLICY "Members can delete smart maintenance blocks"');
   });
 
   it("exposes a safe health endpoint without leaking environment values", () => {

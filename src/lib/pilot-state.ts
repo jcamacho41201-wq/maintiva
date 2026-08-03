@@ -39,7 +39,7 @@ import {
 import { resolveForecastAsOfDate } from "@/lib/forecast-dates";
 import { currentDateInTimeZone } from "@/lib/utils";
 import { safeDatabaseError, SafeActionError } from "@/lib/server-diagnostics";
-import { isCustomerBookingEnabled, isSmartMaintenanceBlocksEnabled } from "@/lib/feature-flags";
+import { isCustomerBookingEnabled, isSmartMaintenanceBlocksServerEnabled } from "@/lib/feature-flags";
 import {
   MAINTIVA_IMPORT_ROW_LIMIT,
   importRowLimitMessage,
@@ -180,7 +180,7 @@ const smartMaintenanceBlockSchema = z.object({
   endMinute: z.number().int().min(1).max(1440),
   serviceDefinitionIds: z.array(z.string().min(1)).min(1).max(50),
   maxVehicles: z.number().int().min(1).max(50),
-  maxLaborMinutes: z.number().int().min(15).max(24 * 60),
+  maxLaborMinutes: z.number().int().min(1).max(24 * 60),
   minimumNoticeMinutes: z.number().int().min(0).max(180 * 24 * 60),
   maximumHorizonDays: z.number().int().min(1).max(365),
   slotIntervalMinutes: z.union([z.literal(15), z.literal(30), z.literal(60)]),
@@ -188,6 +188,9 @@ const smartMaintenanceBlockSchema = z.object({
 }).refine((value) => value.endMinute > value.startMinute, {
   message: "Block end time must be after the start time.",
   path: ["endMinute"],
+}).refine((value) => value.maximumHorizonDays * 1440 > value.minimumNoticeMinutes, {
+  message: "Booking horizon must be greater than the minimum notice period.",
+  path: ["maximumHorizonDays"],
 });
 
 const smartMaintenanceBlockBlackoutSchema = z.object({
@@ -1157,7 +1160,7 @@ function assertCustomerBookingFeatureEnabled() {
 }
 
 function assertSmartMaintenanceBlocksFeatureEnabled() {
-  if (!isSmartMaintenanceBlocksEnabled()) {
+  if (!isSmartMaintenanceBlocksServerEnabled()) {
     throw new SafeActionError({
       code: "SMART_MAINTENANCE_BLOCKS_DISABLED",
       message: "Smart Maintenance Blocks are not available.",
@@ -1710,7 +1713,7 @@ function toStateSmartMaintenanceBlockBlackout(blackout: StateSmartMaintenanceBlo
 }
 
 async function loadStateSmartMaintenanceBlocks(shopId: string): Promise<SmartMaintenanceBlock[]> {
-  if (!isSmartMaintenanceBlocksEnabled()) {
+  if (!isSmartMaintenanceBlocksServerEnabled()) {
     return [];
   }
 
@@ -1731,7 +1734,7 @@ async function loadStateSmartMaintenanceBlocks(shopId: string): Promise<SmartMai
 }
 
 async function loadStateSmartMaintenanceBlockBlackouts(shopId: string): Promise<SmartMaintenanceBlockBlackout[]> {
-  if (!isSmartMaintenanceBlocksEnabled()) {
+  if (!isSmartMaintenanceBlocksServerEnabled()) {
     return [];
   }
 

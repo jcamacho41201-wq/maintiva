@@ -392,6 +392,7 @@ model ServiceDefinition {
   smartMaintenanceBlockServices SmartMaintenanceBlockService[]
 
   @@unique([shopId, name])
+  @@unique([id, shopId])
   @@index([shopId, isActive])
 }
 
@@ -860,6 +861,7 @@ model SmartMaintenanceBlock {
   services              SmartMaintenanceBlockService[]
   blackouts             SmartMaintenanceBlockBlackout[]
 
+  @@unique([id, shopId])
   @@index([shopId, isActive, archivedAt])
   @@index([shopId, createdAt])
 }
