@@ -183,7 +183,7 @@ export type ServiceRecord = {
   vehicleId: string;
   serviceName: string;
   completedAt: string;
-  mileage: number;
+  mileage: number | null;
   priceCents: number;
   notes: string;
 };
@@ -248,6 +248,7 @@ export type ImportHistoryRecord = {
   fileName: string;
   importType: "CUSTOMERS" | "VEHICLES" | "SERVICE_HISTORY" | "DECLINED_WORK" | "APPOINTMENTS" | "COMBINED";
   status: "PREVIEWED" | "COMPLETED" | "PARTIAL" | "FAILED";
+  displayStatus?: "COMPLETED" | "COMPLETED_WITH_REVIEW" | "COMPLETED_WITH_ERRORS" | "REVIEW_REQUIRED" | "FAILED";
   importedAt: string;
   totalRows: number;
   successfulRows: number;
@@ -255,6 +256,9 @@ export type ImportHistoryRecord = {
   updatedRows: number;
   skippedRows: number;
   failedRows: number;
+  heldRows?: number;
+  invalidRows?: number;
+  resultMessage?: string;
   errorReportUrl?: string;
 };
 

@@ -40,6 +40,8 @@ import {
   MAINTIVA_IMPORT_ROW_LIMIT,
   importRowLimitMessage,
   isImportRowLimitExceeded,
+  classifyImportRowEvent,
+  effectiveImportRowAction,
   previewImport,
   summarizeImport,
   type CsvRow,
@@ -47,6 +49,7 @@ import {
   type ImportRowAction,
   type ImportType,
   type MaintivaField,
+  type NormalizedCsvValue,
 } from "@/lib/csv-import";
 import { createCustomerBookingLink } from "@/lib/customer-booking";
 
@@ -293,13 +296,18 @@ function dateFromDateOnly(value: string) {
   return new Date(`${value}T12:00:00Z`);
 }
 
-function stringValue(record: Record<string, string | number>, key: string) {
+function stringValue(record: Record<string, NormalizedCsvValue>, key: string) {
   return String(record[key] ?? "").trim();
 }
 
-function numberValue(record: Record<string, string | number>, key: string) {
+function numberValue(record: Record<string, NormalizedCsvValue>, key: string) {
   const value = record[key];
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function nullableNumberValue(record: Record<string, NormalizedCsvValue>, key: string) {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function appointmentDateTime(date: string, time: string) {
@@ -786,6 +794,22 @@ type StateServiceDefinition = {
     }>;
   } | null;
 };
+
+function importErrorReportSummary(value: unknown) {
+  if (!value || typeof value !== "object") return {};
+  const report = value as {
+    displayStatus?: ImportHistoryRecord["displayStatus"];
+    heldRows?: number;
+    invalidRows?: number;
+    resultMessage?: string;
+  };
+  return {
+    displayStatus: report.displayStatus,
+    heldRows: typeof report.heldRows === "number" ? report.heldRows : undefined,
+    invalidRows: typeof report.invalidRows === "number" ? report.invalidRows : undefined,
+    resultMessage: typeof report.resultMessage === "string" ? report.resultMessage : undefined,
+  };
+}
 
 type StateMaintenanceRecord = {
   id: string;
@@ -1999,7 +2023,7 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
       vehicleId: record.vehicleId,
       serviceName: record.serviceName,
       completedAt: dateOnly(record.completedAt),
-      mileage: record.mileage ?? 0,
+      mileage: record.mileage,
       priceCents: record.priceCents,
       notes: record.notes ?? "",
     })),
@@ -2079,22 +2103,29 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
     bookingWindows,
     bookingBlackouts,
     customerBookingLinks,
-    importHistory: shop.importHistory.map((record): ImportHistoryRecord => ({
-      id: record.id,
-      shopId: record.shopId,
-      userId: record.userId ?? "",
-      fileName: record.fileName,
-      importType: record.importType,
-      status: record.status,
-      importedAt: iso(record.importedAt),
-      totalRows: record.totalRows,
-      successfulRows: record.successfulRows,
-      duplicateRows: record.duplicateRows,
-      updatedRows: record.updatedRows,
-      skippedRows: record.skippedRows,
-      failedRows: record.failedRows,
-      errorReportUrl: record.errorReportUrl ?? undefined,
-    })),
+    importHistory: shop.importHistory.map((record): ImportHistoryRecord => {
+      const reportSummary = importErrorReportSummary(record.errorReport);
+      return {
+        id: record.id,
+        shopId: record.shopId,
+        userId: record.userId ?? "",
+        fileName: record.fileName,
+        importType: record.importType,
+        status: record.status,
+        displayStatus: reportSummary.displayStatus,
+        importedAt: iso(record.importedAt),
+        totalRows: record.totalRows,
+        successfulRows: record.successfulRows,
+        duplicateRows: record.duplicateRows,
+        updatedRows: record.updatedRows,
+        skippedRows: record.skippedRows,
+        failedRows: record.failedRows,
+        heldRows: reportSummary.heldRows,
+        invalidRows: reportSummary.invalidRows,
+        resultMessage: reportSummary.resultMessage,
+        errorReportUrl: record.errorReportUrl ?? undefined,
+      };
+    }),
     seededAt: new Date().toISOString(),
   };
 }
@@ -4078,20 +4109,14 @@ export async function importPilotCsvRows(
     Object.entries(input.rowActions ?? {}).map(([rowNumber, action]) => [Number(rowNumber), action]),
   ) as Record<number, ImportRowAction>;
   const summary = summarizeImport(preview.rows, input.duplicateMode, rowActions);
-  const rowAction = (row: (typeof preview.rows)[number]) => {
-    const override = rowActions[row.rowNumber];
-    if (override) return override;
-    if (row.status === "INVALID") return "HOLD" as const;
-    if (row.entities.child.status === "DUPLICATE") {
-      if (input.duplicateMode === "UPDATE") return "UPDATE" as const;
-      if (input.duplicateMode === "IMPORT_AS_NEW") return "IMPORT_AS_NEW" as const;
-      return "SKIP" as const;
-    }
-    return row.action;
-  };
+  const rowAction = (row: (typeof preview.rows)[number]) => effectiveImportRowAction(row, rowActions, input.duplicateMode);
   const rowsToImport = preview.rows.filter((row) => {
     const action = rowAction(row);
-    return action === "IMPORT" || action === "UPDATE" || action === "IMPORT_AS_NEW";
+    return (
+      row.status !== "INVALID" &&
+      row.status !== "HELD" &&
+      (action === "IMPORT" || action === "UPDATE" || action === "IMPORT_AS_NEW")
+    );
   });
   const defaultService = await prisma.serviceDefinition.findFirst({
     where: { shopId: context.shopId, isActive: true },
@@ -4114,6 +4139,8 @@ export async function importPilotCsvRows(
       const lastName = stringValue(normalized, "customerLastName");
       const vin = stringValue(normalized, "vin").toUpperCase();
       const action = rowAction(row);
+      const currentMileage = nullableNumberValue(normalized, "currentMileage");
+      const serviceMileage = nullableNumberValue(normalized, "serviceMileage");
 
       let customer = row.entities.customer.key ? customerByKey.get(row.entities.customer.key) ?? null : null;
       customer ??= await tx.customer.findFirst({
@@ -4158,14 +4185,29 @@ export async function importPilotCsvRows(
       });
       if (row.entities.customer.key) customerByKey.set(row.entities.customer.key, customer);
 
-      const existingVinVehicle = vin
+      const shouldCreateSeparateVehicle = action === "IMPORT_AS_NEW" && row.entities.vehicle.status !== "MATCH";
+      const existingVinVehicle = !shouldCreateSeparateVehicle && vin
         ? await tx.vehicle.findFirst({ where: { shopId: context.shopId, vin } })
         : null;
       const vehicleVin = existingVinVehicle && action === "IMPORT_AS_NEW" && row.entities.vehicle.status !== "MATCH" ? null : vin || null;
       let vehicle = row.entities.vehicle.key ? vehicleByKey.get(row.entities.vehicle.key) ?? null : null;
       vehicle ??= existingVinVehicle;
+      vehicle ??= !shouldCreateSeparateVehicle
+        ? await tx.vehicle.findFirst({
+          where: {
+            shopId: context.shopId,
+            customerId: customer.id,
+            year: numberValue(normalized, "vehicleYear"),
+            make: stringValue(normalized, "vehicleMake"),
+            model: stringValue(normalized, "vehicleModel"),
+          },
+        })
+        : null;
 
       if (vehicle) {
+        const nextCurrentMileage = currentMileage ?? (
+          stringValue(normalized, "serviceDate") && serviceMileage !== null ? serviceMileage : null
+        );
         vehicle = await tx.vehicle.update({
           where: { id: vehicle.id },
           data: {
@@ -4173,7 +4215,7 @@ export async function importPilotCsvRows(
             year: numberValue(normalized, "vehicleYear") || vehicle.year,
             make: stringValue(normalized, "vehicleMake") || vehicle.make,
             model: stringValue(normalized, "vehicleModel") || vehicle.model,
-            currentMileage: numberValue(normalized, "currentMileage") || vehicle.currentMileage,
+            currentMileage: nextCurrentMileage ?? vehicle.currentMileage,
             licensePlate: stringValue(normalized, "licensePlate") || vehicle.licensePlate,
             lastServiceDate: new Date(),
           },
@@ -4183,6 +4225,9 @@ export async function importPilotCsvRows(
         stringValue(normalized, "vehicleModel") &&
         numberValue(normalized, "vehicleYear")
       ) {
+        const initialCurrentMileage = currentMileage ?? (
+          stringValue(normalized, "serviceDate") && serviceMileage !== null ? serviceMileage : null
+        );
         vehicle = await tx.vehicle.create({
           data: {
             shopId: context.shopId,
@@ -4192,7 +4237,7 @@ export async function importPilotCsvRows(
             model: stringValue(normalized, "vehicleModel"),
             vin: vehicleVin,
             licensePlate: stringValue(normalized, "licensePlate") || null,
-            currentMileage: numberValue(normalized, "currentMileage"),
+            currentMileage: initialCurrentMileage ?? 0,
             estimatedAnnualMileage: 12_000,
             lastServiceDate: new Date(),
           },
@@ -4203,10 +4248,45 @@ export async function importPilotCsvRows(
       if (row.entities.vehicle.key) vehicleByKey.set(row.entities.vehicle.key, vehicle);
       touchedVehicleIds.add(vehicle.id);
 
+      if (currentMileage !== null) {
+        const currentMileageDate = stringValue(normalized, "serviceDate") || currentDateInTimeZone(context.shopTimezone);
+        const currentMileageKey = `${vehicle.id}|${currentMileageDate}|${currentMileage}`;
+        const existingCurrentMileageReading = await tx.vehicleMileageReading.findFirst({
+          where: {
+            shopId: context.shopId,
+            vehicleId: vehicle.id,
+            readingDate: dateFromDateOnly(currentMileageDate),
+            readingMileage: currentMileage,
+          },
+        });
+        if (!existingCurrentMileageReading && !importedMileageKeys.has(currentMileageKey)) {
+          importedMileageKeys.add(currentMileageKey);
+          await tx.vehicleMileageReading.create({
+            data: {
+              shopId: context.shopId,
+              vehicleId: vehicle.id,
+              readingMileage: currentMileage,
+              readingDate: dateFromDateOnly(currentMileageDate),
+              source: "SERVICE_HISTORY_IMPORT",
+              verificationStatus: "IMPORTED",
+              anomalyStatus: "NONE",
+              includedInForecast: true,
+              sourceReferenceType: "ImportRowRecord",
+              recordedByUserId: context.userId,
+            },
+          });
+          await recalculatePersistedDrivingProfile({ tx, context, vehicleId: vehicle.id });
+        }
+      }
+
       const serviceName = stringValue(normalized, "serviceName") || stringValue(normalized, "services");
       const priceCents = numberValue(normalized, "price");
       const laborMinutes = Math.round(numberValue(normalized, "laborHours") * 60);
       if (!serviceName || priceCents <= 0 || laborMinutes <= 0) continue;
+      const importEvent = classifyImportRowEvent(input.importType, normalized);
+      if (importEvent.ambiguousConflict) continue;
+      const importsCompletedService = importEvent.importsCompletedService;
+      const importsDeclinedWork = importEvent.importsDeclinedWork;
 
       let service = await tx.serviceDefinition.findFirst({
         where: { shopId: context.shopId, name: serviceName },
@@ -4244,10 +4324,10 @@ export async function importPilotCsvRows(
         const maintenance = await tx.vehicleMaintenanceRecord.update({
           where: { id: existingMaintenance.id },
           data: {
-            lastCompletedDate: stringValue(normalized, "serviceDate")
+            lastCompletedDate: importsCompletedService && stringValue(normalized, "serviceDate")
               ? new Date(stringValue(normalized, "serviceDate"))
               : undefined,
-            lastCompletedMileage: numberValue(normalized, "serviceMileage") || undefined,
+            lastCompletedMileage: importsCompletedService ? serviceMileage ?? undefined : undefined,
             priceOverrideCents: priceCents,
             laborMinutesOverride: laborMinutes,
             priceCents,
@@ -4264,9 +4344,10 @@ export async function importPilotCsvRows(
           serviceDefinitionId: service.id,
           serviceName,
           lastCompletedDate: stringValue(normalized, "serviceDate")
+            && importsCompletedService
             ? new Date(stringValue(normalized, "serviceDate"))
             : null,
-          lastCompletedMileage: numberValue(normalized, "serviceMileage") || numberValue(normalized, "currentMileage"),
+          lastCompletedMileage: importsCompletedService ? serviceMileage : null,
           recommendedMileageInterval: null,
           recommendedTimeIntervalMonths: null,
           mileageIntervalOverride: null,
@@ -4289,9 +4370,8 @@ export async function importPilotCsvRows(
         touchedMaintenanceRecordIds.push(maintenance.id);
       }
 
-      if (stringValue(normalized, "serviceDate")) {
+      if (importsCompletedService && stringValue(normalized, "serviceDate")) {
         const serviceDate = stringValue(normalized, "serviceDate");
-        const serviceMileage = numberValue(normalized, "serviceMileage") || numberValue(normalized, "currentMileage");
         const serviceHistory = await tx.serviceHistoryRecord.create({
           data: {
             shopId: context.shopId,
@@ -4306,8 +4386,8 @@ export async function importPilotCsvRows(
             notes: "Imported from CSV.",
           },
         });
-        const mileageKey = `${vehicle.id}|${serviceDate}|${serviceMileage}`;
-        const existingReading = serviceMileage > 0
+        const mileageKey = `${vehicle.id}|${serviceDate}|${serviceMileage ?? "missing"}`;
+        const existingReading = serviceMileage !== null
           ? await tx.vehicleMileageReading.findFirst({
             where: {
               shopId: context.shopId,
@@ -4317,7 +4397,7 @@ export async function importPilotCsvRows(
             },
           })
           : null;
-        if (serviceMileage > 0 && !existingReading && !importedMileageKeys.has(mileageKey)) {
+        if (serviceMileage !== null && !existingReading && !importedMileageKeys.has(mileageKey)) {
           importedMileageKeys.add(mileageKey);
           await tx.vehicleMileageReading.create({
             data: {
@@ -4338,11 +4418,7 @@ export async function importPilotCsvRows(
         }
       }
 
-      if (
-        input.importType === "DECLINED_WORK" ||
-        stringValue(normalized, "declinedDate") ||
-        stringValue(normalized, "status").toLowerCase().includes("declin")
-      ) {
+      if (importsDeclinedWork) {
         const declinedRecord = await tx.declinedWorkRecord.create({
           data: {
             shopId: context.shopId,
@@ -4413,14 +4489,65 @@ export async function importPilotCsvRows(
         userId: context.userId,
         fileName: input.fileName,
         importType: input.importType,
-        status: summary.failedRows > 0 ? "PARTIAL" : "COMPLETED",
+        status: summary.heldRows > 0 ? "PARTIAL" : "COMPLETED",
         totalRows: summary.totalRows,
-        successfulRows: summary.successfulRows,
-        duplicateRows: summary.duplicateRows,
+        successfulRows: summary.importedRows,
+        duplicateRows: summary.duplicateSkippedRows,
         updatedRows: summary.updatedRows,
         skippedRows: summary.skippedRows,
-        failedRows: summary.failedRows,
-        errorReportUrl: summary.failedRows > 0 ? "downloadable-error-report" : null,
+        failedRows: 0,
+        errorReportUrl: summary.heldRows > 0 || summary.skippedRows > 0 ? "downloadable-result-report" : null,
+        errorReport: {
+          displayStatus: summary.successfulRows + summary.updatedRows > 0
+            ? summary.heldRows > 0
+              ? "COMPLETED_WITH_REVIEW"
+              : "COMPLETED"
+            : summary.heldRows > 0
+              ? "REVIEW_REQUIRED"
+              : "COMPLETED",
+          heldRows: summary.heldRows,
+          reviewRows: summary.reviewRows,
+          invalidRows: summary.invalidRows,
+          duplicateSkippedRows: summary.duplicateSkippedRows,
+          importedRows: summary.importedRows,
+          matchedExistingRows: summary.matchedExistingRows,
+          needsReviewRows: summary.needsReviewRows,
+          skippedByUserRows: summary.skippedByUserRows,
+          totalProcessedRows: summary.totalProcessedRows,
+          resultMessage: summary.resultMessage,
+          rows: preview.rows.map((row) => {
+            const action = rowAction(row);
+            return {
+              rowNumber: row.rowNumber,
+              primaryOutcome: row.status === "INVALID"
+                ? "INVALID"
+                : row.status === "HELD" || action === "HOLD"
+                  ? "NEEDS_REVIEW"
+                  : action === "SKIP" && row.entities.child.status === "DUPLICATE"
+                    ? "DUPLICATE_SKIPPED"
+                    : action === "SKIP"
+                      ? "SKIPPED_BY_USER"
+                      : action === "UPDATE"
+                        ? "MATCHED_EXISTING"
+                        : "IMPORTED",
+              customer: {
+                status: row.entities.customer.status,
+                matchField: row.entities.customer.matchField,
+                message: row.entities.customer.message,
+              },
+              vehicle: {
+                status: row.entities.vehicle.status,
+                matchField: row.entities.vehicle.matchField,
+                message: row.entities.vehicle.message,
+              },
+              child: {
+                entity: row.entities.child.entity,
+                status: row.entities.child.status,
+                message: row.entities.child.message,
+              },
+            };
+          }),
+        },
       },
     });
 
@@ -4447,14 +4574,16 @@ export async function importPilotCsvRows(
       data: preview.rows.map((row) => {
         const action = rowAction(row);
         const status = row.status === "INVALID"
-          ? "FAILED"
-          : action === "HOLD"
-            ? "HELD"
-            : action === "SKIP"
-              ? "SKIPPED"
-              : action === "UPDATE"
-                ? "UPDATED"
-                : "IMPORTED";
+          ? "INVALID"
+          : row.status === "HELD"
+            ? "NEEDS_REVIEW"
+            : action === "HOLD"
+              ? "NEEDS_REVIEW"
+              : action === "SKIP"
+                ? "DUPLICATE_SKIPPED"
+                : action === "UPDATE"
+                  ? "UPDATED"
+                  : "IMPORTED";
 
         return {
           shopId: context.shopId,

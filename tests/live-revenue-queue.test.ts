@@ -77,6 +77,27 @@ describe("live revenue queue data source", () => {
     expect(item.serviceNames).toEqual(["Brake Pads"]);
   });
 
+  it("links persisted declined-work opportunities only to declined source records", () => {
+    const state = asLiveShop(createInitialDemoState());
+    state.revenueOpportunities = [
+      opportunity({
+        id: "mro-declined",
+        maintenanceRecordId: undefined,
+        declinedWorkRecordId: "declined-jeep-brake-service",
+        source: "DECLINED_WORK",
+        explanation: "Brake Fluid was declined.",
+      }),
+    ];
+
+    const [item] = buildRevenueOpportunities(state);
+
+    expect(item.source).toBe("DECLINED_WORK");
+    expect(item.sourceRecordId).toBe("declined-jeep-brake-service");
+    expect(item.sourceType).toBe("DeclinedWorkRecord");
+    expect(item.maintenanceRecordId).toBeUndefined();
+    expect(item.declinedWorkRecordId).toBe("declined-jeep-brake-service");
+  });
+
   it("skips cross-tenant or mismatched opportunity records", () => {
     const state = asLiveShop(createInitialDemoState());
     state.revenueOpportunities = [
@@ -117,6 +138,8 @@ describe("revenue queue synchronization guardrails", () => {
   const contactModalSource = readFileSync(join(process.cwd(), "src/components/contact-customer-modal.tsx"), "utf8");
   const contactWorkflowSource = readFileSync(join(process.cwd(), "src/lib/contact-workflow.ts"), "utf8");
   const vehiclePageSource = readFileSync(join(process.cwd(), "src/app/vehicles/[vehicleId]/page.tsx"), "utf8");
+  const customerPageSource = readFileSync(join(process.cwd(), "src/app/customers/[customerId]/page.tsx"), "utf8");
+  const importPageSource = readFileSync(join(process.cwd(), "src/app/import/page.tsx"), "utf8");
 
   it("recalculates persisted maintenance opportunities from effective intervals", () => {
     expect(pilotStateSource).toContain("resolveMaintenanceInterval({");
@@ -132,6 +155,7 @@ describe("revenue queue synchronization guardrails", () => {
     expect(pilotStateSource).toMatch(/export async function updatePilotMaintenanceItem[\s\S]+syncMaintenanceRevenueOpportunities/);
     expect(pilotStateSource).toMatch(/export async function markPilotMaintenanceServiceComplete[\s\S]+syncMaintenanceRevenueOpportunities/);
     expect(pilotStateSource).toMatch(/export async function importPilotCsvRows[\s\S]+touchedVehicleMaintenanceRecords[\s\S]+syncMaintenanceRevenueOpportunities/);
+    expect(pilotStateSource).toMatch(/export async function importPilotCsvRows[\s\S]+classifyImportRowEvent[\s\S]+importsCompletedService[\s\S]+importsDeclinedWork/);
   });
 
   it("keeps the main queue to four workflow tabs with advanced filters", () => {
@@ -217,6 +241,30 @@ describe("revenue queue synchronization guardrails", () => {
     expect(pilotStateSource).toContain("lastCompletedMileage: record.lastCompletedMileage");
     expect(vehiclePageSource).toContain("Last completed mileage not entered");
     expect(vehiclePageSource).not.toContain("lastCompletedMileage: record.lastCompletedMileage ?? 0");
+  });
+
+  it("keeps mixed CSV imports available when some rows need review", () => {
+    expect(importPageSource).toContain("Some rows need attention. Ready rows can still be imported.");
+    expect(importPageSource).toContain("Import ${readyRows} rows and hold ${heldRows} for review");
+    expect(importPageSource).toContain("Save ${heldRows} rows for review");
+    expect(importPageSource).toContain("Needs review");
+    expect(pilotStateSource).toContain("effectiveImportRowAction(row, rowActions, input.duplicateMode)");
+    expect(pilotStateSource).toMatch(/row.status !== "INVALID" &&[\s\S]+row.status !== "HELD"/);
+  });
+
+  it("keeps CSV duplicate and vehicle-match decisions consistent between preview and persistence", () => {
+    expect(pilotStateSource).toContain("effectiveImportRowAction(row, rowActions, input.duplicateMode)");
+    expect(pilotStateSource).toMatch(/tx\.vehicle\.findFirst\(\{\s+where: \{\s+shopId: context\.shopId,[\s\S]+customerId: customer\.id,[\s\S]+year: numberValue\(normalized, "vehicleYear"\),[\s\S]+make: stringValue\(normalized, "vehicleMake"\),[\s\S]+model: stringValue\(normalized, "vehicleModel"\)/);
+    expect(importPageSource).toContain("Duplicate skipped");
+    expect(importPageSource).toContain("importResultMessage(summary)");
+  });
+
+  it("uses shared missing-mileage display helpers for customer and vehicle pages", () => {
+    expect(customerPageSource).toContain("formatMileage(vehicleMileageDisplayValue(state, vehicle))");
+    expect(customerPageSource).toContain("formatServiceMileage(record.mileage)");
+    expect(vehiclePageSource).toContain("formatMileage(displayedCurrentMileage)");
+    expect(vehiclePageSource).toContain("formatServiceMileage(record.mileage)");
+    expect(vehiclePageSource).toContain("Last completed mileage not entered");
   });
 });
 

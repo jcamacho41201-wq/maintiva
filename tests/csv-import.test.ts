@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createInitialDemoState } from "@/lib/demo-data";
 import {
+  classifyImportRowEvent,
   buildImportErrorCsv,
   detectColumnMapping,
   parseCsv,
@@ -16,6 +17,87 @@ describe("CSV import workflow", () => {
     expect(rows[0].Services).toBe("Oil Change; Brake Fluid");
     expect(mapping["Full Name"]).toBe("customerFullName");
     expect(mapping.Email).toBe("customerEmail");
+  });
+
+  it("preserves missing mileage separately from explicit zero and valid mileage", () => {
+    const rows = parseCsv(
+      [
+        "First Name,Last Name,Email,VIN,Year,Make,Model,Current Mileage,Service Name,Service Date,Service Mileage,Price,Labor Hours,Status",
+        "Blank,Mileage,blank@example.com,WA1EAAF45LA100001,2021,Honda,CR-V,,Check Engine Diagnostic,2026-07-02,,160,1,Completed",
+        "Whitespace,Mileage,space@example.com,WA1EAAF45LA100002,2021,Honda,CR-V,   ,Check Engine Diagnostic,2026-07-02,   ,160,1,Completed",
+        "Zero,Mileage,zero@example.com,WA1EAAF45LA100003,2021,Honda,CR-V,0,Check Engine Diagnostic,2026-07-02,0,160,1,Completed",
+        "Valid,Mileage,valid@example.com,WA1EAAF45LA100004,2021,Honda,CR-V,\"58,420\",Check Engine Diagnostic,2026-07-02,\"58,420\",160,1,Completed",
+      ].join("\n"),
+    );
+    const preview = previewImport({
+      rows,
+      mapping: detectColumnMapping(Object.keys(rows[0])),
+      importType: "COMBINED",
+      state: createInitialDemoState(),
+    });
+
+    expect(preview.rows[0].normalized.currentMileage).toBeNull();
+    expect(preview.rows[0].normalized.serviceMileage).toBeNull();
+    expect(preview.rows[1].normalized.currentMileage).toBeNull();
+    expect(preview.rows[1].normalized.serviceMileage).toBeNull();
+    expect(preview.rows[2].normalized.currentMileage).toBe(0);
+    expect(preview.rows[2].normalized.serviceMileage).toBe(0);
+    expect(preview.rows[3].normalized.currentMileage).toBe(58_420);
+    expect(preview.rows[3].normalized.serviceMileage).toBe(58_420);
+  });
+
+  it("marks invalid mileage without coercing it to zero", () => {
+    const rows = parseCsv(
+      "First Name,Last Name,Email,VIN,Year,Make,Model,Current Mileage,Service Name,Service Date,Service Mileage,Price,Labor Hours,Status\nInvalid,Mileage,invalid@example.com,WA1EAAF45LA100001,2021,Honda,CR-V,ABC,Check Engine Diagnostic,2026-07-02,ABC,160,1,Completed",
+    );
+    const preview = previewImport({
+      rows,
+      mapping: detectColumnMapping(Object.keys(rows[0])),
+      importType: "COMBINED",
+      state: createInitialDemoState(),
+    });
+
+    expect(preview.rows[0].status).toBe("INVALID");
+    expect(preview.rows[0].errors).toEqual(expect.arrayContaining([
+      "Mileage must be non-negative.",
+      "Service mileage must be non-negative.",
+    ]));
+    expect(Number.isNaN(preview.rows[0].normalized.currentMileage)).toBe(true);
+    expect(Number.isNaN(preview.rows[0].normalized.serviceMileage)).toBe(true);
+  });
+
+  it("does not match missing service mileage to an existing zero-mile service", () => {
+    const state = createInitialDemoState();
+    state.serviceRecords.push({
+      id: "hist-jeep-zero-mile-diagnostic",
+      shopId: state.shop.id,
+      customerId: "cust-justin",
+      vehicleId: "veh-jeep",
+      serviceName: "Check Engine Diagnostic",
+      completedAt: "2026-07-02",
+      mileage: 0,
+      priceCents: 16000,
+      notes: "Explicit zero-mile QA fixture.",
+    });
+    const rows = parseCsv(
+      [
+        "First Name,Last Name,Email,VIN,Year,Make,Model,Current Mileage,Service Name,Service Date,Service Mileage,Price,Labor Hours,Status",
+        "Justin,Camacho,justin@example.com,1J4FA49S03P123456,2003,Jeep,Wrangler,,Check Engine Diagnostic,2026-07-02,,160,1,Completed",
+        "Justin,Camacho,justin@example.com,1J4FA49S03P123456,2003,Jeep,Wrangler,0,Check Engine Diagnostic,2026-07-02,0,160,1,Completed",
+      ].join("\n"),
+    );
+
+    const preview = previewImport({
+      rows,
+      mapping: detectColumnMapping(Object.keys(rows[0])),
+      importType: "COMBINED",
+      state,
+    });
+
+    expect(preview.rows[0].normalized.serviceMileage).toBeNull();
+    expect(preview.rows[0].entities.child.status).toBe("CREATE");
+    expect(preview.rows[1].normalized.serviceMileage).toBe(0);
+    expect(preview.rows[1].entities.child.status).toBe("DUPLICATE");
   });
 
   it("validates customers, vehicles, service values, and VIN length", () => {
@@ -103,22 +185,78 @@ describe("CSV import workflow", () => {
     });
 
     expect(preview.rows[0].entities.customer.status).toBe("MATCH");
+    expect(preview.rows[0].entities.customer.message).toBe("Matched existing customer using email.");
     expect(preview.rows[0].entities.vehicle.status).toBe("MATCH");
+    expect(preview.rows[0].entities.vehicle.message).toBe("Matched existing vehicle using VIN.");
     expect(preview.rows[0].entities.child.status).toBe("DUPLICATE");
     expect(summarizeImport(preview.rows, "SKIP")).toMatchObject({
       skippedRows: 1,
       successfulRows: 0,
+      importedRows: 0,
+      duplicateSkippedRows: 1,
       updatedRows: 0,
+      totalProcessedRows: 1,
+      resultMessage: "Skipped 1 duplicate row.",
+    });
+    expect(summarizeImport(preview.rows, "SKIP", { [preview.rows[0].rowNumber]: "IMPORT" })).toMatchObject({
+      skippedRows: 1,
+      successfulRows: 0,
+      importedRows: 0,
+      duplicateSkippedRows: 1,
+      updatedRows: 0,
+      totalProcessedRows: 1,
     });
     expect(summarizeImport(preview.rows, "UPDATE")).toMatchObject({
       skippedRows: 0,
       successfulRows: 0,
       updatedRows: 1,
+      totalProcessedRows: 1,
     });
     expect(summarizeImport(preview.rows, "IMPORT_AS_NEW")).toMatchObject({
       skippedRows: 0,
       successfulRows: 1,
+      importedRows: 1,
       updatedRows: 0,
+      totalProcessedRows: 1,
+    });
+  });
+
+  it("reports exact phone and vehicle-detail match identifiers", () => {
+    const rows = parseCsv(
+      "First Name,Last Name,Email,Phone,VIN,Year,Make,Model,Current Mileage,Service Name,Service Date,Service Mileage,Price,Labor Hours\nJustin,Camacho,,(404) 555-0187,,2003,Jeep,Wrangler,,Coolant Flush,2026-07-10,,180,1.0",
+    );
+    const preview = previewImport({
+      rows,
+      mapping: detectColumnMapping(Object.keys(rows[0])),
+      importType: "COMBINED",
+      state: createInitialDemoState(),
+    });
+
+    expect(preview.rows[0].status).toBe("VALID");
+    expect(preview.rows[0].entities.customer.message).toBe("Matched existing customer using phone.");
+    expect(preview.rows[0].entities.vehicle.message).toBe("Matched existing vehicle using customer-scoped year, make, and model.");
+  });
+
+  it("holds conflicting customer identifiers for review instead of silently attaching", () => {
+    const rows = parseCsv(
+      "First Name,Last Name,Email,Phone,VIN,Year,Make,Model,Current Mileage,Service Name,Service Date,Service Mileage,Price,Labor Hours\nWrong,Name,justin@example.com,(404) 555-9999,,2021,Honda,CR-V,,Check Engine Diagnostic,2026-07-03,,160,1.01",
+    );
+    const preview = previewImport({
+      rows,
+      mapping: detectColumnMapping(Object.keys(rows[0])),
+      importType: "COMBINED",
+      state: createInitialDemoState(),
+    });
+
+    expect(preview.rows[0].status).toBe("HELD");
+    expect(preview.rows[0].action).toBe("HOLD");
+    expect(preview.rows[0].entities.customer.message).toBe("Matched existing customer using email.");
+    expect(preview.rows[0].errors).toContain("Customer identity conflict: email matches an existing customer, but phone and name differ.");
+    expect(summarizeImport(preview.rows)).toMatchObject({
+      readyRows: 0,
+      heldRows: 1,
+      totalProcessedRows: 1,
+      resultMessage: "Held 1 row for review.",
     });
   });
 
@@ -197,6 +335,94 @@ describe("CSV import workflow", () => {
     expect(summarizeImport(preview.rows).heldRows).toBe(1);
   });
 
+  it("holds ambiguous completed-and-declined service cycles for review", () => {
+    const rows = parseCsv(
+      [
+        "First Name,Last Name,Email,VIN,Year,Make,Model,Current Mileage,Service Name,Service Date,Service Mileage,Price,Labor Hours,Status,Declined Date",
+        "Heather,Reed,heather@example.com,WA1EAAF45LA100001,2020,Audi,Q5,50000,Check Engine Diagnostic,2026-05-26,50000,160,1.0167,Declined,2026-05-26",
+      ].join("\n"),
+    );
+    const preview = previewImport({
+      rows,
+      mapping: detectColumnMapping(Object.keys(rows[0])),
+      importType: "COMBINED",
+      state: createInitialDemoState(),
+    });
+    const [row] = preview.rows;
+
+    expect(row.status).toBe("HELD");
+    expect(row.action).toBe("HOLD");
+    expect(row.entities.child.entity).toBe("Service");
+    expect(row.errors).toContain("Row 2 marks Check Engine Diagnostic as both completed and declined on May 26, 2026.");
+    expect(summarizeImport(preview.rows)).toMatchObject({
+      heldRows: 1,
+      reviewRows: 1,
+      invalidRows: 0,
+      servicesToImport: 0,
+      declinedWorkToImport: 0,
+    });
+  });
+
+  it("keeps ready rows importable when a mixed file has a needs-review row", () => {
+    const rows = parseCsv(
+      [
+        "First Name,Last Name,Email,VIN,Year,Make,Model,Current Mileage,Service Name,Service Date,Service Mileage,Price,Labor Hours,Status,Declined Date",
+        "QA,Complete,qa.complete@example.com,WA1EAAF45LA100001,2020,Audi,Q5,50000,Oil Change,2026-07-01,50000,95,0.5,Completed,",
+        "QA,Declined,qa.declined@example.com,WA1EAAF45LA100002,2020,Audi,Q5,50000,Brake Fluid,,,160,1.0,Declined,2026-07-01",
+        "QA,Ambiguous,qa.ambiguous@example.com,WA1EAAF45LA100003,2020,Audi,Q5,50000,Check Engine Diagnostic,2026-07-01,50000,160,1.01,Declined,2026-07-01",
+      ].join("\n"),
+    );
+    const preview = previewImport({
+      rows,
+      mapping: detectColumnMapping(Object.keys(rows[0])),
+      importType: "COMBINED",
+      state: createInitialDemoState(),
+    });
+
+    expect(preview.rows.map((row) => row.status)).toEqual(["VALID", "VALID", "HELD"]);
+    expect(summarizeImport(preview.rows)).toMatchObject({
+      readyRows: 2,
+      heldRows: 1,
+      reviewRows: 1,
+      invalidRows: 0,
+      servicesToImport: 1,
+      declinedWorkToImport: 1,
+    });
+  });
+
+  it("classifies completed, declined, and appointment import events separately", () => {
+    expect(classifyImportRowEvent("SERVICE_HISTORY", {
+      serviceName: "Check Engine Diagnostic",
+      serviceDate: "2026-05-26",
+      status: "Completed",
+    })).toMatchObject({
+      importsCompletedService: true,
+      importsDeclinedWork: false,
+      importsAppointment: false,
+      ambiguousConflict: false,
+    });
+    expect(classifyImportRowEvent("DECLINED_WORK", {
+      serviceName: "Check Engine Diagnostic",
+      declinedDate: "2026-05-26",
+      status: "Declined",
+    })).toMatchObject({
+      importsCompletedService: false,
+      importsDeclinedWork: true,
+      importsAppointment: false,
+      ambiguousConflict: false,
+    });
+    expect(classifyImportRowEvent("APPOINTMENTS", {
+      serviceName: "Check Engine Diagnostic",
+      appointmentDate: "2026-08-05",
+      appointmentTime: "09:00",
+    })).toMatchObject({
+      importsCompletedService: false,
+      importsDeclinedWork: false,
+      importsAppointment: true,
+      ambiguousConflict: false,
+    });
+  });
+
   it("exports rejected rows as a downloadable error report", () => {
     const rows = parseCsv("Full Name,Email\nBroken,bad-email");
     const preview = previewImport({
@@ -207,5 +433,23 @@ describe("CSV import workflow", () => {
     });
 
     expect(buildImportErrorCsv(preview.rows)).toContain("Email format is invalid");
+  });
+
+  it("exports needs-review rows in the result report", () => {
+    const rows = parseCsv(
+      [
+        "First Name,Last Name,Email,VIN,Year,Make,Model,Current Mileage,Service Name,Service Date,Service Mileage,Price,Labor Hours,Status,Declined Date",
+        "QA,Ambiguous,qa.ambiguous@example.com,WA1EAAF45LA100003,2020,Audi,Q5,50000,Check Engine Diagnostic,2026-07-01,50000,160,1.01,Declined,2026-07-01",
+      ].join("\n"),
+    );
+    const preview = previewImport({
+      rows,
+      mapping: detectColumnMapping(Object.keys(rows[0])),
+      importType: "COMBINED",
+      state: createInitialDemoState(),
+    });
+
+    expect(buildImportErrorCsv(preview.rows)).toContain("NEEDS_REVIEW");
+    expect(buildImportErrorCsv(preview.rows)).toContain("Check Engine Diagnostic");
   });
 });

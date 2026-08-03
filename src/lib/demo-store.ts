@@ -25,6 +25,8 @@ import {
 import { hasActiveVehicleAppointmentAt } from "@/lib/appointment";
 import { createAppointmentFromRecords } from "@/lib/demo-calculations";
 import {
+  classifyImportRowEvent,
+  effectiveImportRowAction,
   summarizeImport,
   type CsvRow,
   type DuplicateImportMode,
@@ -32,6 +34,7 @@ import {
   type ImportRowAction,
   type ImportType,
   type MaintivaField,
+  type NormalizedCsvValue,
 } from "@/lib/csv-import";
 import { calculateDrivingProfile } from "@/lib/adaptive-mileage";
 import { currentDateInTimeZone } from "@/lib/utils";
@@ -309,12 +312,16 @@ function subscribe(callback: () => void) {
   };
 }
 
-function text(value: string | number | undefined) {
+function text(value: NormalizedCsvValue | undefined) {
   return String(value ?? "").trim();
 }
 
-function numeric(value: string | number | undefined) {
+function numeric(value: NormalizedCsvValue | undefined) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function nullableNumeric(value: NormalizedCsvValue | undefined) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function serviceSlug(name: string) {
@@ -1647,18 +1654,10 @@ export function useDemoStore() {
 
         const summary = summarizeImport(input.previewRows, input.duplicateMode, input.rowActions);
         update((draft) => {
-          function actionFor(row: ImportPreviewRow) {
-            const override = input.rowActions?.[row.rowNumber];
-            if (override) return override;
-            if (row.status === "INVALID") return "HOLD" as const;
-            if (row.entities.child.status === "DUPLICATE") {
-              if (input.duplicateMode === "UPDATE") return "UPDATE" as const;
-              if (input.duplicateMode === "IMPORT_AS_NEW") return "IMPORT_AS_NEW" as const;
-              return "SKIP" as const;
-            }
-            return row.action;
-          }
+          const actionFor = (row: ImportPreviewRow) => effectiveImportRowAction(row, input.rowActions, input.duplicateMode);
           const importedRows = input.previewRows.filter((row) =>
+            row.status !== "INVALID" &&
+            row.status !== "HELD" &&
             ["IMPORT", "UPDATE", "IMPORT_AS_NEW"].includes(actionFor(row)),
           );
           const now = Date.now();
@@ -1698,6 +1697,15 @@ export function useDemoStore() {
             const serviceName = text(normalized.serviceName) || text(normalized.services);
             const priceCents = numeric(normalized.price);
             const laborHours = numeric(normalized.laborHours);
+            const currentMileage = nullableNumeric(normalized.currentMileage);
+            const serviceMileage = nullableNumeric(normalized.serviceMileage);
+            const importEvent = classifyImportRowEvent(input.importType, normalized);
+            if (importEvent.ambiguousConflict) return;
+            const importsCompletedService = importEvent.importsCompletedService;
+            const importsDeclinedWork = importEvent.importsDeclinedWork;
+            const effectiveVehicleMileage = currentMileage ?? (
+              importsCompletedService && serviceMileage !== null ? serviceMileage : null
+            );
             const customer = {
               id: customerId,
               shopId: draft.shop.id,
@@ -1728,7 +1736,7 @@ export function useDemoStore() {
               engine: "",
               trim: "",
               vehicleType: "Passenger vehicle",
-              currentMileage: numeric(normalized.currentMileage),
+              currentMileage: effectiveVehicleMileage ?? 0,
               estimatedAnnualMileage: 12_000,
               overallHealth: 76,
               lastServiceDate: text(normalized.serviceDate) || new Date().toISOString().slice(0, 10),
@@ -1737,12 +1745,12 @@ export function useDemoStore() {
             if (!customers.some((item) => item.id === customerId)) customers.push(customer);
             vehicleId = vehicle.id;
             if (!vehicles.some((item) => item.id === vehicleId)) vehicles.push(vehicle);
-            if (numeric(normalized.currentMileage) > 0) {
+            if (currentMileage !== null) {
               mileageReadings.push({
                 id: `mile-import-current-${now}-${index}`,
                 shopId: draft.shop.id,
                 vehicleId,
-                readingMileage: numeric(normalized.currentMileage),
+                readingMileage: currentMileage,
                 readingDate: text(normalized.serviceDate) || new Date().toISOString().slice(0, 10),
                 source: "SERVICE_HISTORY_IMPORT",
                 verificationStatus: "IMPORTED",
@@ -1761,8 +1769,8 @@ export function useDemoStore() {
               vehicleId,
               serviceId: "svc-imported",
               serviceName,
-              lastCompletedDate: text(normalized.serviceDate) || new Date().toISOString().slice(0, 10),
-              lastCompletedMileage: numeric(normalized.serviceMileage) || vehicle.currentMileage,
+              lastCompletedDate: importsCompletedService ? text(normalized.serviceDate) || new Date().toISOString().slice(0, 10) : null,
+              lastCompletedMileage: importsCompletedService ? serviceMileage : null,
               recommendedMileageInterval: 12_000,
               recommendedTimeIntervalMonths: 12,
               mileageIntervalOverride: null,
@@ -1780,13 +1788,13 @@ export function useDemoStore() {
               createdByUserId: actorUserId(draft),
               updatedByUserId: actorUserId(draft),
             });
-            if (text(normalized.serviceDate)) {
-              if (numeric(normalized.serviceMileage) > 0 && numeric(normalized.serviceMileage) !== numeric(normalized.currentMileage)) {
+            if (importsCompletedService && text(normalized.serviceDate)) {
+              if (serviceMileage !== null && serviceMileage !== currentMileage) {
                 mileageReadings.push({
                   id: `mile-import-service-${now}-${index}`,
                   shopId: draft.shop.id,
                   vehicleId,
-                  readingMileage: numeric(normalized.serviceMileage),
+                  readingMileage: serviceMileage,
                   readingDate: text(normalized.serviceDate),
                   source: "SERVICE_HISTORY_IMPORT",
                   verificationStatus: "IMPORTED",
@@ -1802,12 +1810,12 @@ export function useDemoStore() {
                 vehicleId,
                 serviceName,
                 completedAt: text(normalized.serviceDate),
-                mileage: numeric(normalized.serviceMileage),
+                mileage: serviceMileage,
                 priceCents,
                 notes: "Imported from CSV.",
               });
             }
-            if (text(normalized.declinedDate) || text(normalized.status).toLowerCase().includes("declin")) {
+            if (importsDeclinedWork) {
               declinedWorkRecords.push({
                 id: `declined-import-${now}-${index}`,
                 shopId: draft.shop.id,
@@ -1862,15 +1870,25 @@ export function useDemoStore() {
                 userId: actorUserId(draft) ?? "user-owner",
                 fileName: input.fileName,
                 importType: input.importType,
-                status: summary.failedRows > 0 ? "PARTIAL" : "COMPLETED",
+                status: summary.heldRows > 0 ? "PARTIAL" : "COMPLETED",
+                displayStatus: summary.successfulRows + summary.updatedRows > 0
+                  ? summary.heldRows > 0
+                    ? "COMPLETED_WITH_REVIEW"
+                    : "COMPLETED"
+                  : summary.heldRows > 0
+                    ? "REVIEW_REQUIRED"
+                    : "COMPLETED",
                 importedAt: new Date().toISOString(),
                 totalRows: summary.totalRows,
-                successfulRows: summary.successfulRows,
-                duplicateRows: summary.duplicateRows,
+                successfulRows: summary.importedRows,
+                duplicateRows: summary.duplicateSkippedRows,
                 updatedRows: summary.updatedRows,
                 skippedRows: summary.skippedRows,
-                failedRows: summary.failedRows,
-                errorReportUrl: summary.failedRows > 0 ? "downloadable-error-report" : undefined,
+                failedRows: 0,
+                heldRows: summary.heldRows,
+                invalidRows: summary.invalidRows,
+                resultMessage: summary.resultMessage,
+                errorReportUrl: summary.heldRows > 0 || summary.skippedRows > 0 ? "downloadable-result-report" : undefined,
               },
               ...draft.importHistory,
             ],

@@ -21,6 +21,7 @@ import { isCustomerBookingEnabled } from "@/lib/feature-flags";
 import {
   buildRevenueOpportunities,
   groupRevenueOpportunities,
+  opportunityTimingLabel,
   type RevenueQueueGroup,
 } from "@/lib/revenue-recovery";
 import { formatCurrency, formatDate, formatLaborHours } from "@/lib/utils";
@@ -94,6 +95,8 @@ function mainReason(group: RevenueQueueGroup) {
 }
 
 function dueSummary(group: RevenueQueueGroup) {
+  const declined = group.opportunities.find((item) => item.source === "DECLINED_WORK");
+  if (declined) return opportunityTimingLabel(declined);
   const due = group.opportunities.find((item) => item.dueMileage || item.dueDate);
   if (!due) return "Due details unavailable";
   const parts = [

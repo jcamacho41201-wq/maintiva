@@ -58,6 +58,7 @@ export type RevenueOpportunity = {
   createdAt: string;
   lastActivityAt: string;
   lastContactedAt?: string;
+  followUpDate?: string;
 };
 
 export type RevenueQueueGroup = {
@@ -102,6 +103,24 @@ function sourceLabel(source: OpportunitySource) {
     DEFERRED_WORK: "Deferred work",
     REACTIVATION: "Reactivation",
   }[source];
+}
+
+export function opportunityTimingLabel(opportunity: Pick<RevenueOpportunity, "source" | "daysOverdue" | "dueDate" | "sourceLabel" | "followUpDate">) {
+  if (opportunity.source === "DECLINED_WORK") {
+    if (opportunity.followUpDate) {
+      const followUpDaysOverdue = daysBetween(opportunity.followUpDate);
+      if (followUpDaysOverdue > 0) return `Follow-up overdue by ${followUpDaysOverdue} days`;
+    }
+    if (opportunity.daysOverdue > 0) return `Declined ${opportunity.daysOverdue} days ago`;
+    return "Declined today";
+  }
+
+  if (opportunity.daysOverdue > 0) return `${opportunity.daysOverdue} days overdue`;
+  if (opportunity.dueDate) {
+    const daysUntilDue = Math.ceil((new Date(opportunity.dueDate).getTime() - asOfDate.getTime()) / dayMs);
+    if (daysUntilDue > 0) return `Due in ${daysUntilDue} days`;
+  }
+  return opportunity.sourceLabel;
 }
 
 function priorityFor(input: {
@@ -355,6 +374,7 @@ function buildPersistedRevenueOpportunities(state: DemoState): RevenueOpportunit
         stage: displayStage,
         createdAt: opportunity.createdAt,
         lastContactedAt: outreachContactedAt(lastOutreach),
+        followUpDate: lastOutreach?.followUpDate,
         lastActivityAt: lastOutreach?.followUpDate ?? lastOutreach?.manuallySentAt ?? lastOutreach?.sentAt ?? opportunity.lastActivityAt ?? opportunity.createdAt,
       };
     })
@@ -427,6 +447,7 @@ function buildDerivedDemoRevenueOpportunities(state: DemoState): RevenueOpportun
       }),
       createdAt: record.lastCompletedDate ?? asOfDate.toISOString(),
       lastContactedAt: outreachContactedAt(outreach),
+      followUpDate: outreach?.followUpDate,
       lastActivityAt: outreach?.sentAt ?? appointment?.scheduledStart ?? record.lastCompletedDate ?? asOfDate.toISOString(),
     };
   });
@@ -477,6 +498,7 @@ function buildDerivedDemoRevenueOpportunities(state: DemoState): RevenueOpportun
       }),
       createdAt: record.declinedAt,
       lastContactedAt: outreachContactedAt(outreach),
+      followUpDate: outreach?.followUpDate,
       lastActivityAt: appointment?.scheduledStart ?? outreach?.sentAt ?? record.declinedAt,
     };
   });

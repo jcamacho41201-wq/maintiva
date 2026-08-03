@@ -144,7 +144,7 @@ export function resolveMaintenanceInterval({
   const reasons: string[] = [];
 
   if (mileageInterval) {
-    if (!record.lastCompletedMileage || !vehicle.currentMileage) {
+    if (record.lastCompletedMileage === null || record.lastCompletedMileage === undefined || vehicle.currentMileage === null || vehicle.currentMileage === undefined) {
       statuses.push("NOT_ENOUGH_HISTORY");
       reasons.push("Unable to calculate until current mileage and last completed mileage are entered.");
     } else {
