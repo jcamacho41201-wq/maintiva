@@ -49,6 +49,7 @@ import {
   safeMutationOperation,
 } from "@/lib/server-diagnostics";
 import { BrowserShopIdError, rejectBrowserShopId } from "@/lib/tenant-security";
+import { appointmentRequestsDisabledResponse, isAppointmentRequestsEnabled } from "@/lib/feature-flags";
 
 const mutationSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("addCustomer"), payload: z.unknown() }),
@@ -215,6 +216,23 @@ const mutationSchema = z.discriminatedUnion("action", [
     action: z.literal("declineAppointmentRequest"),
     id: z.string().min(1),
     payload: z.object({ reason: z.string().optional() }).optional(),
+  }),
+  z.object({
+    action: z.literal("acceptAppointmentRequest"),
+    id: z.string().min(1),
+  }),
+  z.object({
+    action: z.literal("declineMaintenanceRequest"),
+    id: z.string().min(1),
+    payload: z.object({ reason: z.string().optional() }).optional(),
+  }),
+  z.object({
+    action: z.literal("proposeAppointmentRequestAlternate"),
+    id: z.string().min(1),
+    payload: z.object({
+      startsAt: z.iso.datetime(),
+      endsAt: z.iso.datetime(),
+    }),
   }),
   z.object({
     action: z.literal("importCsvRows"),
@@ -409,6 +427,19 @@ export async function POST(request: Request) {
         await declinePilotAppointmentRequest(context, body.id, body.payload);
         mutationCommitted = true;
         break;
+      case "acceptAppointmentRequest":
+      case "declineMaintenanceRequest":
+      case "proposeAppointmentRequestAlternate":
+        if (!isAppointmentRequestsEnabled()) {
+          return NextResponse.json(appointmentRequestsDisabledResponse(), { status: 404 });
+        }
+        return NextResponse.json(
+          {
+            code: "APPOINTMENT_REQUESTS_NOT_RELEASED",
+            message: "Appointment requests are not available.",
+          },
+          { status: 404 },
+        );
       case "importCsvRows":
         await importPilotCsvRows(context, body.payload);
         mutationCommitted = true;

@@ -2,7 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  APPOINTMENT_REQUESTS_RELEASED,
   SMART_MAINTENANCE_BLOCKS_RELEASED,
+  isAppointmentRequestsEnabled,
   isSmartMaintenanceBlocksEnabled,
 } from "@/lib/feature-flags";
 
@@ -62,6 +64,54 @@ describe("production readiness safeguards", () => {
     expect(settingsPage).toContain("canManageShopSettings");
     expect(smartBlocksPage).toContain("isSmartMaintenanceBlocksEnabled");
     expect(smartBlocksPage).toContain("canManageShopSettings");
+  });
+
+  it("keeps controlled appointment request submission disabled until its migration is approved", () => {
+    const envExample = source(".env.example");
+    const flags = source("src/lib/feature-flags.ts");
+    const proxy = source("src/proxy.ts");
+    const requestPage = source("src/app/request/[token]/page.tsx");
+    const contextRoute = source("src/app/api/request/[token]/context/route.ts");
+    const submitRoute = source("src/app/api/request/[token]/submit/route.ts");
+
+    expect(APPOINTMENT_REQUESTS_RELEASED).toBe(false);
+    expect(isAppointmentRequestsEnabled({ MAINTIVA_APPOINTMENT_REQUESTS_ENABLED: "true" })).toBe(false);
+    expect(envExample).toContain('MAINTIVA_APPOINTMENT_REQUESTS_ENABLED="false"');
+    expect(envExample).toContain('MAINTIVA_APPOINTMENT_REQUESTS_DISABLED="true"');
+    expect(flags).toContain("APPOINTMENT_REQUESTS_RELEASED = false");
+    expect(flags).toContain("MAINTIVA_APPOINTMENT_REQUESTS_ENABLED");
+    expect(proxy).toContain('pathname.startsWith("/request/")');
+    expect(proxy).toContain('pathname.startsWith("/api/request/")');
+    expect(requestPage).toContain("Request This Time");
+    expect(requestPage).toContain("This is an appointment request. The shop will confirm the time after reviewing its schedule.");
+    expect(requestPage).not.toContain("Book Appointment");
+    expect(contextRoute).toContain("appointmentRequestsDisabledResponse");
+    expect(submitRoute).toContain("appointmentRequestsDisabledResponse");
+  });
+
+  it("adds a tenant-scoped AppointmentRequest migration without enabling anonymous table access", () => {
+    const migration = source("supabase/migrations/20260804120000_appointment_request_workflow.sql");
+    const prismaSchema = source("prisma/schema.prisma");
+    const appointmentsPage = source("src/app/appointments/page.tsx");
+
+    expect(prismaSchema).toContain("model AppointmentRequest");
+    expect(prismaSchema).toContain("model AppointmentRequestLink");
+    expect(migration).toContain('CREATE TYPE public."AppointmentRequestStatus"');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS public."AppointmentRequest"');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS public."AppointmentRequestLink"');
+    expect(migration).toContain('FOREIGN KEY ("requestLinkId", "shopId") REFERENCES public."AppointmentRequestLink"("id", "shopId")');
+    expect(migration).toContain('FOREIGN KEY ("appointmentRequestId", "shopId") REFERENCES public."AppointmentRequest"("id", "shopId")');
+    expect(migration).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "AppointmentRequest_shop_idempotency_key"');
+    expect(migration).toContain('USING (public.maintiva_is_shop_member("shopId"))');
+    expect(migration).toContain("REVOKE ALL ON TABLE");
+    expect(migration).toContain("FROM anon, public");
+    expect(migration).not.toContain("TO anon");
+    expect(migration).not.toContain("WITH CHECK (true)");
+    expect(migration).not.toContain("USING (true)");
+    expect(appointmentsPage).toContain("Maintiva Maintenance Calendar");
+    expect(appointmentsPage).toContain("Check your primary shop calendar before approving requests.");
+    expect(appointmentsPage).toContain("Open maintenance capacity");
+    expect(appointmentsPage).toContain("Pending request");
   });
 
   it("keeps the Smart Maintenance Blocks migration tenant-scoped and non-destructive", () => {

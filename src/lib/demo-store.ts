@@ -72,6 +72,8 @@ const authenticatedLoadingSnapshot: DemoState = {
   importHistory: [],
   outreachRecords: [],
   appointments: [],
+  appointmentRequestLinks: [],
+  appointmentRequests: [],
   smartMaintenanceBlocks: [],
   smartMaintenanceBlockBlackouts: [],
   seededAt: "",
@@ -204,6 +206,8 @@ function normalizeState(state: DemoState): DemoState {
     bookingWindows: state.bookingWindows ?? baseline.bookingWindows ?? defaultBookingWindows,
     bookingBlackouts: state.bookingBlackouts ?? baseline.bookingBlackouts ?? [],
     customerBookingLinks: state.customerBookingLinks ?? baseline.customerBookingLinks ?? [],
+    appointmentRequestLinks: state.appointmentRequestLinks ?? baseline.appointmentRequestLinks ?? [],
+    appointmentRequests: state.appointmentRequests ?? baseline.appointmentRequests ?? [],
     smartMaintenanceBlocks: state.smartMaintenanceBlocks ?? baseline.smartMaintenanceBlocks ?? [],
     smartMaintenanceBlockBlackouts: state.smartMaintenanceBlockBlackouts ?? baseline.smartMaintenanceBlockBlackouts ?? [],
   };
@@ -512,6 +516,122 @@ export function useDemoStore() {
           };
         });
         return Promise.resolve({ ok: true, bookingLink: result, message: undefined });
+      },
+      acceptAppointmentRequest(requestId: string) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "acceptAppointmentRequest", id: requestId });
+        }
+
+        let createdAppointment: Appointment | undefined;
+        update((draft) => {
+          const request = draft.appointmentRequests.find((item) => item.id === requestId);
+          if (!request || request.status !== "PENDING" || request.finalAppointmentId) return draft;
+          const appointmentId = `appt-${request.id}`;
+          const decidedAt = new Date().toISOString();
+          const appointment: Appointment = {
+            id: appointmentId,
+            shopId: request.shopId,
+            customerId: request.customerId,
+            vehicleId: request.vehicleId,
+            maintenanceRecordIds: [],
+            serviceNames: request.services.map((service) => service.serviceNameSnapshot),
+            scheduledStart: request.requestedStart,
+            scheduledEnd: request.requestedEnd,
+            status: "CONFIRMED",
+            totalPriceCents: request.estimatedRevenueCents,
+            totalLaborHours: request.totalLaborMinutes / 60,
+            source: "AUTOMATION",
+            attributionSource: "MAINTIVA_OUTREACH",
+            opportunityId: request.opportunityId,
+            approvedAt: decidedAt,
+            notes: "Confirmed from Maintiva appointment request.",
+          };
+          createdAppointment = appointment;
+          return {
+            ...draft,
+            appointments: draft.appointments.some((item) => item.id === appointmentId)
+              ? draft.appointments
+              : [...draft.appointments, appointment],
+            appointmentRequests: draft.appointmentRequests.map((item) =>
+              item.id === requestId
+                ? {
+                    ...item,
+                    status: "APPROVED",
+                    advisorDecisionAt: decidedAt,
+                    decidedByUserId: actorUserId(draft),
+                    finalAppointmentId: appointmentId,
+                    updatedAt: decidedAt,
+                  }
+                : item,
+            ),
+            appointmentRequestLinks: draft.appointmentRequestLinks.map((link) =>
+              link.id === request.requestLinkId
+                ? { ...link, status: "USED", usedAt: decidedAt, updatedAt: decidedAt }
+                : link,
+            ),
+            revenueOpportunities: draft.revenueOpportunities.map((opportunity) =>
+              opportunity.id === request.opportunityId
+                ? { ...opportunity, stage: "BOOKED", lastActivityAt: decidedAt, updatedAt: decidedAt }
+                : opportunity,
+            ),
+          };
+        });
+
+        return Promise.resolve({
+          ok: Boolean(createdAppointment),
+          message: createdAppointment ? undefined : "Appointment request could not be accepted.",
+        });
+      },
+      declineMaintenanceRequest(requestId: string, reason?: string) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "declineMaintenanceRequest", id: requestId, payload: { reason } });
+        }
+
+        const decidedAt = new Date().toISOString();
+        update((draft) => ({
+          ...draft,
+          appointmentRequests: draft.appointmentRequests.map((request) =>
+            request.id === requestId
+              ? {
+                  ...request,
+                  status: "DECLINED",
+                  advisorDecisionAt: decidedAt,
+                  decidedByUserId: actorUserId(draft),
+                  declineReason: reason,
+                  updatedAt: decidedAt,
+                }
+              : request,
+          ),
+        }));
+        return Promise.resolve({ ok: true, message: undefined });
+      },
+      proposeAppointmentRequestAlternate(requestId: string, startsAt: string, endsAt: string) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({
+            action: "proposeAppointmentRequestAlternate",
+            id: requestId,
+            payload: { startsAt, endsAt },
+          });
+        }
+
+        const decidedAt = new Date().toISOString();
+        update((draft) => ({
+          ...draft,
+          appointmentRequests: draft.appointmentRequests.map((request) =>
+            request.id === requestId
+              ? {
+                  ...request,
+                  status: "ALTERNATE_PROPOSED",
+                  alternateProposedStart: startsAt,
+                  alternateProposedEnd: endsAt,
+                  advisorDecisionAt: decidedAt,
+                  decidedByUserId: actorUserId(draft),
+                  updatedAt: decidedAt,
+                }
+              : request,
+          ),
+        }));
+        return Promise.resolve({ ok: true, message: undefined });
       },
       saveBookingSettings(input: ShopBookingSettings & {
         windows?: Array<{ dayOfWeek: number; startMinute: number; endMinute: number; isActive: boolean }>;

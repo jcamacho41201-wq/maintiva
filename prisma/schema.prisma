@@ -89,6 +89,29 @@ enum AppointmentSource {
   IMPORTED
 }
 
+enum AppointmentRequestStatus {
+  PENDING
+  APPROVED
+  DECLINED
+  ALTERNATE_PROPOSED
+  CUSTOMER_ACCEPTED_ALTERNATE
+  EXPIRED
+  CANCELLED
+}
+
+enum AppointmentRequestSource {
+  MAINTENANCE_REQUEST_LINK
+  ADVISOR_CREATED
+  ALTERNATE_RESPONSE
+}
+
+enum AppointmentRequestLinkStatus {
+  ACTIVE
+  REVOKED
+  USED
+  EXPIRED
+}
+
 enum AppointmentAttributionSource {
   MAINTIVA_OUTREACH
   MANUAL_SHOP_ENTRY
@@ -218,66 +241,72 @@ enum DrivingProfileConfidence {
 }
 
 model User {
-  id          String           @id
-  email       String           @unique
-  name        String?
-  createdAt   DateTime         @default(now())
-  updatedAt   DateTime         @updatedAt
-  memberships ShopMembership[]
-  outreachRecords OutreachRecord[]
-  importHistory ImportHistoryRecord[]
-  auditLogs   AuditLog[]
-  createdMaintenanceRecords VehicleMaintenanceRecord[] @relation("MaintenanceRecordCreatedBy")
-  updatedMaintenanceRecords VehicleMaintenanceRecord[] @relation("MaintenanceRecordUpdatedBy")
-  mileageReadingsRecorded VehicleMileageReading[] @relation("MileageReadingRecordedBy")
-  drivingProfilesCustomerReported VehicleDrivingProfile[] @relation("DrivingProfileCustomerReportedBy")
-  drivingProfilesManualOverride VehicleDrivingProfile[] @relation("DrivingProfileManualOverrideSetBy")
-  bookingLinksCreated CustomerBookingLink[] @relation("BookingLinkCreatedBy")
-  smartMaintenanceBlocksCreated SmartMaintenanceBlock[] @relation("SmartMaintenanceBlockCreatedBy")
+  id                                    String                          @id
+  email                                 String                          @unique
+  name                                  String?
+  createdAt                             DateTime                        @default(now())
+  updatedAt                             DateTime                        @updatedAt
+  memberships                           ShopMembership[]
+  outreachRecords                       OutreachRecord[]
+  importHistory                         ImportHistoryRecord[]
+  auditLogs                             AuditLog[]
+  createdMaintenanceRecords             VehicleMaintenanceRecord[]      @relation("MaintenanceRecordCreatedBy")
+  updatedMaintenanceRecords             VehicleMaintenanceRecord[]      @relation("MaintenanceRecordUpdatedBy")
+  mileageReadingsRecorded               VehicleMileageReading[]         @relation("MileageReadingRecordedBy")
+  drivingProfilesCustomerReported       VehicleDrivingProfile[]         @relation("DrivingProfileCustomerReportedBy")
+  drivingProfilesManualOverride         VehicleDrivingProfile[]         @relation("DrivingProfileManualOverrideSetBy")
+  bookingLinksCreated                   CustomerBookingLink[]           @relation("BookingLinkCreatedBy")
+  smartMaintenanceBlocksCreated         SmartMaintenanceBlock[]         @relation("SmartMaintenanceBlockCreatedBy")
   smartMaintenanceBlockBlackoutsCreated SmartMaintenanceBlockBlackout[] @relation("SmartMaintenanceBlockBlackoutCreatedBy")
+  appointmentRequestLinksCreated        AppointmentRequestLink[]        @relation("AppointmentRequestLinkCreatedBy")
+  appointmentRequestsDecided            AppointmentRequest[]            @relation("AppointmentRequestDecidedBy")
 }
 
 model Shop {
-  id                   String                     @id @default(cuid())
-  name                 String
-  slug                 String                     @unique
-  phone                String?
-  email                String?
-  address              String?
-  timezone             String                     @default("America/New_York")
-  dailyBayHours        Int                        @default(64)
-  defaultAnnualMileage Int                        @default(12500)
-  status               ShopStatus                 @default(ONBOARDING)
-  isDemo               Boolean                    @default(false)
-  onboardingCompletedAt DateTime?
-  createdAt            DateTime                   @default(now())
-  updatedAt            DateTime                   @updatedAt
-  memberships          ShopMembership[]
-  customers            Customer[]
-  vehicles             Vehicle[]
-  serviceDefinitions   ServiceDefinition[]
-  maintenanceRecords   VehicleMaintenanceRecord[]
-  serviceHistoryRecords ServiceHistoryRecord[]
-  declinedWorkRecords  DeclinedWorkRecord[]
-  revenueOpportunities MaintenanceRevenueOpportunity[]
-  outreachRecords      OutreachRecord[]
-  appointments         Appointment[]
-  appointmentServices  AppointmentService[]
-  importHistory        ImportHistoryRecord[]
-  importRows           ImportRowRecord[]
-  auditLogs            AuditLog[]
-  mileageReadings      VehicleMileageReading[]
-  drivingProfiles      VehicleDrivingProfile[]
-  bookingSettings      ShopBookingSettings?
-  bookingWindows       ShopBookingWindow[]
-  bookingBlackouts     ShopBookingBlackout[]
-  serviceBookingRules  ServiceBookingRule[]
-  serviceBookingWindows ServiceBookingWindow[]
-  customerBookingLinks CustomerBookingLink[]
-  appointmentChanges   AppointmentChangeRecord[]
-  smartMaintenanceBlocks SmartMaintenanceBlock[]
-  smartMaintenanceBlockServices SmartMaintenanceBlockService[]
+  id                             String                          @id @default(cuid())
+  name                           String
+  slug                           String                          @unique
+  phone                          String?
+  email                          String?
+  address                        String?
+  timezone                       String                          @default("America/New_York")
+  dailyBayHours                  Int                             @default(64)
+  defaultAnnualMileage           Int                             @default(12500)
+  status                         ShopStatus                      @default(ONBOARDING)
+  isDemo                         Boolean                         @default(false)
+  onboardingCompletedAt          DateTime?
+  createdAt                      DateTime                        @default(now())
+  updatedAt                      DateTime                        @updatedAt
+  memberships                    ShopMembership[]
+  customers                      Customer[]
+  vehicles                       Vehicle[]
+  serviceDefinitions             ServiceDefinition[]
+  maintenanceRecords             VehicleMaintenanceRecord[]
+  serviceHistoryRecords          ServiceHistoryRecord[]
+  declinedWorkRecords            DeclinedWorkRecord[]
+  revenueOpportunities           MaintenanceRevenueOpportunity[]
+  outreachRecords                OutreachRecord[]
+  appointments                   Appointment[]
+  appointmentServices            AppointmentService[]
+  importHistory                  ImportHistoryRecord[]
+  importRows                     ImportRowRecord[]
+  auditLogs                      AuditLog[]
+  mileageReadings                VehicleMileageReading[]
+  drivingProfiles                VehicleDrivingProfile[]
+  bookingSettings                ShopBookingSettings?
+  bookingWindows                 ShopBookingWindow[]
+  bookingBlackouts               ShopBookingBlackout[]
+  serviceBookingRules            ServiceBookingRule[]
+  serviceBookingWindows          ServiceBookingWindow[]
+  customerBookingLinks           CustomerBookingLink[]
+  appointmentChanges             AppointmentChangeRecord[]
+  smartMaintenanceBlocks         SmartMaintenanceBlock[]
+  smartMaintenanceBlockServices  SmartMaintenanceBlockService[]
   smartMaintenanceBlockBlackouts SmartMaintenanceBlockBlackout[]
+  appointmentRequestLinks        AppointmentRequestLink[]
+  appointmentRequestLinkServices AppointmentRequestLinkService[]
+  appointmentRequests            AppointmentRequest[]
+  appointmentRequestServices     AppointmentRequestService[]
 
   @@index([status])
 }
@@ -299,33 +328,35 @@ model ShopMembership {
 }
 
 model Customer {
-  id                   String                 @id @default(cuid())
-  shopId               String
-  firstName            String
-  lastName             String
-  phone                String?
-  email                String?
-  preferredContact     ContactMethod          @default(SMS)
-  smsConsent           Boolean                @default(false)
-  emailConsent         Boolean                @default(false)
-  callConsent          Boolean                @default(false)
-  address              String?
-  notes                String?
-  status               CustomerStatus         @default(ACTIVE)
-  customerScore        Int                    @default(70)
-  lifetimeRevenueCents Int                    @default(0)
-  lastVisit            DateTime?
-  archivedAt           DateTime?
-  createdAt            DateTime               @default(now())
-  updatedAt            DateTime               @updatedAt
-  shop                 Shop                   @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  vehicles             Vehicle[]
-  serviceHistoryRecords ServiceHistoryRecord[]
-  declinedWorkRecords  DeclinedWorkRecord[]
-  revenueOpportunities MaintenanceRevenueOpportunity[]
-  outreachRecords      OutreachRecord[]
-  appointments         Appointment[]
-  customerBookingLinks CustomerBookingLink[]
+  id                      String                          @id @default(cuid())
+  shopId                  String
+  firstName               String
+  lastName                String
+  phone                   String?
+  email                   String?
+  preferredContact        ContactMethod                   @default(SMS)
+  smsConsent              Boolean                         @default(false)
+  emailConsent            Boolean                         @default(false)
+  callConsent             Boolean                         @default(false)
+  address                 String?
+  notes                   String?
+  status                  CustomerStatus                  @default(ACTIVE)
+  customerScore           Int                             @default(70)
+  lifetimeRevenueCents    Int                             @default(0)
+  lastVisit               DateTime?
+  archivedAt              DateTime?
+  createdAt               DateTime                        @default(now())
+  updatedAt               DateTime                        @updatedAt
+  shop                    Shop                            @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  vehicles                Vehicle[]
+  serviceHistoryRecords   ServiceHistoryRecord[]
+  declinedWorkRecords     DeclinedWorkRecord[]
+  revenueOpportunities    MaintenanceRevenueOpportunity[]
+  outreachRecords         OutreachRecord[]
+  appointments            Appointment[]
+  customerBookingLinks    CustomerBookingLink[]
+  appointmentRequestLinks AppointmentRequestLink[]
+  appointmentRequests     AppointmentRequest[]
 
   @@index([shopId, status])
   @@index([shopId, archivedAt])
@@ -333,63 +364,67 @@ model Customer {
 }
 
 model Vehicle {
-  id                    String                     @id @default(cuid())
-  shopId                String
-  customerId            String
-  year                  Int
-  make                  String
-  model                 String
-  vin                   String?
-  licensePlate          String?
-  engine                String?
-  trim                  String?
-  vehicleType           String?
-  currentMileage        Int                        @default(0)
-  estimatedAnnualMileage Int?
-  overallHealth         Int                        @default(80)
-  lastServiceDate       DateTime?
-  archivedAt            DateTime?
-  createdAt             DateTime                   @default(now())
-  updatedAt             DateTime                   @updatedAt
-  shop                  Shop                       @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  customer              Customer                   @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  maintenanceRecords    VehicleMaintenanceRecord[]
-  serviceHistoryRecords ServiceHistoryRecord[]
-  declinedWorkRecords   DeclinedWorkRecord[]
-  revenueOpportunities  MaintenanceRevenueOpportunity[]
-  outreachRecords       OutreachRecord[]
-  appointments          Appointment[]
-  mileageReadings       VehicleMileageReading[]
-  drivingProfile        VehicleDrivingProfile?
-  customerBookingLinks  CustomerBookingLink[]
+  id                      String                          @id @default(cuid())
+  shopId                  String
+  customerId              String
+  year                    Int
+  make                    String
+  model                   String
+  vin                     String?
+  licensePlate            String?
+  engine                  String?
+  trim                    String?
+  vehicleType             String?
+  currentMileage          Int                             @default(0)
+  estimatedAnnualMileage  Int?
+  overallHealth           Int                             @default(80)
+  lastServiceDate         DateTime?
+  archivedAt              DateTime?
+  createdAt               DateTime                        @default(now())
+  updatedAt               DateTime                        @updatedAt
+  shop                    Shop                            @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  customer                Customer                        @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  maintenanceRecords      VehicleMaintenanceRecord[]
+  serviceHistoryRecords   ServiceHistoryRecord[]
+  declinedWorkRecords     DeclinedWorkRecord[]
+  revenueOpportunities    MaintenanceRevenueOpportunity[]
+  outreachRecords         OutreachRecord[]
+  appointments            Appointment[]
+  mileageReadings         VehicleMileageReading[]
+  drivingProfile          VehicleDrivingProfile?
+  customerBookingLinks    CustomerBookingLink[]
+  appointmentRequestLinks AppointmentRequestLink[]
+  appointmentRequests     AppointmentRequest[]
 
+  @@unique([shopId, vin])
   @@index([shopId, customerId])
   @@index([shopId, archivedAt])
-  @@unique([shopId, vin])
 }
 
 model ServiceDefinition {
-  id                           String                     @id @default(cuid())
-  shopId                       String
-  name                         String
-  category                     String
-  defaultMileageInterval       Int?
-  defaultTimeIntervalMonths    Int?
-  defaultTimeIntervalValue     Int?
-  defaultTimeIntervalUnit      TimeIntervalUnit           @default(MONTHS)
-  defaultNotificationThreshold Int                        @default(10)
-  estimatedLaborMinutes        Int
-  defaultPriceCents            Int
-  description                  String?
-  isActive                     Boolean                    @default(true)
-  createdAt                    DateTime                   @default(now())
-  updatedAt                    DateTime                   @updatedAt
-  shop                         Shop                       @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  maintenanceRecords           VehicleMaintenanceRecord[]
-  serviceHistoryRecords        ServiceHistoryRecord[]
-  appointmentServices          AppointmentService[]
-  bookingRule                  ServiceBookingRule?
-  smartMaintenanceBlockServices SmartMaintenanceBlockService[]
+  id                             String                          @id @default(cuid())
+  shopId                         String
+  name                           String
+  category                       String
+  defaultMileageInterval         Int?
+  defaultTimeIntervalMonths      Int?
+  defaultTimeIntervalValue       Int?
+  defaultTimeIntervalUnit        TimeIntervalUnit                @default(MONTHS)
+  defaultNotificationThreshold   Int                             @default(10)
+  estimatedLaborMinutes          Int
+  defaultPriceCents              Int
+  description                    String?
+  isActive                       Boolean                         @default(true)
+  createdAt                      DateTime                        @default(now())
+  updatedAt                      DateTime                        @updatedAt
+  shop                           Shop                            @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  maintenanceRecords             VehicleMaintenanceRecord[]
+  serviceHistoryRecords          ServiceHistoryRecord[]
+  appointmentServices            AppointmentService[]
+  bookingRule                    ServiceBookingRule?
+  smartMaintenanceBlockServices  SmartMaintenanceBlockService[]
+  appointmentRequestLinkServices AppointmentRequestLinkService[]
+  appointmentRequestServices     AppointmentRequestService[]
 
   @@unique([shopId, name])
   @@unique([id, shopId])
@@ -397,48 +432,48 @@ model ServiceDefinition {
 }
 
 model VehicleMaintenanceRecord {
-  id                              String                 @id @default(cuid())
-  shopId                          String
-  vehicleId                       String
-  serviceDefinitionId             String?
-  serviceName                     String
-  customServiceName               String?
-  customCategory                  String?
-  lastCompletedDate               DateTime?
-  lastCompletedMileage            Int?
-  recommendedMileageInterval      Int?
-  recommendedTimeIntervalMonths   Int?
-  mileageIntervalOverride         Int?
-  timeIntervalValueOverride       Int?
-  timeIntervalUnitOverride        TimeIntervalUnit?
-  notificationThreshold           Int                    @default(10)
-  outreachThresholdType           OutreachThresholdType  @default(MILES_BEFORE_DUE)
-  outreachThresholdValue          Int                    @default(500)
-  priceCents                      Int
-  laborMinutes                    Int
-  priceOverrideCents              Int?
-  laborMinutesOverride            Int?
-  status                          MaintenanceStatus      @default(HEALTHY)
-  outreachStatus                  OutreachStatus         @default(NEEDS_OUTREACH)
-  outreachRecordId                String?
-  appointmentId                   String?
-  isActive                        Boolean                @default(true)
-  archivedAt                      DateTime?
-  notes                           String?
-  createdByUserId                 String?
-  updatedByUserId                 String?
-  createdAt                       DateTime               @default(now())
-  updatedAt                       DateTime               @updatedAt
-  shop                            Shop                   @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  vehicle                         Vehicle                @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
-  serviceDefinition               ServiceDefinition?     @relation(fields: [serviceDefinitionId], references: [id], onDelete: SetNull)
-  outreachRecord                  OutreachRecord?        @relation(fields: [outreachRecordId], references: [id], onDelete: SetNull)
-  appointment                     Appointment?           @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
-  createdBy                       User?                  @relation("MaintenanceRecordCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
-  updatedBy                       User?                  @relation("MaintenanceRecordUpdatedBy", fields: [updatedByUserId], references: [id], onDelete: SetNull)
-  serviceHistoryRecords           ServiceHistoryRecord[]
-  appointmentServices             AppointmentService[]
-  revenueOpportunities            MaintenanceRevenueOpportunity[]
+  id                            String                          @id @default(cuid())
+  shopId                        String
+  vehicleId                     String
+  serviceDefinitionId           String?
+  serviceName                   String
+  customServiceName             String?
+  customCategory                String?
+  lastCompletedDate             DateTime?
+  lastCompletedMileage          Int?
+  recommendedMileageInterval    Int?
+  recommendedTimeIntervalMonths Int?
+  mileageIntervalOverride       Int?
+  timeIntervalValueOverride     Int?
+  timeIntervalUnitOverride      TimeIntervalUnit?
+  notificationThreshold         Int                             @default(10)
+  outreachThresholdType         OutreachThresholdType           @default(MILES_BEFORE_DUE)
+  outreachThresholdValue        Int                             @default(500)
+  priceCents                    Int
+  laborMinutes                  Int
+  priceOverrideCents            Int?
+  laborMinutesOverride          Int?
+  status                        MaintenanceStatus               @default(HEALTHY)
+  outreachStatus                OutreachStatus                  @default(NEEDS_OUTREACH)
+  outreachRecordId              String?
+  appointmentId                 String?
+  isActive                      Boolean                         @default(true)
+  archivedAt                    DateTime?
+  notes                         String?
+  createdByUserId               String?
+  updatedByUserId               String?
+  createdAt                     DateTime                        @default(now())
+  updatedAt                     DateTime                        @updatedAt
+  shop                          Shop                            @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  vehicle                       Vehicle                         @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  serviceDefinition             ServiceDefinition?              @relation(fields: [serviceDefinitionId], references: [id], onDelete: SetNull)
+  outreachRecord                OutreachRecord?                 @relation(fields: [outreachRecordId], references: [id], onDelete: SetNull)
+  appointment                   Appointment?                    @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  createdBy                     User?                           @relation("MaintenanceRecordCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  updatedBy                     User?                           @relation("MaintenanceRecordUpdatedBy", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+  serviceHistoryRecords         ServiceHistoryRecord[]
+  appointmentServices           AppointmentService[]
+  revenueOpportunities          MaintenanceRevenueOpportunity[]
 
   @@index([shopId, vehicleId, status])
   @@index([shopId, vehicleId, isActive])
@@ -447,25 +482,25 @@ model VehicleMaintenanceRecord {
 }
 
 model VehicleMileageReading {
-  id                   String                    @id @default(cuid())
-  shopId               String
-  vehicleId            String
-  readingMileage       Int
-  readingDate          DateTime
-  source               MileageReadingSource
-  verificationStatus   MileageVerificationStatus @default(UNVERIFIED)
-  anomalyStatus        MileageAnomalyStatus      @default(NONE)
-  includedInForecast   Boolean                   @default(true)
-  correctionReason     String?
-  reviewNotes          String?
-  sourceReferenceType  String?
-  sourceReferenceId    String?
-  recordedByUserId     String?
-  createdAt            DateTime                  @default(now())
-  updatedAt            DateTime                  @updatedAt
-  shop                 Shop                      @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  vehicle              Vehicle                   @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
-  recordedBy           User?                     @relation("MileageReadingRecordedBy", fields: [recordedByUserId], references: [id], onDelete: SetNull)
+  id                  String                    @id @default(cuid())
+  shopId              String
+  vehicleId           String
+  readingMileage      Int
+  readingDate         DateTime
+  source              MileageReadingSource
+  verificationStatus  MileageVerificationStatus @default(UNVERIFIED)
+  anomalyStatus       MileageAnomalyStatus      @default(NONE)
+  includedInForecast  Boolean                   @default(true)
+  correctionReason    String?
+  reviewNotes         String?
+  sourceReferenceType String?
+  sourceReferenceId   String?
+  recordedByUserId    String?
+  createdAt           DateTime                  @default(now())
+  updatedAt           DateTime                  @updatedAt
+  shop                Shop                      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  vehicle             Vehicle                   @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  recordedBy          User?                     @relation("MileageReadingRecordedBy", fields: [recordedByUserId], references: [id], onDelete: SetNull)
 
   @@index([shopId, vehicleId, readingDate])
   @@index([shopId, vehicleId, includedInForecast, anomalyStatus])
@@ -501,50 +536,50 @@ model VehicleDrivingProfile {
 }
 
 model ServiceHistoryRecord {
-  id                    String                    @id @default(cuid())
-  shopId                String
-  customerId            String
-  vehicleId             String
-  serviceDefinitionId   String?
-  maintenanceRecordId   String?
-  serviceName           String
-  completedAt           DateTime
-  mileage               Int?
-  laborMinutes          Int                       @default(0)
-  priceCents            Int                       @default(0)
-  notes                 String?
-  createdAt             DateTime                  @default(now())
-  updatedAt             DateTime                  @updatedAt
-  shop                  Shop                      @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  customer              Customer                  @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  vehicle               Vehicle                   @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
-  serviceDefinition     ServiceDefinition?        @relation(fields: [serviceDefinitionId], references: [id], onDelete: SetNull)
-  maintenanceRecord     VehicleMaintenanceRecord? @relation(fields: [maintenanceRecordId], references: [id], onDelete: SetNull)
+  id                  String                    @id @default(cuid())
+  shopId              String
+  customerId          String
+  vehicleId           String
+  serviceDefinitionId String?
+  maintenanceRecordId String?
+  serviceName         String
+  completedAt         DateTime
+  mileage             Int?
+  laborMinutes        Int                       @default(0)
+  priceCents          Int                       @default(0)
+  notes               String?
+  createdAt           DateTime                  @default(now())
+  updatedAt           DateTime                  @updatedAt
+  shop                Shop                      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  customer            Customer                  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  vehicle             Vehicle                   @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  serviceDefinition   ServiceDefinition?        @relation(fields: [serviceDefinitionId], references: [id], onDelete: SetNull)
+  maintenanceRecord   VehicleMaintenanceRecord? @relation(fields: [maintenanceRecordId], references: [id], onDelete: SetNull)
 
   @@index([shopId, customerId, completedAt])
   @@index([shopId, vehicleId, completedAt])
 }
 
 model DeclinedWorkRecord {
-  id                      String             @id @default(cuid())
-  shopId                  String
-  customerId              String
-  vehicleId               String
-  serviceName             String
-  declinedAt              DateTime
-  recommendedPriceCents   Int
-  laborMinutes            Int
-  advisorNotes            String?
-  status                  DeclinedWorkStatus @default(OPEN)
-  outreachStatus          OutreachStatus     @default(NEEDS_OUTREACH)
-  appointmentId           String?
-  createdAt               DateTime           @default(now())
-  updatedAt               DateTime           @updatedAt
-  shop                    Shop               @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  customer                Customer           @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  vehicle                 Vehicle            @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
-  appointment             Appointment?       @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
-  revenueOpportunities    MaintenanceRevenueOpportunity[]
+  id                    String                          @id @default(cuid())
+  shopId                String
+  customerId            String
+  vehicleId             String
+  serviceName           String
+  declinedAt            DateTime
+  recommendedPriceCents Int
+  laborMinutes          Int
+  advisorNotes          String?
+  status                DeclinedWorkStatus              @default(OPEN)
+  outreachStatus        OutreachStatus                  @default(NEEDS_OUTREACH)
+  appointmentId         String?
+  createdAt             DateTime                        @default(now())
+  updatedAt             DateTime                        @updatedAt
+  shop                  Shop                            @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  customer              Customer                        @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  vehicle               Vehicle                         @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  appointment           Appointment?                    @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  revenueOpportunities  MaintenanceRevenueOpportunity[]
 
   @@index([shopId, status, declinedAt])
   @@index([shopId, customerId])
@@ -552,65 +587,68 @@ model DeclinedWorkRecord {
 }
 
 model MaintenanceRevenueOpportunity {
-  id                    String              @id @default(cuid())
-  shopId                String
-  customerId            String
-  vehicleId             String
-  maintenanceRecordId   String?
-  declinedWorkRecordId  String?
-  source                OpportunitySource
-  stage                 OpportunityStage    @default(IDENTIFIED)
-  priority              OpportunityPriority @default(MEDIUM)
-  explanation           String
-  priorityReason        String
-  estimatedRevenueCents Int
-  estimatedLaborMinutes Int
-  dueDate               DateTime?
-  dueMileage            Int?
-  daysOverdue           Int                 @default(0)
-  milesOverdue          Int                 @default(0)
-  lastActivityAt        DateTime?
-  createdAt             DateTime            @default(now())
-  updatedAt             DateTime            @updatedAt
-  shop                  Shop                @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  customer              Customer            @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  vehicle               Vehicle             @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
-  maintenanceRecord     VehicleMaintenanceRecord? @relation(fields: [maintenanceRecordId], references: [id], onDelete: SetNull)
-  declinedWorkRecord    DeclinedWorkRecord? @relation(fields: [declinedWorkRecordId], references: [id], onDelete: SetNull)
+  id                      String                    @id @default(cuid())
+  shopId                  String
+  customerId              String
+  vehicleId               String
+  maintenanceRecordId     String?
+  declinedWorkRecordId    String?
+  source                  OpportunitySource
+  stage                   OpportunityStage          @default(IDENTIFIED)
+  priority                OpportunityPriority       @default(MEDIUM)
+  explanation             String
+  priorityReason          String
+  estimatedRevenueCents   Int
+  estimatedLaborMinutes   Int
+  dueDate                 DateTime?
+  dueMileage              Int?
+  daysOverdue             Int                       @default(0)
+  milesOverdue            Int                       @default(0)
+  lastActivityAt          DateTime?
+  createdAt               DateTime                  @default(now())
+  updatedAt               DateTime                  @updatedAt
+  shop                    Shop                      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  customer                Customer                  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  vehicle                 Vehicle                   @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  maintenanceRecord       VehicleMaintenanceRecord? @relation(fields: [maintenanceRecordId], references: [id], onDelete: SetNull)
+  declinedWorkRecord      DeclinedWorkRecord?       @relation(fields: [declinedWorkRecordId], references: [id], onDelete: SetNull)
+  appointmentRequestLinks AppointmentRequestLink[]
+  appointmentRequests     AppointmentRequest[]
 
+  @@unique([id, shopId])
   @@index([shopId, stage, priority])
   @@index([shopId, source])
   @@index([shopId, vehicleId])
 }
 
 model OutreachRecord {
-  id                    String                     @id @default(cuid())
-  shopId                String
-  customerId            String
-  vehicleId             String
-  message               String
-  channel               OutreachChannel            @default(TEXT)
-  status                OutreachStatus             @default(DRAFTED)
-  copiedAt              DateTime?
-  manuallySentAt        DateTime?
-  declinedAt            DateTime?
-  responseStatus        CustomerResponseStatus @default(NO_RESPONSE)
-  followUpDate          DateTime?
-  appointmentId         String?
-  bookingLinkId         String?
-  performedByUserId     String?
-  providerExternalId    String?
-  providerPayload       Json?
-  createdAt             DateTime                   @default(now())
-  updatedAt             DateTime                   @updatedAt
-  shop                  Shop                       @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  customer              Customer                   @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  vehicle               Vehicle                    @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
-  appointment           Appointment?               @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
-  bookingLink           CustomerBookingLink?        @relation("OutreachBookingLink", fields: [bookingLinkId], references: [id], onDelete: SetNull)
-  performedBy           User?                      @relation(fields: [performedByUserId], references: [id], onDelete: SetNull)
-  maintenanceRecords    VehicleMaintenanceRecord[]
-  customerBookingLinks  CustomerBookingLink[]       @relation("BookingLinkOutreachRecord")
+  id                   String                     @id @default(cuid())
+  shopId               String
+  customerId           String
+  vehicleId            String
+  message              String
+  channel              OutreachChannel            @default(TEXT)
+  status               OutreachStatus             @default(DRAFTED)
+  copiedAt             DateTime?
+  manuallySentAt       DateTime?
+  declinedAt           DateTime?
+  responseStatus       CustomerResponseStatus     @default(NO_RESPONSE)
+  followUpDate         DateTime?
+  appointmentId        String?
+  bookingLinkId        String?
+  performedByUserId    String?
+  providerExternalId   String?
+  providerPayload      Json?
+  createdAt            DateTime                   @default(now())
+  updatedAt            DateTime                   @updatedAt
+  shop                 Shop                       @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  customer             Customer                   @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  vehicle              Vehicle                    @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  appointment          Appointment?               @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  bookingLink          CustomerBookingLink?       @relation("OutreachBookingLink", fields: [bookingLinkId], references: [id], onDelete: SetNull)
+  performedBy          User?                      @relation(fields: [performedByUserId], references: [id], onDelete: SetNull)
+  maintenanceRecords   VehicleMaintenanceRecord[]
+  customerBookingLinks CustomerBookingLink[]      @relation("BookingLinkOutreachRecord")
 
   @@index([shopId, status, createdAt])
   @@index([shopId, customerId, createdAt])
@@ -618,68 +656,70 @@ model OutreachRecord {
 }
 
 model Appointment {
-  id                    String                     @id @default(cuid())
-  shopId                String
-  customerId            String
-  vehicleId             String
-  scheduledStart        DateTime
-  scheduledEnd          DateTime
-  status                AppointmentStatus          @default(REQUESTED)
-  totalLaborMinutes     Int
-  totalPriceCents       Int
-  source                AppointmentSource          @default(MANUAL)
-  attributionSource     AppointmentAttributionSource @default(MANUAL_SHOP_ENTRY)
-  opportunityId         String?
-  outreachRecordId      String?
-  bookingLinkId         String?
-  intakeType            BookingIntakeType?
-  customerNotes         String?
-  internalNotes         String?
-  completedRevenueCents Int?
-  completedLaborMinutes Int?
-  notes                 String?
-  cancelledAt           DateTime?
-  requestedAt           DateTime?
-  approvedAt            DateTime?
-  declinedAt            DateTime?
-  customerCancelledAt   DateTime?
-  rescheduledAt         DateTime?
-  completedAt           DateTime?
-  createdAt             DateTime                   @default(now())
-  updatedAt             DateTime                   @updatedAt
-  shop                  Shop                       @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  customer              Customer                   @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  vehicle               Vehicle                    @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
-  services              AppointmentService[]
-  maintenanceRecords    VehicleMaintenanceRecord[]
-  declinedWorkRecords   DeclinedWorkRecord[]
-  outreachRecords       OutreachRecord[]
-  bookingLink           CustomerBookingLink?        @relation("AppointmentBookingLink", fields: [bookingLinkId], references: [id], onDelete: SetNull)
-  customerBookingLinks  CustomerBookingLink[]       @relation("BookingLinkAppointment")
-  changes               AppointmentChangeRecord[]
+  id                           String                       @id @default(cuid())
+  shopId                       String
+  customerId                   String
+  vehicleId                    String
+  scheduledStart               DateTime
+  scheduledEnd                 DateTime
+  status                       AppointmentStatus            @default(REQUESTED)
+  totalLaborMinutes            Int
+  totalPriceCents              Int
+  source                       AppointmentSource            @default(MANUAL)
+  attributionSource            AppointmentAttributionSource @default(MANUAL_SHOP_ENTRY)
+  opportunityId                String?
+  outreachRecordId             String?
+  bookingLinkId                String?
+  intakeType                   BookingIntakeType?
+  customerNotes                String?
+  internalNotes                String?
+  completedRevenueCents        Int?
+  completedLaborMinutes        Int?
+  notes                        String?
+  cancelledAt                  DateTime?
+  requestedAt                  DateTime?
+  approvedAt                   DateTime?
+  declinedAt                   DateTime?
+  customerCancelledAt          DateTime?
+  rescheduledAt                DateTime?
+  completedAt                  DateTime?
+  createdAt                    DateTime                     @default(now())
+  updatedAt                    DateTime                     @updatedAt
+  shop                         Shop                         @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  customer                     Customer                     @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  vehicle                      Vehicle                      @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  services                     AppointmentService[]
+  maintenanceRecords           VehicleMaintenanceRecord[]
+  declinedWorkRecords          DeclinedWorkRecord[]
+  outreachRecords              OutreachRecord[]
+  bookingLink                  CustomerBookingLink?         @relation("AppointmentBookingLink", fields: [bookingLinkId], references: [id], onDelete: SetNull)
+  customerBookingLinks         CustomerBookingLink[]        @relation("BookingLinkAppointment")
+  changes                      AppointmentChangeRecord[]
+  appointmentRequestsFinalized AppointmentRequest[]         @relation("AppointmentRequestFinalAppointment")
 
+  @@unique([shopId, vehicleId, scheduledStart])
+  @@unique([id, shopId])
   @@index([shopId, scheduledStart, status])
   @@index([shopId, bookingLinkId])
-  @@unique([shopId, vehicleId, scheduledStart])
 }
 
 model AppointmentService {
-  id                    String                    @id @default(cuid())
-  shopId                String
-  appointmentId         String
-  serviceDefinitionId   String?
-  maintenanceRecordId   String?
-  serviceName           String
-  laborMinutes          Int
-  priceCents            Int
-  createdAt             DateTime                  @default(now())
-  shop                  Shop                      @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  appointment           Appointment               @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
-  serviceDefinition     ServiceDefinition?        @relation(fields: [serviceDefinitionId], references: [id], onDelete: SetNull)
-  maintenanceRecord     VehicleMaintenanceRecord? @relation(fields: [maintenanceRecordId], references: [id], onDelete: SetNull)
+  id                  String                    @id @default(cuid())
+  shopId              String
+  appointmentId       String
+  serviceDefinitionId String?
+  maintenanceRecordId String?
+  serviceName         String
+  laborMinutes        Int
+  priceCents          Int
+  createdAt           DateTime                  @default(now())
+  shop                Shop                      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  appointment         Appointment               @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  serviceDefinition   ServiceDefinition?        @relation(fields: [serviceDefinitionId], references: [id], onDelete: SetNull)
+  maintenanceRecord   VehicleMaintenanceRecord? @relation(fields: [maintenanceRecordId], references: [id], onDelete: SetNull)
 
-  @@index([shopId, appointmentId])
   @@unique([appointmentId, serviceName])
+  @@index([shopId, appointmentId])
 }
 
 model AuditLog {
@@ -698,19 +738,19 @@ model AuditLog {
 }
 
 model ShopBookingSettings {
-  id                                String   @id @default(cuid())
-  shopId                            String   @unique
-  onlineBookingEnabled              Boolean  @default(true)
-  minimumNoticeMinutes              Int      @default(1440)
-  maximumAdvanceDays                Int      @default(30)
-  defaultBufferBeforeMinutes        Int      @default(0)
-  defaultBufferAfterMinutes         Int      @default(15)
-  maximumSimultaneousAppointments   Int      @default(2)
-  cancellationCutoffMinutes         Int      @default(1440)
-  reschedulingCutoffMinutes         Int      @default(1440)
-  createdAt                         DateTime @default(now())
-  updatedAt                         DateTime @updatedAt
-  shop                              Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  id                              String   @id @default(cuid())
+  shopId                          String   @unique
+  onlineBookingEnabled            Boolean  @default(true)
+  minimumNoticeMinutes            Int      @default(1440)
+  maximumAdvanceDays              Int      @default(30)
+  defaultBufferBeforeMinutes      Int      @default(0)
+  defaultBufferAfterMinutes       Int      @default(15)
+  maximumSimultaneousAppointments Int      @default(2)
+  cancellationCutoffMinutes       Int      @default(1440)
+  reschedulingCutoffMinutes       Int      @default(1440)
+  createdAt                       DateTime @default(now())
+  updatedAt                       DateTime @updatedAt
+  shop                            Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
 }
 
 model ShopBookingWindow {
@@ -728,15 +768,15 @@ model ShopBookingWindow {
 }
 
 model ShopBookingBlackout {
-  id          String   @id @default(cuid())
-  shopId      String
-  startsAt    DateTime
-  endsAt      DateTime
-  reason      String?
-  isFullDay   Boolean  @default(false)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  shop        Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  id        String   @id @default(cuid())
+  shopId    String
+  startsAt  DateTime
+  endsAt    DateTime
+  reason    String?
+  isFullDay Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  shop      Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
 
   @@index([shopId, startsAt, endsAt])
 }
@@ -810,6 +850,7 @@ model CustomerBookingLink {
   appointments          Appointment[]             @relation("AppointmentBookingLink")
   appointmentChanges    AppointmentChangeRecord[]
 
+  @@unique([id, shopId])
   @@index([shopId, customerId])
   @@index([shopId, vehicleId])
   @@index([shopId, opportunityId])
@@ -817,53 +858,173 @@ model CustomerBookingLink {
 }
 
 model AppointmentChangeRecord {
-  id              String               @id @default(cuid())
-  shopId          String
-  appointmentId   String
-  bookingLinkId   String?
-  action          String
-  previousStart   DateTime?
-  previousEnd     DateTime?
-  newStart        DateTime?
-  newEnd          DateTime?
-  reason          String?
-  createdAt       DateTime             @default(now())
-  shop            Shop                 @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  appointment     Appointment          @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
-  bookingLink     CustomerBookingLink? @relation(fields: [bookingLinkId], references: [id], onDelete: SetNull)
+  id            String               @id @default(cuid())
+  shopId        String
+  appointmentId String
+  bookingLinkId String?
+  action        String
+  previousStart DateTime?
+  previousEnd   DateTime?
+  newStart      DateTime?
+  newEnd        DateTime?
+  reason        String?
+  createdAt     DateTime             @default(now())
+  shop          Shop                 @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  appointment   Appointment          @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  bookingLink   CustomerBookingLink? @relation(fields: [bookingLinkId], references: [id], onDelete: SetNull)
 
   @@index([shopId, appointmentId, createdAt])
 }
 
 model SmartMaintenanceBlock {
-  id                    String                         @id @default(cuid())
-  shopId                String
-  name                  String
-  description           String?
-  isActive              Boolean                        @default(true)
-  timezone              String
-  daysOfWeek            Int[]                          @default([])
-  startMinute           Int
-  endMinute             Int
-  maxVehicles           Int                            @default(1)
-  maxLaborMinutes       Int                            @default(60)
-  minimumNoticeMinutes  Int                            @default(1440)
-  maximumHorizonDays    Int                            @default(30)
-  slotIntervalMinutes   Int                            @default(30)
-  approvalRequired      Boolean                        @default(true)
-  internalNotes         String?
-  createdByUserId       String?
-  archivedAt            DateTime?
-  createdAt             DateTime                       @default(now())
-  updatedAt             DateTime                       @updatedAt
-  shop                  Shop                           @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  createdBy             User?                          @relation("SmartMaintenanceBlockCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
-  services              SmartMaintenanceBlockService[]
-  blackouts             SmartMaintenanceBlockBlackout[]
+  id                      String                          @id @default(cuid())
+  shopId                  String
+  name                    String
+  description             String?
+  isActive                Boolean                         @default(true)
+  timezone                String
+  daysOfWeek              Int[]                           @default([])
+  startMinute             Int
+  endMinute               Int
+  maxVehicles             Int                             @default(1)
+  maxLaborMinutes         Int                             @default(60)
+  minimumNoticeMinutes    Int                             @default(1440)
+  maximumHorizonDays      Int                             @default(30)
+  slotIntervalMinutes     Int                             @default(30)
+  approvalRequired        Boolean                         @default(true)
+  internalNotes           String?
+  createdByUserId         String?
+  archivedAt              DateTime?
+  createdAt               DateTime                        @default(now())
+  updatedAt               DateTime                        @updatedAt
+  shop                    Shop                            @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  createdBy               User?                           @relation("SmartMaintenanceBlockCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  services                SmartMaintenanceBlockService[]
+  blackouts               SmartMaintenanceBlockBlackout[]
+  appointmentRequestLinks AppointmentRequestLink[]
+  appointmentRequests     AppointmentRequest[]
 
   @@unique([id, shopId])
   @@index([shopId, isActive, archivedAt])
   @@index([shopId, createdAt])
+}
+
+model AppointmentRequestLink {
+  id                      String                          @id @default(cuid())
+  shopId                  String
+  tokenHash               String                          @unique
+  customerId              String
+  vehicleId               String
+  opportunityId           String?
+  smartMaintenanceBlockId String?
+  status                  AppointmentRequestLinkStatus    @default(ACTIVE)
+  expiresAt               DateTime
+  revokedAt               DateTime?
+  usedAt                  DateTime?
+  requestAttemptCount     Int                             @default(0)
+  lastRequestAttemptAt    DateTime?
+  regeneratedFromId       String?
+  createdByUserId         String?
+  createdAt               DateTime                        @default(now())
+  updatedAt               DateTime                        @updatedAt
+  shop                    Shop                            @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  customer                Customer                        @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  vehicle                 Vehicle                         @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  opportunity             MaintenanceRevenueOpportunity?  @relation(fields: [opportunityId, shopId], references: [id, shopId], onDelete: NoAction)
+  smartMaintenanceBlock   SmartMaintenanceBlock?          @relation(fields: [smartMaintenanceBlockId, shopId], references: [id, shopId], onDelete: NoAction)
+  regeneratedFrom         AppointmentRequestLink?         @relation("AppointmentRequestLinkRegeneration", fields: [regeneratedFromId], references: [id], onDelete: SetNull)
+  regeneratedLinks        AppointmentRequestLink[]        @relation("AppointmentRequestLinkRegeneration")
+  createdBy               User?                           @relation("AppointmentRequestLinkCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  services                AppointmentRequestLinkService[]
+  requests                AppointmentRequest[]
+
+  @@unique([id, shopId])
+  @@index([shopId, customerId])
+  @@index([shopId, vehicleId])
+  @@index([shopId, opportunityId])
+  @@index([shopId, status, expiresAt])
+}
+
+model AppointmentRequestLinkService {
+  id                  String                 @id @default(cuid())
+  shopId              String
+  requestLinkId       String
+  serviceDefinitionId String
+  serviceNameSnapshot String
+  laborMinutes        Int
+  priceCents          Int
+  createdAt           DateTime               @default(now())
+  requestLink         AppointmentRequestLink @relation(fields: [requestLinkId, shopId], references: [id, shopId], onDelete: Cascade)
+  shop                Shop                   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  serviceDefinition   ServiceDefinition      @relation(fields: [serviceDefinitionId, shopId], references: [id, shopId], onDelete: Restrict)
+
+  @@unique([requestLinkId, serviceDefinitionId])
+  @@index([shopId, requestLinkId])
+  @@index([shopId, serviceDefinitionId])
+}
+
+model AppointmentRequest {
+  id                      String                         @id @default(cuid())
+  shopId                  String
+  customerId              String
+  vehicleId               String
+  opportunityId           String?
+  smartMaintenanceBlockId String?
+  requestLinkId           String?
+  requestedStart          DateTime
+  requestedEnd            DateTime
+  shopTimezone            String
+  totalLaborMinutes       Int
+  estimatedRevenueCents   Int
+  status                  AppointmentRequestStatus       @default(PENDING)
+  source                  AppointmentRequestSource       @default(MAINTENANCE_REQUEST_LINK)
+  expiresAt               DateTime
+  customerSubmittedAt     DateTime                       @default(now())
+  advisorDecisionAt       DateTime?
+  decidedByUserId         String?
+  declineReason           String?
+  alternateProposedStart  DateTime?
+  alternateProposedEnd    DateTime?
+  finalAppointmentId      String?
+  idempotencyKey          String?
+  createdAt               DateTime                       @default(now())
+  updatedAt               DateTime                       @updatedAt
+  shop                    Shop                           @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  customer                Customer                       @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  vehicle                 Vehicle                        @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  opportunity             MaintenanceRevenueOpportunity? @relation(fields: [opportunityId, shopId], references: [id, shopId], onDelete: NoAction)
+  smartMaintenanceBlock   SmartMaintenanceBlock?         @relation(fields: [smartMaintenanceBlockId, shopId], references: [id, shopId], onDelete: NoAction)
+  requestLink             AppointmentRequestLink?        @relation(fields: [requestLinkId, shopId], references: [id, shopId], onDelete: NoAction)
+  finalAppointment        Appointment?                   @relation("AppointmentRequestFinalAppointment", fields: [finalAppointmentId, shopId], references: [id, shopId], onDelete: NoAction)
+  decidedBy               User?                          @relation("AppointmentRequestDecidedBy", fields: [decidedByUserId], references: [id], onDelete: SetNull)
+  services                AppointmentRequestService[]
+
+  @@unique([shopId, idempotencyKey])
+  @@unique([id, shopId])
+  @@index([shopId, status, requestedStart])
+  @@index([shopId, customerId])
+  @@index([shopId, vehicleId])
+  @@index([shopId, opportunityId])
+  @@index([shopId, smartMaintenanceBlockId])
+  @@index([shopId, requestLinkId])
+}
+
+model AppointmentRequestService {
+  id                   String             @id @default(cuid())
+  shopId               String
+  appointmentRequestId String
+  serviceDefinitionId  String
+  serviceNameSnapshot  String
+  laborMinutes         Int
+  priceCents           Int
+  createdAt            DateTime           @default(now())
+  appointmentRequest   AppointmentRequest @relation(fields: [appointmentRequestId, shopId], references: [id, shopId], onDelete: Cascade)
+  shop                 Shop               @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  serviceDefinition    ServiceDefinition  @relation(fields: [serviceDefinitionId, shopId], references: [id, shopId], onDelete: Restrict)
+
+  @@unique([appointmentRequestId, serviceDefinitionId])
+  @@index([shopId, appointmentRequestId])
+  @@index([shopId, serviceDefinitionId])
 }
 
 model SmartMaintenanceBlockService {
@@ -882,7 +1043,7 @@ model SmartMaintenanceBlockService {
 }
 
 model SmartMaintenanceBlockBlackout {
-  id              String                  @id @default(cuid())
+  id              String                 @id @default(cuid())
   shopId          String
   blockId         String?
   startsAt        DateTime
@@ -891,37 +1052,37 @@ model SmartMaintenanceBlockBlackout {
   startMinute     Int?
   endMinute       Int?
   reason          String?
-  isFullDay       Boolean                 @default(false)
+  isFullDay       Boolean                @default(false)
   createdByUserId String?
-  createdAt       DateTime                @default(now())
-  updatedAt       DateTime                @updatedAt
-  shop            Shop                    @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  block           SmartMaintenanceBlock?  @relation(fields: [blockId], references: [id], onDelete: Cascade)
-  createdBy       User?                   @relation("SmartMaintenanceBlockBlackoutCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+  shop            Shop                   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  block           SmartMaintenanceBlock? @relation(fields: [blockId], references: [id], onDelete: Cascade)
+  createdBy       User?                  @relation("SmartMaintenanceBlockBlackoutCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
 
   @@index([shopId, startsAt, endsAt])
   @@index([shopId, blockId])
 }
 
 model ImportHistoryRecord {
-  id             String       @id @default(cuid())
+  id             String            @id @default(cuid())
   shopId         String
   userId         String?
   fileName       String
   importType     ImportType
-  status         ImportStatus @default(COMPLETED)
-  importedAt     DateTime     @default(now())
-  totalRows      Int          @default(0)
-  successfulRows Int          @default(0)
-  duplicateRows  Int          @default(0)
-  updatedRows    Int          @default(0)
-  skippedRows    Int          @default(0)
-  failedRows     Int          @default(0)
+  status         ImportStatus      @default(COMPLETED)
+  importedAt     DateTime          @default(now())
+  totalRows      Int               @default(0)
+  successfulRows Int               @default(0)
+  duplicateRows  Int               @default(0)
+  updatedRows    Int               @default(0)
+  skippedRows    Int               @default(0)
+  failedRows     Int               @default(0)
   errorReportUrl String?
   errorReport    Json?
-  createdAt      DateTime     @default(now())
-  shop           Shop         @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  user           User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+  createdAt      DateTime          @default(now())
+  shop           Shop              @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  user           User?             @relation(fields: [userId], references: [id], onDelete: SetNull)
   rows           ImportRowRecord[]
 
   @@index([shopId, importedAt])

@@ -13,7 +13,9 @@ function isPublicRoute(pathname: string) {
     publicRoutes.has(pathname) ||
     pathname === "/api/health" ||
     pathname.startsWith("/book/") ||
-    pathname.startsWith("/api/book/")
+    pathname.startsWith("/api/book/") ||
+    pathname.startsWith("/request/") ||
+    pathname.startsWith("/api/request/")
   );
 }
 

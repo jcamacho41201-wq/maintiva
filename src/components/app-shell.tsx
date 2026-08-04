@@ -27,7 +27,7 @@ import { cn } from "@/lib/utils";
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const { state, resetDemoData, ready, loadError } = useDemoStore();
-  if (pathname.startsWith("/book/")) {
+  if (pathname.startsWith("/book/") || pathname.startsWith("/request/")) {
     return <div className="min-h-screen bg-zinc-50 text-zinc-950">{children}</div>;
   }
 

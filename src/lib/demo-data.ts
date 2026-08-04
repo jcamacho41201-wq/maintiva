@@ -37,6 +37,19 @@ export type AppointmentStatus =
   | "COMPLETED"
   | "CANCELLED"
   | "NO_SHOW";
+export type AppointmentRequestStatus =
+  | "PENDING"
+  | "APPROVED"
+  | "DECLINED"
+  | "ALTERNATE_PROPOSED"
+  | "CUSTOMER_ACCEPTED_ALTERNATE"
+  | "EXPIRED"
+  | "CANCELLED";
+export type AppointmentRequestSource =
+  | "MAINTENANCE_REQUEST_LINK"
+  | "ADVISOR_CREATED"
+  | "ALTERNATE_RESPONSE";
+export type AppointmentRequestLinkStatus = "ACTIVE" | "REVOKED" | "USED" | "EXPIRED";
 export type BookingMode = "INSTANT" | "REQUEST";
 export type BookingIntakeType = "WAIT" | "DROP_OFF";
 export type ServiceBookingIntakeOption = "WAIT_ONLY" | "DROP_OFF_ONLY" | "EITHER";
@@ -380,6 +393,38 @@ export type CustomerBookingLink = {
   createdAt: string;
 };
 
+export type AppointmentRequestLinkServiceRecord = {
+  id: string;
+  shopId: string;
+  requestLinkId: string;
+  serviceDefinitionId: string;
+  serviceNameSnapshot: string;
+  laborMinutes: number;
+  priceCents: number;
+  createdAt: string;
+};
+
+export type AppointmentRequestLinkRecord = {
+  id: string;
+  shopId: string;
+  customerId: string;
+  vehicleId: string;
+  opportunityId?: string;
+  smartMaintenanceBlockId?: string;
+  status: AppointmentRequestLinkStatus;
+  url?: string;
+  expiresAt: string;
+  revokedAt?: string;
+  usedAt?: string;
+  requestAttemptCount: number;
+  lastRequestAttemptAt?: string;
+  regeneratedFromId?: string;
+  createdByUserId?: string;
+  services: AppointmentRequestLinkServiceRecord[];
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type SmartMaintenanceBlock = {
   id: string;
   shopId: string;
@@ -443,6 +488,46 @@ export type RevenueOpportunityRecord = {
   updatedAt?: string;
 };
 
+export type AppointmentRequestServiceRecord = {
+  id: string;
+  shopId: string;
+  appointmentRequestId: string;
+  serviceDefinitionId: string;
+  serviceNameSnapshot: string;
+  laborMinutes: number;
+  priceCents: number;
+  createdAt: string;
+};
+
+export type AppointmentRequestRecord = {
+  id: string;
+  shopId: string;
+  customerId: string;
+  vehicleId: string;
+  opportunityId?: string;
+  smartMaintenanceBlockId?: string;
+  requestLinkId?: string;
+  requestedStart: string;
+  requestedEnd: string;
+  shopTimezone: string;
+  totalLaborMinutes: number;
+  estimatedRevenueCents: number;
+  status: AppointmentRequestStatus;
+  source: AppointmentRequestSource;
+  expiresAt: string;
+  customerSubmittedAt: string;
+  advisorDecisionAt?: string;
+  decidedByUserId?: string;
+  declineReason?: string;
+  alternateProposedStart?: string;
+  alternateProposedEnd?: string;
+  finalAppointmentId?: string;
+  idempotencyKey?: string;
+  services: AppointmentRequestServiceRecord[];
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type DemoState = {
   shop: Shop;
   forecastAsOfDate?: string;
@@ -459,6 +544,8 @@ export type DemoState = {
   declinedWorkRecords: DeclinedWorkRecord[];
   outreachRecords: OutreachRecord[];
   appointments: Appointment[];
+  appointmentRequestLinks: AppointmentRequestLinkRecord[];
+  appointmentRequests: AppointmentRequestRecord[];
   bookingSettings?: ShopBookingSettings;
   bookingWindows: BookingWindow[];
   bookingBlackouts: ShopBookingBlackout[];
@@ -1099,6 +1186,8 @@ export const initialDemoState: DemoState = {
   declinedWorkRecords,
   outreachRecords,
   appointments,
+  appointmentRequestLinks: [],
+  appointmentRequests: [],
   bookingSettings: defaultBookingSettings,
   bookingWindows: defaultBookingWindows,
   bookingBlackouts: [],
