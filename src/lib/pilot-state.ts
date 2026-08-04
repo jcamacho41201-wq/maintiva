@@ -39,7 +39,8 @@ import {
 import { resolveForecastAsOfDate } from "@/lib/forecast-dates";
 import { currentDateInTimeZone } from "@/lib/utils";
 import { safeDatabaseError, SafeActionError } from "@/lib/server-diagnostics";
-import { isCustomerBookingEnabled, isSmartMaintenanceBlocksServerEnabled } from "@/lib/feature-flags";
+import { isCustomerBookingEnabled, isSmartMaintenanceBlocksEnabled } from "@/lib/feature-flags";
+import { canManageShopSettings } from "@/lib/permissions";
 import {
   MAINTIVA_IMPORT_ROW_LIMIT,
   importRowLimitMessage,
@@ -1166,13 +1167,24 @@ function assertCustomerBookingFeatureEnabled() {
 }
 
 function assertSmartMaintenanceBlocksFeatureEnabled() {
-  if (!isSmartMaintenanceBlocksServerEnabled()) {
+  if (!isSmartMaintenanceBlocksEnabled()) {
     throw new SafeActionError({
       code: "SMART_MAINTENANCE_BLOCKS_DISABLED",
       message: "Smart Maintenance Blocks are not available.",
       status: 404,
     });
   }
+}
+
+function requireShopSettingsManager(context: AuthenticatedShopContext) {
+  if (canManageShopSettings(context.role)) return;
+  throw new SafeActionError({
+    code: "SHOP_SETTINGS_MANAGER_REQUIRED",
+    message: "Only owners and managers can manage shop settings.",
+    status: 403,
+    table: "Shop",
+    operation: "UPDATE",
+  });
 }
 
 function responseOutreachStatus(responseStatus?: OutreachRecord["responseStatus"]) {
@@ -1722,7 +1734,7 @@ function toStateSmartMaintenanceBlockBlackout(blackout: StateSmartMaintenanceBlo
 }
 
 async function loadStateSmartMaintenanceBlocks(shopId: string): Promise<SmartMaintenanceBlock[]> {
-  if (!isSmartMaintenanceBlocksServerEnabled()) {
+  if (!isSmartMaintenanceBlocksEnabled()) {
     return [];
   }
 
@@ -1743,7 +1755,7 @@ async function loadStateSmartMaintenanceBlocks(shopId: string): Promise<SmartMai
 }
 
 async function loadStateSmartMaintenanceBlockBlackouts(shopId: string): Promise<SmartMaintenanceBlockBlackout[]> {
-  if (!isSmartMaintenanceBlocksServerEnabled()) {
+  if (!isSmartMaintenanceBlocksEnabled()) {
     return [];
   }
 
@@ -3973,6 +3985,7 @@ async function requireSmartMaintenanceBlockInActiveShop(
 
 export async function savePilotSmartMaintenanceBlock(context: AuthenticatedShopContext, input: unknown) {
   assertSmartMaintenanceBlocksFeatureEnabled();
+  requireShopSettingsManager(context);
   const parsed = smartMaintenanceBlockSchema.parse(input);
   const serviceDefinitionIds = await validateSmartBlockServices(context, parsed.serviceDefinitionIds);
   if (parsed.id) {
@@ -4026,6 +4039,7 @@ export async function savePilotSmartMaintenanceBlock(context: AuthenticatedShopC
 
 export async function deletePilotSmartMaintenanceBlock(context: AuthenticatedShopContext, blockId: string) {
   assertSmartMaintenanceBlocksFeatureEnabled();
+  requireShopSettingsManager(context);
   await requireSmartMaintenanceBlockInActiveShop(context, blockId);
   await prisma.smartMaintenanceBlock.update({
     where: { id: blockId },
@@ -4038,6 +4052,7 @@ export async function deletePilotSmartMaintenanceBlock(context: AuthenticatedSho
 
 export async function duplicatePilotSmartMaintenanceBlock(context: AuthenticatedShopContext, blockId: string) {
   assertSmartMaintenanceBlocksFeatureEnabled();
+  requireShopSettingsManager(context);
   const source = await requireSmartMaintenanceBlockInActiveShop(context, blockId);
   await prisma.$transaction(async (tx) => {
     const duplicate = await tx.smartMaintenanceBlock.create({
@@ -4073,6 +4088,7 @@ export async function duplicatePilotSmartMaintenanceBlock(context: Authenticated
 
 export async function savePilotSmartMaintenanceBlockBlackout(context: AuthenticatedShopContext, input: unknown) {
   assertSmartMaintenanceBlocksFeatureEnabled();
+  requireShopSettingsManager(context);
   const parsed = smartMaintenanceBlockBlackoutSchema.parse(input);
   if (parsed.blockId) {
     await requireSmartMaintenanceBlockInActiveShop(context, parsed.blockId);
@@ -4124,6 +4140,7 @@ export async function deletePilotSmartMaintenanceBlockBlackout(
   blackoutId: string,
 ) {
   assertSmartMaintenanceBlocksFeatureEnabled();
+  requireShopSettingsManager(context);
   const existing = await prisma.smartMaintenanceBlockBlackout.findFirst({
     where: { id: blackoutId, shopId: context.shopId },
   });

@@ -5,7 +5,8 @@ import { CalendarX, Copy, Plus, Save, Trash2 } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { useDemoStore, type SmartMaintenanceBlockInput } from "@/lib/demo-store";
 import type { SmartMaintenanceBlock } from "@/lib/demo-data";
-import { isSmartMaintenanceBlocksUiEnabled } from "@/lib/feature-flags";
+import { isSmartMaintenanceBlocksEnabled } from "@/lib/feature-flags";
+import { canManageShopSettings } from "@/lib/permissions";
 import {
   calculateSmartMaintenanceBlockAvailability,
   minutesToTime,
@@ -98,8 +99,10 @@ function formToInput(form: FormState, timezone: string): SmartMaintenanceBlockIn
 
 export default function SmartMaintenanceBlocksPage() {
   const store = useDemoStore();
-  const { state } = store;
-  const enabled = isSmartMaintenanceBlocksUiEnabled();
+  const { state, ready } = store;
+  const enabled = isSmartMaintenanceBlocksEnabled();
+  const currentUser = state.users.find((user) => user.id === state.currentUserId);
+  const canManageSettings = canManageShopSettings(currentUser?.role);
   const activeServices = useMemo(
     () => state.services.filter((service) => service.isActive),
     [state.services],
@@ -266,7 +269,34 @@ export default function SmartMaintenanceBlocksPage() {
         </div>
         <Card>
           <CardContent>
-            <p className="text-sm font-semibold">Set `SMART_MAINTENANCE_BLOCKS_ENABLED=true` and install the Smart Maintenance Blocks migration before managing recurring request windows.</p>
+            <p className="text-sm font-semibold">This internal settings feature is currently unavailable.</p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  if (!ready) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-3xl font-semibold tracking-tight">Smart Maintenance Blocks</h1>
+          <p className="mt-2 max-w-3xl text-sm text-zinc-600">Loading authenticated shop settings.</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!canManageSettings) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-3xl font-semibold tracking-tight">Smart Maintenance Blocks</h1>
+          <p className="mt-2 max-w-3xl text-sm text-zinc-600">Only owners and managers can manage recurring request windows.</p>
+        </div>
+        <Card>
+          <CardContent>
+            <p className="text-sm font-semibold">You do not have permission to manage shop settings.</p>
           </CardContent>
         </Card>
       </div>

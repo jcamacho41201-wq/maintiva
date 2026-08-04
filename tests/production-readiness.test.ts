@@ -1,6 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import {
+  SMART_MAINTENANCE_BLOCKS_RELEASED,
+  isSmartMaintenanceBlocksEnabled,
+} from "@/lib/feature-flags";
 
 function source(file: string) {
   return fs.readFileSync(path.join(process.cwd(), file), "utf8");
@@ -31,22 +35,33 @@ describe("production readiness safeguards", () => {
     expect(bookingRoute).toContain("customerBookingDisabledResponse");
   });
 
-  it("keeps Smart Maintenance Blocks disabled by default and optional in state loading", () => {
+  it("releases Smart Maintenance Blocks from repository state without a public Vercel flag", () => {
     const envExample = source(".env.example");
     const flags = source("src/lib/feature-flags.ts");
     const pilotState = source("src/lib/pilot-state.ts");
     const settingsPage = source("src/app/settings/page.tsx");
+    const smartBlocksPage = source("src/app/settings/smart-maintenance-blocks/page.tsx");
 
-    expect(envExample).toContain('SMART_MAINTENANCE_BLOCKS_ENABLED="false"');
-    expect(envExample).toContain('NEXT_PUBLIC_SMART_MAINTENANCE_BLOCKS_ENABLED="false"');
-    expect(flags).toContain("isSmartMaintenanceBlocksServerEnabled");
-    expect(flags).toContain("isSmartMaintenanceBlocksUiEnabled");
-    expect(flags).toContain('process.env.SMART_MAINTENANCE_BLOCKS_ENABLED === "true"');
-    expect(flags).toContain('process.env.NEXT_PUBLIC_SMART_MAINTENANCE_BLOCKS_ENABLED === "true"');
+    expect(SMART_MAINTENANCE_BLOCKS_RELEASED).toBe(true);
+    expect(isSmartMaintenanceBlocksEnabled({})).toBe(true);
+    expect(isSmartMaintenanceBlocksEnabled({ MAINTIVA_SMART_MAINTENANCE_BLOCKS_DISABLED: "false" })).toBe(true);
+    expect(isSmartMaintenanceBlocksEnabled({ SMART_MAINTENANCE_BLOCKS_ENABLED: "false" })).toBe(true);
+    expect(isSmartMaintenanceBlocksEnabled({ MAINTIVA_SMART_MAINTENANCE_BLOCKS_DISABLED: "true" })).toBe(false);
+    expect(envExample).toContain('MAINTIVA_SMART_MAINTENANCE_BLOCKS_DISABLED="false"');
+    expect(envExample).not.toContain("NEXT_PUBLIC_SMART_MAINTENANCE_BLOCKS_ENABLED");
+    expect(flags).toContain("SMART_MAINTENANCE_BLOCKS_RELEASED = true");
+    expect(flags).toContain("isSmartMaintenanceBlocksEnabled");
+    expect(flags).toContain("MAINTIVA_SMART_MAINTENANCE_BLOCKS_DISABLED");
+    expect(flags).not.toContain("SMART_MAINTENANCE_BLOCKS_ENABLED");
+    expect(flags).not.toContain("isSmartMaintenanceBlocksUiEnabled");
+    expect(flags).not.toContain("NEXT_PUBLIC_SMART_MAINTENANCE_BLOCKS_ENABLED");
     expect(pilotState).toContain("assertSmartMaintenanceBlocksFeatureEnabled");
-    expect(pilotState).toContain("if (!isSmartMaintenanceBlocksServerEnabled())");
+    expect(pilotState).toContain("if (!isSmartMaintenanceBlocksEnabled())");
     expect(pilotState).toContain("isMissingSmartMaintenanceBlocksSchema");
-    expect(settingsPage).toContain("isSmartMaintenanceBlocksUiEnabled");
+    expect(settingsPage).toContain("isSmartMaintenanceBlocksEnabled");
+    expect(settingsPage).toContain("canManageShopSettings");
+    expect(smartBlocksPage).toContain("isSmartMaintenanceBlocksEnabled");
+    expect(smartBlocksPage).toContain("canManageShopSettings");
   });
 
   it("keeps the Smart Maintenance Blocks migration tenant-scoped and non-destructive", () => {
