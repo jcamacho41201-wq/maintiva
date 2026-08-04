@@ -17,6 +17,8 @@ import {
   type ServiceBookingIntakeOption,
   type ShopBookingBlackout,
   type ShopBookingSettings,
+  type SmartMaintenanceBlock,
+  type SmartMaintenanceBlockBlackout,
   type RevenueOpportunityRecord,
   type TimeIntervalUnit,
   type Vehicle,
@@ -37,7 +39,8 @@ import {
 import { resolveForecastAsOfDate } from "@/lib/forecast-dates";
 import { currentDateInTimeZone } from "@/lib/utils";
 import { safeDatabaseError, SafeActionError } from "@/lib/server-diagnostics";
-import { isCustomerBookingEnabled } from "@/lib/feature-flags";
+import { isCustomerBookingEnabled, isSmartMaintenanceBlocksEnabled } from "@/lib/feature-flags";
+import { canManageShopSettings } from "@/lib/permissions";
 import {
   MAINTIVA_IMPORT_ROW_LIMIT,
   importRowLimitMessage,
@@ -165,6 +168,49 @@ const serviceBookingRuleSchema = z.object({
 }).refine((value) => value.endMinute > value.startMinute, {
   message: "Service booking window must end after it starts.",
   path: ["endMinute"],
+});
+
+const smartMaintenanceBlockSchema = z.object({
+  id: z.string().min(1).optional(),
+  name: z.string().trim().min(1).max(120),
+  description: z.string().trim().max(500).optional(),
+  isActive: z.boolean(),
+  timezone: z.string().trim().min(3).max(80).optional(),
+  daysOfWeek: z.array(z.number().int().min(0).max(6)).min(1).max(7),
+  startMinute: z.number().int().min(0).max(1439),
+  endMinute: z.number().int().min(1).max(1440),
+  serviceDefinitionIds: z.array(z.string().min(1)).min(1).max(50),
+  maxVehicles: z.number().int().min(1).max(50),
+  maxLaborMinutes: z.number().int().min(1).max(24 * 60),
+  minimumNoticeMinutes: z.number().int().min(0).max(180 * 24 * 60),
+  maximumHorizonDays: z.number().int().min(1).max(365),
+  slotIntervalMinutes: z.union([z.literal(15), z.literal(30), z.literal(60)]),
+  internalNotes: z.string().trim().max(1000).optional(),
+}).refine((value) => value.endMinute > value.startMinute, {
+  message: "Block end time must be after the start time.",
+  path: ["endMinute"],
+}).refine((value) => value.maximumHorizonDays * 1440 > value.minimumNoticeMinutes, {
+  message: "Booking horizon must be greater than the minimum notice period.",
+  path: ["maximumHorizonDays"],
+});
+
+const smartMaintenanceBlockBlackoutSchema = z.object({
+  id: z.string().min(1).optional(),
+  blockId: z.string().min(1).nullable().optional(),
+  startsAt: z.string().min(8),
+  endsAt: z.string().min(8),
+  localDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  startMinute: z.number().int().min(0).max(1439).optional(),
+  endMinute: z.number().int().min(1).max(1440).optional(),
+  reason: z.string().trim().max(240).optional(),
+  isFullDay: z.boolean().optional(),
+}).refine((value) => {
+  const startsAt = new Date(value.startsAt);
+  const endsAt = new Date(value.endsAt);
+  return !Number.isNaN(startsAt.getTime()) && !Number.isNaN(endsAt.getTime()) && endsAt > startsAt;
+}, {
+  message: "Blackout end time must be after the start time.",
+  path: ["endsAt"],
 });
 
 const serviceDefinitionSchema = z.object({
@@ -960,6 +1006,48 @@ type StateDrivingProfile = {
   lastCalculatedAt: Date;
 };
 
+type StateSmartMaintenanceBlock = {
+  id: string;
+  shopId: string;
+  name: string;
+  description: string | null;
+  isActive: boolean;
+  timezone: string;
+  daysOfWeek: number[];
+  startMinute: number;
+  endMinute: number;
+  maxVehicles: number;
+  maxLaborMinutes: number;
+  minimumNoticeMinutes: number;
+  maximumHorizonDays: number;
+  slotIntervalMinutes: number;
+  approvalRequired: boolean;
+  internalNotes: string | null;
+  createdByUserId: string | null;
+  archivedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+  services: Array<{
+    serviceDefinitionId: string;
+  }>;
+};
+
+type StateSmartMaintenanceBlockBlackout = {
+  id: string;
+  shopId: string;
+  blockId: string | null;
+  startsAt: Date;
+  endsAt: Date;
+  localDate: Date | null;
+  startMinute: number | null;
+  endMinute: number | null;
+  reason: string | null;
+  isFullDay: boolean;
+  createdByUserId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
 type MileageTransactionClient = Pick<
   typeof prisma,
   "vehicleDrivingProfile" | "vehicleMileageReading" | "$queryRaw"
@@ -1017,6 +1105,18 @@ export function isMissingCustomerBookingSchema(error: unknown) {
   ].some((needle) => database.message?.includes(needle) || database.details?.includes(needle));
 }
 
+export function isMissingSmartMaintenanceBlocksSchema(error: unknown) {
+  const database = safeDatabaseError(error);
+  if (!["P2010", "P2021", "P2022", "42P01", "42703", "42704"].includes(database.code ?? "")) return false;
+  return [
+    "SmartMaintenanceBlock",
+    "SmartMaintenanceBlockService",
+    "SmartMaintenanceBlockBlackout",
+    "serviceDefinitionIds",
+    "slotIntervalMinutes",
+  ].some((needle) => database.message?.includes(needle) || database.details?.includes(needle));
+}
+
 function isDemoEntityId(id: string) {
   return /^(cust|veh|svc|item|appt|hist|service|outreach|declined|import)-/.test(id);
 }
@@ -1064,6 +1164,27 @@ function assertCustomerBookingFeatureEnabled() {
       status: 404,
     });
   }
+}
+
+function assertSmartMaintenanceBlocksFeatureEnabled() {
+  if (!isSmartMaintenanceBlocksEnabled()) {
+    throw new SafeActionError({
+      code: "SMART_MAINTENANCE_BLOCKS_DISABLED",
+      message: "Smart Maintenance Blocks are not available.",
+      status: 404,
+    });
+  }
+}
+
+function requireShopSettingsManager(context: AuthenticatedShopContext) {
+  if (canManageShopSettings(context.role)) return;
+  throw new SafeActionError({
+    code: "SHOP_SETTINGS_MANAGER_REQUIRED",
+    message: "Only owners and managers can manage shop settings.",
+    status: 403,
+    table: "Shop",
+    operation: "UPDATE",
+  });
 }
 
 function responseOutreachStatus(responseStatus?: OutreachRecord["responseStatus"]) {
@@ -1568,6 +1689,91 @@ async function loadStateCustomerBookingLinks(shopId: string): Promise<CustomerBo
   }
 }
 
+function toStateSmartMaintenanceBlock(block: StateSmartMaintenanceBlock): SmartMaintenanceBlock {
+  return {
+    id: block.id,
+    shopId: block.shopId,
+    name: block.name,
+    description: block.description ?? "",
+    isActive: block.isActive,
+    timezone: block.timezone,
+    daysOfWeek: block.daysOfWeek,
+    startMinute: block.startMinute,
+    endMinute: block.endMinute,
+    serviceDefinitionIds: block.services.map((service) => service.serviceDefinitionId),
+    maxVehicles: block.maxVehicles,
+    maxLaborMinutes: block.maxLaborMinutes,
+    minimumNoticeMinutes: block.minimumNoticeMinutes,
+    maximumHorizonDays: block.maximumHorizonDays,
+    slotIntervalMinutes: block.slotIntervalMinutes === 15 || block.slotIntervalMinutes === 60 ? block.slotIntervalMinutes : 30,
+    approvalRequired: true,
+    internalNotes: block.internalNotes ?? "",
+    createdByUserId: block.createdByUserId ?? undefined,
+    archivedAt: iso(block.archivedAt) || undefined,
+    createdAt: iso(block.createdAt),
+    updatedAt: iso(block.updatedAt),
+  };
+}
+
+function toStateSmartMaintenanceBlockBlackout(blackout: StateSmartMaintenanceBlockBlackout): SmartMaintenanceBlockBlackout {
+  return {
+    id: blackout.id,
+    shopId: blackout.shopId,
+    blockId: blackout.blockId,
+    startsAt: iso(blackout.startsAt),
+    endsAt: iso(blackout.endsAt),
+    localDate: dateOnly(blackout.localDate) || undefined,
+    startMinute: blackout.startMinute ?? undefined,
+    endMinute: blackout.endMinute ?? undefined,
+    reason: blackout.reason ?? "",
+    isFullDay: blackout.isFullDay,
+    createdByUserId: blackout.createdByUserId ?? undefined,
+    createdAt: iso(blackout.createdAt),
+    updatedAt: iso(blackout.updatedAt),
+  };
+}
+
+async function loadStateSmartMaintenanceBlocks(shopId: string): Promise<SmartMaintenanceBlock[]> {
+  if (!isSmartMaintenanceBlocksEnabled()) {
+    return [];
+  }
+
+  try {
+    const blocks = await prisma.smartMaintenanceBlock.findMany({
+      where: { shopId },
+      include: { services: { select: { serviceDefinitionId: true } } },
+      orderBy: [{ archivedAt: "asc" }, { createdAt: "desc" }],
+    });
+    return blocks.map(toStateSmartMaintenanceBlock);
+  } catch (error) {
+    if (!isMissingSmartMaintenanceBlocksSchema(error)) throw error;
+    console.warn("Maintiva smart maintenance blocks migration missing during state load; omitting blocks.", {
+      database: safeDatabaseError(error),
+    });
+    return [];
+  }
+}
+
+async function loadStateSmartMaintenanceBlockBlackouts(shopId: string): Promise<SmartMaintenanceBlockBlackout[]> {
+  if (!isSmartMaintenanceBlocksEnabled()) {
+    return [];
+  }
+
+  try {
+    const blackouts = await prisma.smartMaintenanceBlockBlackout.findMany({
+      where: { shopId },
+      orderBy: { startsAt: "asc" },
+    });
+    return blackouts.map(toStateSmartMaintenanceBlockBlackout);
+  } catch (error) {
+    if (!isMissingSmartMaintenanceBlocksSchema(error)) throw error;
+    console.warn("Maintiva smart maintenance blocks migration missing during blackout state load; omitting blackouts.", {
+      database: safeDatabaseError(error),
+    });
+    return [];
+  }
+}
+
 async function loadStateOutreachBookingLinkIds(shopId: string) {
   if (!isCustomerBookingEnabled()) {
     return [];
@@ -1839,6 +2045,8 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
     bookingWindows,
     bookingBlackouts,
     customerBookingLinks,
+    smartMaintenanceBlocks,
+    smartMaintenanceBlockBlackouts,
     outreachBookingLinkIds,
     appointmentBookingMetadata,
   ] = await Promise.all([
@@ -1851,6 +2059,8 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
     loadStateBookingWindows(context.shopId),
     loadStateBookingBlackouts(context.shopId),
     loadStateCustomerBookingLinks(context.shopId),
+    loadStateSmartMaintenanceBlocks(context.shopId),
+    loadStateSmartMaintenanceBlockBlackouts(context.shopId),
     loadStateOutreachBookingLinkIds(context.shopId),
     loadStateAppointmentBookingMetadata(context.shopId),
   ]);
@@ -2219,6 +2429,8 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
     bookingWindows,
     bookingBlackouts,
     customerBookingLinks,
+    smartMaintenanceBlocks,
+    smartMaintenanceBlockBlackouts,
     forecastAsOfDate,
     importHistory: shop.importHistory.map((record): ImportHistoryRecord => {
       const reportSummary = importErrorReportSummary(record.errorReport);
@@ -3720,6 +3932,228 @@ export async function savePilotServiceBookingRule(
       })),
     });
   });
+}
+
+async function validateSmartBlockServices(context: AuthenticatedShopContext, serviceDefinitionIds: string[]) {
+  const uniqueIds = Array.from(new Set(serviceDefinitionIds));
+  const services = await prisma.serviceDefinition.findMany({
+    where: {
+      id: { in: uniqueIds },
+      shopId: context.shopId,
+      isActive: true,
+    },
+    select: { id: true },
+  });
+  if (services.length !== uniqueIds.length) {
+    throw new SafeActionError({
+      code: "SMART_BLOCK_SERVICE_NOT_ACTIVE",
+      message: "Choose active services from the current shop.",
+      status: 400,
+      table: "SmartMaintenanceBlockService",
+      operation: "INSERT",
+    });
+  }
+  return uniqueIds;
+}
+
+async function requireSmartMaintenanceBlockInActiveShop(
+  context: AuthenticatedShopContext,
+  blockId: string,
+) {
+  assertProductionEntityId(blockId, "The selected maintenance block");
+  const block = await prisma.smartMaintenanceBlock.findFirst({
+    where: { id: blockId, shopId: context.shopId },
+    include: { services: true },
+  });
+  if (block) return block;
+
+  const target = await prisma.smartMaintenanceBlock.findUnique({
+    where: { id: blockId },
+    select: { shopId: true },
+  });
+  throw new SafeActionError({
+    code: "SMART_BLOCK_NOT_IN_ACTIVE_SHOP",
+    message: "The selected maintenance block does not belong to your active shop.",
+    status: target ? 403 : 404,
+    table: "SmartMaintenanceBlock",
+    operation: "SELECT",
+    details: target?.shopId
+      ? `Maintenance block exists in a different shop: ${shortId(target.shopId)}.`
+      : "Maintenance block was not found.",
+  });
+}
+
+export async function savePilotSmartMaintenanceBlock(context: AuthenticatedShopContext, input: unknown) {
+  assertSmartMaintenanceBlocksFeatureEnabled();
+  requireShopSettingsManager(context);
+  const parsed = smartMaintenanceBlockSchema.parse(input);
+  const serviceDefinitionIds = await validateSmartBlockServices(context, parsed.serviceDefinitionIds);
+  if (parsed.id) {
+    await requireSmartMaintenanceBlockInActiveShop(context, parsed.id);
+  }
+
+  await prisma.$transaction(async (tx) => {
+    const data = {
+      shopId: context.shopId,
+      name: parsed.name,
+      description: parsed.description || null,
+      isActive: parsed.isActive,
+      timezone: parsed.timezone || context.shopTimezone,
+      daysOfWeek: Array.from(new Set(parsed.daysOfWeek)).sort(),
+      startMinute: parsed.startMinute,
+      endMinute: parsed.endMinute,
+      maxVehicles: parsed.maxVehicles,
+      maxLaborMinutes: parsed.maxLaborMinutes,
+      minimumNoticeMinutes: parsed.minimumNoticeMinutes,
+      maximumHorizonDays: parsed.maximumHorizonDays,
+      slotIntervalMinutes: parsed.slotIntervalMinutes,
+      approvalRequired: true,
+      internalNotes: parsed.internalNotes || null,
+      archivedAt: null,
+    };
+    const block = parsed.id
+      ? await tx.smartMaintenanceBlock.update({
+          where: { id: parsed.id },
+          data,
+        })
+      : await tx.smartMaintenanceBlock.create({
+          data: {
+            ...data,
+            createdByUserId: context.userId,
+          },
+        });
+
+    await tx.smartMaintenanceBlockService.deleteMany({
+      where: { shopId: context.shopId, blockId: block.id },
+    });
+    await tx.smartMaintenanceBlockService.createMany({
+      data: serviceDefinitionIds.map((serviceDefinitionId) => ({
+        shopId: context.shopId,
+        blockId: block.id,
+        serviceDefinitionId,
+      })),
+      skipDuplicates: true,
+    });
+  });
+}
+
+export async function deletePilotSmartMaintenanceBlock(context: AuthenticatedShopContext, blockId: string) {
+  assertSmartMaintenanceBlocksFeatureEnabled();
+  requireShopSettingsManager(context);
+  await requireSmartMaintenanceBlockInActiveShop(context, blockId);
+  await prisma.smartMaintenanceBlock.update({
+    where: { id: blockId },
+    data: {
+      isActive: false,
+      archivedAt: new Date(),
+    },
+  });
+}
+
+export async function duplicatePilotSmartMaintenanceBlock(context: AuthenticatedShopContext, blockId: string) {
+  assertSmartMaintenanceBlocksFeatureEnabled();
+  requireShopSettingsManager(context);
+  const source = await requireSmartMaintenanceBlockInActiveShop(context, blockId);
+  await prisma.$transaction(async (tx) => {
+    const duplicate = await tx.smartMaintenanceBlock.create({
+      data: {
+        shopId: context.shopId,
+        name: `${source.name} copy`,
+        description: source.description,
+        isActive: false,
+        timezone: source.timezone,
+        daysOfWeek: source.daysOfWeek,
+        startMinute: source.startMinute,
+        endMinute: source.endMinute,
+        maxVehicles: source.maxVehicles,
+        maxLaborMinutes: source.maxLaborMinutes,
+        minimumNoticeMinutes: source.minimumNoticeMinutes,
+        maximumHorizonDays: source.maximumHorizonDays,
+        slotIntervalMinutes: source.slotIntervalMinutes,
+        approvalRequired: true,
+        internalNotes: source.internalNotes,
+        createdByUserId: context.userId,
+      },
+    });
+    await tx.smartMaintenanceBlockService.createMany({
+      data: source.services.map((service) => ({
+        shopId: context.shopId,
+        blockId: duplicate.id,
+        serviceDefinitionId: service.serviceDefinitionId,
+      })),
+      skipDuplicates: true,
+    });
+  });
+}
+
+export async function savePilotSmartMaintenanceBlockBlackout(context: AuthenticatedShopContext, input: unknown) {
+  assertSmartMaintenanceBlocksFeatureEnabled();
+  requireShopSettingsManager(context);
+  const parsed = smartMaintenanceBlockBlackoutSchema.parse(input);
+  if (parsed.blockId) {
+    await requireSmartMaintenanceBlockInActiveShop(context, parsed.blockId);
+  }
+  if (parsed.id) {
+    const existing = await prisma.smartMaintenanceBlockBlackout.findFirst({
+      where: { id: parsed.id, shopId: context.shopId },
+    });
+    if (!existing) {
+      throw new SafeActionError({
+        code: "SMART_BLOCK_BLACKOUT_NOT_FOUND",
+        message: "The selected blackout was not found.",
+        status: 404,
+        table: "SmartMaintenanceBlockBlackout",
+        operation: "UPDATE",
+      });
+    }
+  }
+
+  const data = {
+    shopId: context.shopId,
+    blockId: parsed.blockId ?? null,
+    startsAt: new Date(parsed.startsAt),
+    endsAt: new Date(parsed.endsAt),
+    localDate: parsed.localDate ? dateFromDateOnly(parsed.localDate) : null,
+    startMinute: parsed.startMinute ?? null,
+    endMinute: parsed.endMinute ?? null,
+    reason: parsed.reason || null,
+    isFullDay: parsed.isFullDay ?? false,
+  };
+  if (parsed.id) {
+    await prisma.smartMaintenanceBlockBlackout.update({
+      where: { id: parsed.id },
+      data,
+    });
+    return;
+  }
+
+  await prisma.smartMaintenanceBlockBlackout.create({
+    data: {
+      ...data,
+      createdByUserId: context.userId,
+    },
+  });
+}
+
+export async function deletePilotSmartMaintenanceBlockBlackout(
+  context: AuthenticatedShopContext,
+  blackoutId: string,
+) {
+  assertSmartMaintenanceBlocksFeatureEnabled();
+  requireShopSettingsManager(context);
+  const existing = await prisma.smartMaintenanceBlockBlackout.findFirst({
+    where: { id: blackoutId, shopId: context.shopId },
+  });
+  if (!existing) {
+    throw new SafeActionError({
+      code: "SMART_BLOCK_BLACKOUT_NOT_FOUND",
+      message: "The selected blackout was not found.",
+      status: 404,
+      table: "SmartMaintenanceBlockBlackout",
+      operation: "DELETE",
+    });
+  }
+  await prisma.smartMaintenanceBlockBlackout.delete({ where: { id: blackoutId } });
 }
 
 export async function approvePilotAppointmentRequest(context: AuthenticatedShopContext, appointmentId: string) {

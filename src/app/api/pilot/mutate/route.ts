@@ -27,8 +27,13 @@ import {
   recordPilotOpportunityContact,
   resetPilotManualMileageOverride,
   reviewPilotMileageReading,
+  deletePilotSmartMaintenanceBlock,
+  deletePilotSmartMaintenanceBlockBlackout,
+  duplicatePilotSmartMaintenanceBlock,
   setPilotCustomerReportedMileage,
   setPilotManualMileageOverride,
+  savePilotSmartMaintenanceBlock,
+  savePilotSmartMaintenanceBlockBlackout,
   savePilotBookingSettings,
   savePilotServiceBookingRule,
   snoozePilotOpportunity,
@@ -69,6 +74,20 @@ const mutationSchema = z.discriminatedUnion("action", [
     action: z.literal("saveServiceBookingRule"),
     id: z.string().min(1),
     payload: z.unknown(),
+  }),
+  z.object({ action: z.literal("saveSmartMaintenanceBlock"), payload: z.unknown() }),
+  z.object({
+    action: z.literal("deleteSmartMaintenanceBlock"),
+    id: z.string().min(1),
+  }),
+  z.object({
+    action: z.literal("duplicateSmartMaintenanceBlock"),
+    id: z.string().min(1),
+  }),
+  z.object({ action: z.literal("saveSmartMaintenanceBlockBlackout"), payload: z.unknown() }),
+  z.object({
+    action: z.literal("deleteSmartMaintenanceBlockBlackout"),
+    id: z.string().min(1),
   }),
   z.object({ action: z.literal("addMaintenanceItem"), payload: z.unknown() }),
   z.object({
@@ -289,6 +308,26 @@ export async function POST(request: Request) {
         break;
       case "saveServiceBookingRule":
         await savePilotServiceBookingRule(context, body.id, body.payload);
+        mutationCommitted = true;
+        break;
+      case "saveSmartMaintenanceBlock":
+        await savePilotSmartMaintenanceBlock(context, body.payload);
+        mutationCommitted = true;
+        break;
+      case "deleteSmartMaintenanceBlock":
+        await deletePilotSmartMaintenanceBlock(context, body.id);
+        mutationCommitted = true;
+        break;
+      case "duplicateSmartMaintenanceBlock":
+        await duplicatePilotSmartMaintenanceBlock(context, body.id);
+        mutationCommitted = true;
+        break;
+      case "saveSmartMaintenanceBlockBlackout":
+        await savePilotSmartMaintenanceBlockBlackout(context, body.payload);
+        mutationCommitted = true;
+        break;
+      case "deleteSmartMaintenanceBlockBlackout":
+        await deletePilotSmartMaintenanceBlockBlackout(context, body.id);
         mutationCommitted = true;
         break;
       case "addMaintenanceItem":

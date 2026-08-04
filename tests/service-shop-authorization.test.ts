@@ -6,6 +6,7 @@ const prismaMock = vi.hoisted(() => ({
   serviceDefinition: {
     findUnique: vi.fn(),
     findFirst: vi.fn(),
+    findMany: vi.fn(),
     create: vi.fn(),
     update: vi.fn(),
   },
@@ -25,6 +26,16 @@ const prismaMock = vi.hoisted(() => ({
     create: vi.fn(),
     update: vi.fn(),
   },
+  smartMaintenanceBlock: {
+    findFirst: vi.fn(),
+    findUnique: vi.fn(),
+    create: vi.fn(),
+    update: vi.fn(),
+  },
+  smartMaintenanceBlockService: {
+    deleteMany: vi.fn(),
+    createMany: vi.fn(),
+  },
 }));
 
 vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
@@ -35,6 +46,7 @@ import {
   canManageDrivingEstimates,
   resetPilotManualMileageOverride,
   reviewPilotMileageReading,
+  savePilotSmartMaintenanceBlock,
   setPilotCustomerReportedMileage,
   setPilotManualMileageOverride,
   updatePilotMaintenanceItem,
@@ -320,5 +332,29 @@ describe("service shop authorization", () => {
       code: "DRIVING_ESTIMATE_MANAGER_REQUIRED",
       status: 403,
     });
+  });
+
+  it("limits Smart Maintenance Block management to owners and managers", async () => {
+    await expect(savePilotSmartMaintenanceBlock(advisorContext, {
+      name: "Tuesday Maintenance Block",
+      description: "",
+      isActive: true,
+      timezone: "America/New_York",
+      daysOfWeek: [2],
+      startMinute: 8 * 60,
+      endMinute: 11 * 60,
+      serviceDefinitionIds: ["cmservice000000000000000001"],
+      maxVehicles: 3,
+      maxLaborMinutes: 240,
+      minimumNoticeMinutes: 24 * 60,
+      maximumHorizonDays: 30,
+      slotIntervalMinutes: 30,
+      internalNotes: "",
+    })).rejects.toMatchObject({
+      code: "SHOP_SETTINGS_MANAGER_REQUIRED",
+      status: 403,
+    });
+    expect(prismaMock.serviceDefinition.findMany).not.toHaveBeenCalled();
+    expect(prismaMock.smartMaintenanceBlock.create).not.toHaveBeenCalled();
   });
 });

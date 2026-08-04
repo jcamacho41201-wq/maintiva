@@ -233,6 +233,8 @@ model User {
   drivingProfilesCustomerReported VehicleDrivingProfile[] @relation("DrivingProfileCustomerReportedBy")
   drivingProfilesManualOverride VehicleDrivingProfile[] @relation("DrivingProfileManualOverrideSetBy")
   bookingLinksCreated CustomerBookingLink[] @relation("BookingLinkCreatedBy")
+  smartMaintenanceBlocksCreated SmartMaintenanceBlock[] @relation("SmartMaintenanceBlockCreatedBy")
+  smartMaintenanceBlockBlackoutsCreated SmartMaintenanceBlockBlackout[] @relation("SmartMaintenanceBlockBlackoutCreatedBy")
 }
 
 model Shop {
@@ -273,6 +275,9 @@ model Shop {
   serviceBookingWindows ServiceBookingWindow[]
   customerBookingLinks CustomerBookingLink[]
   appointmentChanges   AppointmentChangeRecord[]
+  smartMaintenanceBlocks SmartMaintenanceBlock[]
+  smartMaintenanceBlockServices SmartMaintenanceBlockService[]
+  smartMaintenanceBlockBlackouts SmartMaintenanceBlockBlackout[]
 
   @@index([status])
 }
@@ -384,8 +389,10 @@ model ServiceDefinition {
   serviceHistoryRecords        ServiceHistoryRecord[]
   appointmentServices          AppointmentService[]
   bookingRule                  ServiceBookingRule?
+  smartMaintenanceBlockServices SmartMaintenanceBlockService[]
 
   @@unique([shopId, name])
+  @@unique([id, shopId])
   @@index([shopId, isActive])
 }
 
@@ -826,6 +833,74 @@ model AppointmentChangeRecord {
   bookingLink     CustomerBookingLink? @relation(fields: [bookingLinkId], references: [id], onDelete: SetNull)
 
   @@index([shopId, appointmentId, createdAt])
+}
+
+model SmartMaintenanceBlock {
+  id                    String                         @id @default(cuid())
+  shopId                String
+  name                  String
+  description           String?
+  isActive              Boolean                        @default(true)
+  timezone              String
+  daysOfWeek            Int[]                          @default([])
+  startMinute           Int
+  endMinute             Int
+  maxVehicles           Int                            @default(1)
+  maxLaborMinutes       Int                            @default(60)
+  minimumNoticeMinutes  Int                            @default(1440)
+  maximumHorizonDays    Int                            @default(30)
+  slotIntervalMinutes   Int                            @default(30)
+  approvalRequired      Boolean                        @default(true)
+  internalNotes         String?
+  createdByUserId       String?
+  archivedAt            DateTime?
+  createdAt             DateTime                       @default(now())
+  updatedAt             DateTime                       @updatedAt
+  shop                  Shop                           @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  createdBy             User?                          @relation("SmartMaintenanceBlockCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  services              SmartMaintenanceBlockService[]
+  blackouts             SmartMaintenanceBlockBlackout[]
+
+  @@unique([id, shopId])
+  @@index([shopId, isActive, archivedAt])
+  @@index([shopId, createdAt])
+}
+
+model SmartMaintenanceBlockService {
+  id                  String                @id @default(cuid())
+  shopId              String
+  blockId             String
+  serviceDefinitionId String
+  createdAt           DateTime              @default(now())
+  shop                Shop                  @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  block               SmartMaintenanceBlock @relation(fields: [blockId], references: [id], onDelete: Cascade)
+  serviceDefinition   ServiceDefinition     @relation(fields: [serviceDefinitionId], references: [id], onDelete: Cascade)
+
+  @@unique([blockId, serviceDefinitionId])
+  @@index([shopId, blockId])
+  @@index([shopId, serviceDefinitionId])
+}
+
+model SmartMaintenanceBlockBlackout {
+  id              String                  @id @default(cuid())
+  shopId          String
+  blockId         String?
+  startsAt        DateTime
+  endsAt          DateTime
+  localDate       DateTime?
+  startMinute     Int?
+  endMinute       Int?
+  reason          String?
+  isFullDay       Boolean                 @default(false)
+  createdByUserId String?
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+  shop            Shop                    @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  block           SmartMaintenanceBlock?  @relation(fields: [blockId], references: [id], onDelete: Cascade)
+  createdBy       User?                   @relation("SmartMaintenanceBlockBlackoutCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@index([shopId, startsAt, endsAt])
+  @@index([shopId, blockId])
 }
 
 model ImportHistoryRecord {
