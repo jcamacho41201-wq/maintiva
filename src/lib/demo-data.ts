@@ -397,6 +397,7 @@ export type AppointmentRequestLinkServiceRecord = {
   id: string;
   shopId: string;
   requestLinkId: string;
+  smartMaintenanceBlockId: string;
   serviceDefinitionId: string;
   serviceNameSnapshot: string;
   laborMinutes: number;
@@ -409,8 +410,8 @@ export type AppointmentRequestLinkRecord = {
   shopId: string;
   customerId: string;
   vehicleId: string;
-  opportunityId?: string;
-  smartMaintenanceBlockId?: string;
+  opportunityId: string;
+  smartMaintenanceBlockId: string;
   status: AppointmentRequestLinkStatus;
   url?: string;
   expiresAt: string;
@@ -492,6 +493,7 @@ export type AppointmentRequestServiceRecord = {
   id: string;
   shopId: string;
   appointmentRequestId: string;
+  smartMaintenanceBlockId: string;
   serviceDefinitionId: string;
   serviceNameSnapshot: string;
   laborMinutes: number;
@@ -504,9 +506,9 @@ export type AppointmentRequestRecord = {
   shopId: string;
   customerId: string;
   vehicleId: string;
-  opportunityId?: string;
-  smartMaintenanceBlockId?: string;
-  requestLinkId?: string;
+  opportunityId: string;
+  smartMaintenanceBlockId: string;
+  requestLinkId: string;
   requestedStart: string;
   requestedEnd: string;
   shopTimezone: string;

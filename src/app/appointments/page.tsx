@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { Badge, statusVariant } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { appointmentRequestCommitments } from "@/lib/appointment-requests";
 import { getDashboardMetrics, vehicleLabel } from "@/lib/demo-calculations";
 import { useDemoStore } from "@/lib/demo-store";
 import type { Appointment, AppointmentRequestRecord, SmartMaintenanceBlock, SmartMaintenanceBlockBlackout } from "@/lib/demo-data";
@@ -81,25 +82,6 @@ function calendarEventMatches(event: CalendarEvent, filter: CalendarFilter) {
   return event.type === "BLACKOUT";
 }
 
-function requestCountsAgainstCapacity(request: AppointmentRequestRecord) {
-  if (request.finalAppointmentId) return false;
-  if (new Date(request.expiresAt).getTime() <= Date.now()) return false;
-  return request.status === "PENDING" || request.status === "APPROVED" || request.status === "CUSTOMER_ACCEPTED_ALTERNATE";
-}
-
-function requestCommitments(requests: AppointmentRequestRecord[]) {
-  return requests.filter(requestCountsAgainstCapacity).map((request) => ({
-    id: request.id,
-    shopId: request.shopId,
-    blockId: request.smartMaintenanceBlockId,
-    startsAt: request.requestedStart,
-    endsAt: request.requestedEnd,
-    status: request.status === "APPROVED" || request.status === "CUSTOMER_ACCEPTED_ALTERNATE" ? "APPROVED" as const : "PENDING" as const,
-    vehicleCount: 1,
-    laborMinutes: request.totalLaborMinutes,
-  }));
-}
-
 export default function AppointmentsPage() {
   const {
     state,
@@ -144,7 +126,7 @@ export default function AppointmentsPage() {
         selectedServiceIds: block.serviceDefinitionIds,
         appointments: state.appointments,
         blackouts: state.smartMaintenanceBlockBlackouts,
-        commitments: requestCommitments(state.appointmentRequests),
+        commitments: appointmentRequestCommitments(state.appointmentRequests),
         dateFrom,
         dateTo,
         now: new Date(),

@@ -39,8 +39,8 @@ CREATE TABLE IF NOT EXISTS public."AppointmentRequestLink" (
   "tokenHash" TEXT NOT NULL,
   "customerId" TEXT NOT NULL,
   "vehicleId" TEXT NOT NULL,
-  "opportunityId" TEXT,
-  "smartMaintenanceBlockId" TEXT,
+  "opportunityId" TEXT NOT NULL,
+  "smartMaintenanceBlockId" TEXT NOT NULL,
   "status" public."AppointmentRequestLinkStatus" NOT NULL DEFAULT 'ACTIVE',
   "expiresAt" TIMESTAMP(3) NOT NULL,
   "revokedAt" TIMESTAMP(3),
@@ -81,6 +81,8 @@ ALTER TABLE public."AppointmentRequestLink" ALTER COLUMN "shopId" SET NOT NULL;
 ALTER TABLE public."AppointmentRequestLink" ALTER COLUMN "tokenHash" SET NOT NULL;
 ALTER TABLE public."AppointmentRequestLink" ALTER COLUMN "customerId" SET NOT NULL;
 ALTER TABLE public."AppointmentRequestLink" ALTER COLUMN "vehicleId" SET NOT NULL;
+ALTER TABLE public."AppointmentRequestLink" ALTER COLUMN "opportunityId" SET NOT NULL;
+ALTER TABLE public."AppointmentRequestLink" ALTER COLUMN "smartMaintenanceBlockId" SET NOT NULL;
 ALTER TABLE public."AppointmentRequestLink" ALTER COLUMN "status" SET NOT NULL;
 ALTER TABLE public."AppointmentRequestLink" ALTER COLUMN "expiresAt" SET NOT NULL;
 ALTER TABLE public."AppointmentRequestLink" ALTER COLUMN "requestAttemptCount" SET NOT NULL;
@@ -91,6 +93,7 @@ CREATE TABLE IF NOT EXISTS public."AppointmentRequestLinkService" (
   "id" TEXT NOT NULL DEFAULT gen_random_uuid()::text,
   "shopId" TEXT NOT NULL,
   "requestLinkId" TEXT NOT NULL,
+  "smartMaintenanceBlockId" TEXT NOT NULL,
   "serviceDefinitionId" TEXT NOT NULL,
   "serviceNameSnapshot" TEXT NOT NULL,
   "laborMinutes" INTEGER NOT NULL,
@@ -101,6 +104,7 @@ CREATE TABLE IF NOT EXISTS public."AppointmentRequestLinkService" (
 
 ALTER TABLE public."AppointmentRequestLinkService" ADD COLUMN IF NOT EXISTS "shopId" TEXT;
 ALTER TABLE public."AppointmentRequestLinkService" ADD COLUMN IF NOT EXISTS "requestLinkId" TEXT;
+ALTER TABLE public."AppointmentRequestLinkService" ADD COLUMN IF NOT EXISTS "smartMaintenanceBlockId" TEXT;
 ALTER TABLE public."AppointmentRequestLinkService" ADD COLUMN IF NOT EXISTS "serviceDefinitionId" TEXT;
 ALTER TABLE public."AppointmentRequestLinkService" ADD COLUMN IF NOT EXISTS "serviceNameSnapshot" TEXT;
 ALTER TABLE public."AppointmentRequestLinkService" ADD COLUMN IF NOT EXISTS "laborMinutes" INTEGER;
@@ -109,6 +113,7 @@ ALTER TABLE public."AppointmentRequestLinkService" ADD COLUMN IF NOT EXISTS "cre
 UPDATE public."AppointmentRequestLinkService" SET "createdAt" = COALESCE("createdAt", CURRENT_TIMESTAMP);
 ALTER TABLE public."AppointmentRequestLinkService" ALTER COLUMN "shopId" SET NOT NULL;
 ALTER TABLE public."AppointmentRequestLinkService" ALTER COLUMN "requestLinkId" SET NOT NULL;
+ALTER TABLE public."AppointmentRequestLinkService" ALTER COLUMN "smartMaintenanceBlockId" SET NOT NULL;
 ALTER TABLE public."AppointmentRequestLinkService" ALTER COLUMN "serviceDefinitionId" SET NOT NULL;
 ALTER TABLE public."AppointmentRequestLinkService" ALTER COLUMN "serviceNameSnapshot" SET NOT NULL;
 ALTER TABLE public."AppointmentRequestLinkService" ALTER COLUMN "laborMinutes" SET NOT NULL;
@@ -120,9 +125,9 @@ CREATE TABLE IF NOT EXISTS public."AppointmentRequest" (
   "shopId" TEXT NOT NULL,
   "customerId" TEXT NOT NULL,
   "vehicleId" TEXT NOT NULL,
-  "opportunityId" TEXT,
-  "smartMaintenanceBlockId" TEXT,
-  "requestLinkId" TEXT,
+  "opportunityId" TEXT NOT NULL,
+  "smartMaintenanceBlockId" TEXT NOT NULL,
+  "requestLinkId" TEXT NOT NULL,
   "requestedStart" TIMESTAMP(3) NOT NULL,
   "requestedEnd" TIMESTAMP(3) NOT NULL,
   "shopTimezone" TEXT NOT NULL,
@@ -179,6 +184,9 @@ UPDATE public."AppointmentRequest" SET
 ALTER TABLE public."AppointmentRequest" ALTER COLUMN "shopId" SET NOT NULL;
 ALTER TABLE public."AppointmentRequest" ALTER COLUMN "customerId" SET NOT NULL;
 ALTER TABLE public."AppointmentRequest" ALTER COLUMN "vehicleId" SET NOT NULL;
+ALTER TABLE public."AppointmentRequest" ALTER COLUMN "opportunityId" SET NOT NULL;
+ALTER TABLE public."AppointmentRequest" ALTER COLUMN "smartMaintenanceBlockId" SET NOT NULL;
+ALTER TABLE public."AppointmentRequest" ALTER COLUMN "requestLinkId" SET NOT NULL;
 ALTER TABLE public."AppointmentRequest" ALTER COLUMN "requestedStart" SET NOT NULL;
 ALTER TABLE public."AppointmentRequest" ALTER COLUMN "requestedEnd" SET NOT NULL;
 ALTER TABLE public."AppointmentRequest" ALTER COLUMN "shopTimezone" SET NOT NULL;
@@ -195,6 +203,7 @@ CREATE TABLE IF NOT EXISTS public."AppointmentRequestService" (
   "id" TEXT NOT NULL DEFAULT gen_random_uuid()::text,
   "shopId" TEXT NOT NULL,
   "appointmentRequestId" TEXT NOT NULL,
+  "smartMaintenanceBlockId" TEXT NOT NULL,
   "serviceDefinitionId" TEXT NOT NULL,
   "serviceNameSnapshot" TEXT NOT NULL,
   "laborMinutes" INTEGER NOT NULL,
@@ -205,6 +214,7 @@ CREATE TABLE IF NOT EXISTS public."AppointmentRequestService" (
 
 ALTER TABLE public."AppointmentRequestService" ADD COLUMN IF NOT EXISTS "shopId" TEXT;
 ALTER TABLE public."AppointmentRequestService" ADD COLUMN IF NOT EXISTS "appointmentRequestId" TEXT;
+ALTER TABLE public."AppointmentRequestService" ADD COLUMN IF NOT EXISTS "smartMaintenanceBlockId" TEXT;
 ALTER TABLE public."AppointmentRequestService" ADD COLUMN IF NOT EXISTS "serviceDefinitionId" TEXT;
 ALTER TABLE public."AppointmentRequestService" ADD COLUMN IF NOT EXISTS "serviceNameSnapshot" TEXT;
 ALTER TABLE public."AppointmentRequestService" ADD COLUMN IF NOT EXISTS "laborMinutes" INTEGER;
@@ -213,6 +223,7 @@ ALTER TABLE public."AppointmentRequestService" ADD COLUMN IF NOT EXISTS "created
 UPDATE public."AppointmentRequestService" SET "createdAt" = COALESCE("createdAt", CURRENT_TIMESTAMP);
 ALTER TABLE public."AppointmentRequestService" ALTER COLUMN "shopId" SET NOT NULL;
 ALTER TABLE public."AppointmentRequestService" ALTER COLUMN "appointmentRequestId" SET NOT NULL;
+ALTER TABLE public."AppointmentRequestService" ALTER COLUMN "smartMaintenanceBlockId" SET NOT NULL;
 ALTER TABLE public."AppointmentRequestService" ALTER COLUMN "serviceDefinitionId" SET NOT NULL;
 ALTER TABLE public."AppointmentRequestService" ALTER COLUMN "serviceNameSnapshot" SET NOT NULL;
 ALTER TABLE public."AppointmentRequestService" ALTER COLUMN "laborMinutes" SET NOT NULL;
@@ -223,12 +234,15 @@ DO $$
 BEGIN
   ALTER TABLE public."AppointmentRequestLink" DROP CONSTRAINT IF EXISTS "AppointmentRequestLink_expiration_check";
   ALTER TABLE public."AppointmentRequestLink" DROP CONSTRAINT IF EXISTS "AppointmentRequestLink_attempts_check";
+  ALTER TABLE public."AppointmentRequestLink" DROP CONSTRAINT IF EXISTS "AppointmentRequestLink_tokenHash_check";
+  ALTER TABLE public."AppointmentRequestLink" DROP CONSTRAINT IF EXISTS "AppointmentRequestLink_status_timestamps_check";
   ALTER TABLE public."AppointmentRequestLinkService" DROP CONSTRAINT IF EXISTS "AppointmentRequestLinkService_snapshot_check";
   ALTER TABLE public."AppointmentRequestLinkService" DROP CONSTRAINT IF EXISTS "AppointmentRequestLinkService_totals_check";
   ALTER TABLE public."AppointmentRequest" DROP CONSTRAINT IF EXISTS "AppointmentRequest_time_check";
   ALTER TABLE public."AppointmentRequest" DROP CONSTRAINT IF EXISTS "AppointmentRequest_totals_check";
   ALTER TABLE public."AppointmentRequest" DROP CONSTRAINT IF EXISTS "AppointmentRequest_timezone_check";
   ALTER TABLE public."AppointmentRequest" DROP CONSTRAINT IF EXISTS "AppointmentRequest_alternate_time_check";
+  ALTER TABLE public."AppointmentRequest" DROP CONSTRAINT IF EXISTS "AppointmentRequest_status_final_appointment_check";
   ALTER TABLE public."AppointmentRequestService" DROP CONSTRAINT IF EXISTS "AppointmentRequestService_snapshot_check";
   ALTER TABLE public."AppointmentRequestService" DROP CONSTRAINT IF EXISTS "AppointmentRequestService_totals_check";
 
@@ -236,6 +250,13 @@ BEGIN
     CHECK ("expiresAt" > "createdAt");
   ALTER TABLE public."AppointmentRequestLink" ADD CONSTRAINT "AppointmentRequestLink_attempts_check"
     CHECK ("requestAttemptCount" >= 0);
+  ALTER TABLE public."AppointmentRequestLink" ADD CONSTRAINT "AppointmentRequestLink_tokenHash_check"
+    CHECK ("tokenHash" ~ '^[a-f0-9]{64}$');
+  ALTER TABLE public."AppointmentRequestLink" ADD CONSTRAINT "AppointmentRequestLink_status_timestamps_check"
+    CHECK (
+      ("status" <> 'REVOKED' OR "revokedAt" IS NOT NULL) AND
+      ("status" <> 'USED' OR "usedAt" IS NOT NULL)
+    );
   ALTER TABLE public."AppointmentRequestLinkService" ADD CONSTRAINT "AppointmentRequestLinkService_snapshot_check"
     CHECK (length(btrim("serviceNameSnapshot")) > 0);
   ALTER TABLE public."AppointmentRequestLinkService" ADD CONSTRAINT "AppointmentRequestLinkService_totals_check"
@@ -248,8 +269,22 @@ BEGIN
     CHECK (length(btrim("shopTimezone")) > 0);
   ALTER TABLE public."AppointmentRequest" ADD CONSTRAINT "AppointmentRequest_alternate_time_check"
     CHECK (
-      ("alternateProposedStart" IS NULL AND "alternateProposedEnd" IS NULL) OR
-      ("alternateProposedStart" IS NOT NULL AND "alternateProposedEnd" IS NOT NULL AND "alternateProposedEnd" > "alternateProposedStart")
+      (
+        "status" NOT IN ('ALTERNATE_PROPOSED', 'CUSTOMER_ACCEPTED_ALTERNATE') AND
+        (("alternateProposedStart" IS NULL AND "alternateProposedEnd" IS NULL) OR
+          ("alternateProposedStart" IS NOT NULL AND "alternateProposedEnd" IS NOT NULL AND "alternateProposedEnd" > "alternateProposedStart"))
+      ) OR
+      (
+        "status" IN ('ALTERNATE_PROPOSED', 'CUSTOMER_ACCEPTED_ALTERNATE') AND
+        "alternateProposedStart" IS NOT NULL AND
+        "alternateProposedEnd" IS NOT NULL AND
+        "alternateProposedEnd" > "alternateProposedStart"
+      )
+    );
+  ALTER TABLE public."AppointmentRequest" ADD CONSTRAINT "AppointmentRequest_status_final_appointment_check"
+    CHECK (
+      ("status" <> 'APPROVED' OR "finalAppointmentId" IS NOT NULL) AND
+      ("finalAppointmentId" IS NULL OR "status" = 'APPROVED')
     );
   ALTER TABLE public."AppointmentRequestService" ADD CONSTRAINT "AppointmentRequestService_snapshot_check"
     CHECK (length(btrim("serviceNameSnapshot")) > 0);
@@ -259,15 +294,22 @@ END $$;
 
 CREATE UNIQUE INDEX IF NOT EXISTS "AppointmentRequestLink_tokenHash_key" ON public."AppointmentRequestLink" ("tokenHash");
 CREATE UNIQUE INDEX IF NOT EXISTS "AppointmentRequestLink_id_shop_key" ON public."AppointmentRequestLink" ("id", "shopId");
+CREATE UNIQUE INDEX IF NOT EXISTS "AppointmentRequestLink_id_shop_customer_vehicle_key" ON public."AppointmentRequestLink" ("id", "shopId", "customerId", "vehicleId");
+CREATE UNIQUE INDEX IF NOT EXISTS "AppointmentRequestLink_id_shop_block_key" ON public."AppointmentRequestLink" ("id", "shopId", "smartMaintenanceBlockId");
 CREATE INDEX IF NOT EXISTS "AppointmentRequestLink_shop_customer_idx" ON public."AppointmentRequestLink" ("shopId", "customerId");
 CREATE INDEX IF NOT EXISTS "AppointmentRequestLink_shop_vehicle_idx" ON public."AppointmentRequestLink" ("shopId", "vehicleId");
 CREATE INDEX IF NOT EXISTS "AppointmentRequestLink_shop_opportunity_idx" ON public."AppointmentRequestLink" ("shopId", "opportunityId");
 CREATE INDEX IF NOT EXISTS "AppointmentRequestLink_shop_status_expires_idx" ON public."AppointmentRequestLink" ("shopId", "status", "expiresAt");
 CREATE UNIQUE INDEX IF NOT EXISTS "AppointmentRequestLinkService_link_service_key" ON public."AppointmentRequestLinkService" ("requestLinkId", "serviceDefinitionId");
 CREATE INDEX IF NOT EXISTS "AppointmentRequestLinkService_shop_link_idx" ON public."AppointmentRequestLinkService" ("shopId", "requestLinkId");
+CREATE INDEX IF NOT EXISTS "AppointmentRequestLinkService_shop_block_idx" ON public."AppointmentRequestLinkService" ("shopId", "smartMaintenanceBlockId");
 CREATE INDEX IF NOT EXISTS "AppointmentRequestLinkService_shop_service_idx" ON public."AppointmentRequestLinkService" ("shopId", "serviceDefinitionId");
 CREATE UNIQUE INDEX IF NOT EXISTS "AppointmentRequest_id_shop_key" ON public."AppointmentRequest" ("id", "shopId");
-CREATE UNIQUE INDEX IF NOT EXISTS "AppointmentRequest_shop_idempotency_key" ON public."AppointmentRequest" ("shopId", "idempotencyKey") WHERE "idempotencyKey" IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS "AppointmentRequest_id_shop_block_key" ON public."AppointmentRequest" ("id", "shopId", "smartMaintenanceBlockId");
+CREATE UNIQUE INDEX IF NOT EXISTS "AppointmentRequest_link_idempotency_key" ON public."AppointmentRequest" ("requestLinkId", "idempotencyKey") WHERE "idempotencyKey" IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS "AppointmentRequest_link_active_key" ON public."AppointmentRequest" ("requestLinkId") WHERE "finalAppointmentId" IS NULL AND "status" IN ('PENDING', 'ALTERNATE_PROPOSED', 'CUSTOMER_ACCEPTED_ALTERNATE');
+CREATE UNIQUE INDEX IF NOT EXISTS "AppointmentRequest_link_requested_active_key" ON public."AppointmentRequest" ("requestLinkId", "requestedStart") WHERE "finalAppointmentId" IS NULL AND "status" IN ('PENDING', 'ALTERNATE_PROPOSED', 'CUSTOMER_ACCEPTED_ALTERNATE');
+CREATE UNIQUE INDEX IF NOT EXISTS "AppointmentRequest_finalAppointment_key" ON public."AppointmentRequest" ("finalAppointmentId") WHERE "finalAppointmentId" IS NOT NULL;
 CREATE INDEX IF NOT EXISTS "AppointmentRequest_shop_status_start_idx" ON public."AppointmentRequest" ("shopId", "status", "requestedStart");
 CREATE INDEX IF NOT EXISTS "AppointmentRequest_shop_customer_idx" ON public."AppointmentRequest" ("shopId", "customerId");
 CREATE INDEX IF NOT EXISTS "AppointmentRequest_shop_vehicle_idx" ON public."AppointmentRequest" ("shopId", "vehicleId");
@@ -276,9 +318,16 @@ CREATE INDEX IF NOT EXISTS "AppointmentRequest_shop_block_idx" ON public."Appoin
 CREATE INDEX IF NOT EXISTS "AppointmentRequest_shop_link_idx" ON public."AppointmentRequest" ("shopId", "requestLinkId");
 CREATE UNIQUE INDEX IF NOT EXISTS "AppointmentRequestService_request_service_key" ON public."AppointmentRequestService" ("appointmentRequestId", "serviceDefinitionId");
 CREATE INDEX IF NOT EXISTS "AppointmentRequestService_shop_request_idx" ON public."AppointmentRequestService" ("shopId", "appointmentRequestId");
+CREATE INDEX IF NOT EXISTS "AppointmentRequestService_shop_block_idx" ON public."AppointmentRequestService" ("shopId", "smartMaintenanceBlockId");
 CREATE INDEX IF NOT EXISTS "AppointmentRequestService_shop_service_idx" ON public."AppointmentRequestService" ("shopId", "serviceDefinitionId");
+CREATE UNIQUE INDEX IF NOT EXISTS "Customer_id_shop_key" ON public."Customer" ("id", "shopId");
+CREATE UNIQUE INDEX IF NOT EXISTS "Vehicle_id_shop_key" ON public."Vehicle" ("id", "shopId");
+CREATE UNIQUE INDEX IF NOT EXISTS "Vehicle_id_shop_customer_key" ON public."Vehicle" ("id", "shopId", "customerId");
 CREATE UNIQUE INDEX IF NOT EXISTS "Appointment_id_shop_key" ON public."Appointment" ("id", "shopId");
+CREATE UNIQUE INDEX IF NOT EXISTS "Appointment_id_shop_customer_vehicle_key" ON public."Appointment" ("id", "shopId", "customerId", "vehicleId");
 CREATE UNIQUE INDEX IF NOT EXISTS "MaintenanceRevenueOpportunity_id_shop_key" ON public."MaintenanceRevenueOpportunity" ("id", "shopId");
+CREATE UNIQUE INDEX IF NOT EXISTS "MaintenanceRevenueOpportunity_id_shop_customer_vehicle_key" ON public."MaintenanceRevenueOpportunity" ("id", "shopId", "customerId", "vehicleId");
+CREATE UNIQUE INDEX IF NOT EXISTS "SmartMaintenanceBlockService_block_shop_service_key" ON public."SmartMaintenanceBlockService" ("blockId", "shopId", "serviceDefinitionId");
 
 DO $$
 BEGIN
@@ -286,66 +335,78 @@ BEGIN
   ALTER TABLE public."AppointmentRequestLink" DROP CONSTRAINT IF EXISTS "AppointmentRequestLink_customerId_fkey";
   ALTER TABLE public."AppointmentRequestLink" DROP CONSTRAINT IF EXISTS "AppointmentRequestLink_vehicleId_fkey";
   ALTER TABLE public."AppointmentRequestLink" DROP CONSTRAINT IF EXISTS "AppointmentRequestLink_opportunityId_shopId_fkey";
+  ALTER TABLE public."AppointmentRequestLink" DROP CONSTRAINT IF EXISTS "AppointmentRequestLink_opportunity_scope_fkey";
   ALTER TABLE public."AppointmentRequestLink" DROP CONSTRAINT IF EXISTS "AppointmentRequestLink_smartMaintenanceBlockId_shopId_fkey";
   ALTER TABLE public."AppointmentRequestLink" DROP CONSTRAINT IF EXISTS "AppointmentRequestLink_regeneratedFromId_fkey";
   ALTER TABLE public."AppointmentRequestLink" DROP CONSTRAINT IF EXISTS "AppointmentRequestLink_createdByUserId_fkey";
   ALTER TABLE public."AppointmentRequestLinkService" DROP CONSTRAINT IF EXISTS "AppointmentRequestLinkService_requestLinkId_shopId_fkey";
+  ALTER TABLE public."AppointmentRequestLinkService" DROP CONSTRAINT IF EXISTS "AppointmentRequestLinkService_request_link_block_fkey";
   ALTER TABLE public."AppointmentRequestLinkService" DROP CONSTRAINT IF EXISTS "AppointmentRequestLinkService_shopId_fkey";
   ALTER TABLE public."AppointmentRequestLinkService" DROP CONSTRAINT IF EXISTS "AppointmentRequestLinkService_serviceDefinitionId_shopId_fkey";
+  ALTER TABLE public."AppointmentRequestLinkService" DROP CONSTRAINT IF EXISTS "AppointmentRequestLinkService_block_service_fkey";
   ALTER TABLE public."AppointmentRequest" DROP CONSTRAINT IF EXISTS "AppointmentRequest_shopId_fkey";
   ALTER TABLE public."AppointmentRequest" DROP CONSTRAINT IF EXISTS "AppointmentRequest_customerId_fkey";
   ALTER TABLE public."AppointmentRequest" DROP CONSTRAINT IF EXISTS "AppointmentRequest_vehicleId_fkey";
   ALTER TABLE public."AppointmentRequest" DROP CONSTRAINT IF EXISTS "AppointmentRequest_opportunityId_shopId_fkey";
+  ALTER TABLE public."AppointmentRequest" DROP CONSTRAINT IF EXISTS "AppointmentRequest_opportunity_scope_fkey";
   ALTER TABLE public."AppointmentRequest" DROP CONSTRAINT IF EXISTS "AppointmentRequest_smartMaintenanceBlockId_shopId_fkey";
   ALTER TABLE public."AppointmentRequest" DROP CONSTRAINT IF EXISTS "AppointmentRequest_requestLinkId_shopId_fkey";
+  ALTER TABLE public."AppointmentRequest" DROP CONSTRAINT IF EXISTS "AppointmentRequest_request_link_scope_fkey";
   ALTER TABLE public."AppointmentRequest" DROP CONSTRAINT IF EXISTS "AppointmentRequest_finalAppointmentId_shopId_fkey";
+  ALTER TABLE public."AppointmentRequest" DROP CONSTRAINT IF EXISTS "AppointmentRequest_final_appointment_scope_fkey";
   ALTER TABLE public."AppointmentRequest" DROP CONSTRAINT IF EXISTS "AppointmentRequest_decidedByUserId_fkey";
   ALTER TABLE public."AppointmentRequestService" DROP CONSTRAINT IF EXISTS "AppointmentRequestService_appointmentRequestId_shopId_fkey";
+  ALTER TABLE public."AppointmentRequestService" DROP CONSTRAINT IF EXISTS "AppointmentRequestService_request_block_fkey";
   ALTER TABLE public."AppointmentRequestService" DROP CONSTRAINT IF EXISTS "AppointmentRequestService_shopId_fkey";
   ALTER TABLE public."AppointmentRequestService" DROP CONSTRAINT IF EXISTS "AppointmentRequestService_serviceDefinitionId_shopId_fkey";
+  ALTER TABLE public."AppointmentRequestService" DROP CONSTRAINT IF EXISTS "AppointmentRequestService_block_service_fkey";
 
   ALTER TABLE public."AppointmentRequestLink" ADD CONSTRAINT "AppointmentRequestLink_shopId_fkey"
     FOREIGN KEY ("shopId") REFERENCES public."Shop"("id") ON DELETE CASCADE ON UPDATE CASCADE;
   ALTER TABLE public."AppointmentRequestLink" ADD CONSTRAINT "AppointmentRequestLink_customerId_fkey"
-    FOREIGN KEY ("customerId") REFERENCES public."Customer"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+    FOREIGN KEY ("customerId", "shopId") REFERENCES public."Customer"("id", "shopId") ON DELETE CASCADE ON UPDATE CASCADE;
   ALTER TABLE public."AppointmentRequestLink" ADD CONSTRAINT "AppointmentRequestLink_vehicleId_fkey"
-    FOREIGN KEY ("vehicleId") REFERENCES public."Vehicle"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-  ALTER TABLE public."AppointmentRequestLink" ADD CONSTRAINT "AppointmentRequestLink_opportunityId_shopId_fkey"
-    FOREIGN KEY ("opportunityId", "shopId") REFERENCES public."MaintenanceRevenueOpportunity"("id", "shopId") ON DELETE NO ACTION ON UPDATE CASCADE;
+    FOREIGN KEY ("vehicleId", "shopId", "customerId") REFERENCES public."Vehicle"("id", "shopId", "customerId") ON DELETE CASCADE ON UPDATE CASCADE;
+  ALTER TABLE public."AppointmentRequestLink" ADD CONSTRAINT "AppointmentRequestLink_opportunity_scope_fkey"
+    FOREIGN KEY ("opportunityId", "shopId", "customerId", "vehicleId") REFERENCES public."MaintenanceRevenueOpportunity"("id", "shopId", "customerId", "vehicleId") ON DELETE NO ACTION ON UPDATE CASCADE;
   ALTER TABLE public."AppointmentRequestLink" ADD CONSTRAINT "AppointmentRequestLink_smartMaintenanceBlockId_shopId_fkey"
     FOREIGN KEY ("smartMaintenanceBlockId", "shopId") REFERENCES public."SmartMaintenanceBlock"("id", "shopId") ON DELETE NO ACTION ON UPDATE CASCADE;
   ALTER TABLE public."AppointmentRequestLink" ADD CONSTRAINT "AppointmentRequestLink_regeneratedFromId_fkey"
     FOREIGN KEY ("regeneratedFromId") REFERENCES public."AppointmentRequestLink"("id") ON DELETE SET NULL ON UPDATE CASCADE;
   ALTER TABLE public."AppointmentRequestLink" ADD CONSTRAINT "AppointmentRequestLink_createdByUserId_fkey"
     FOREIGN KEY ("createdByUserId") REFERENCES public."User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
-  ALTER TABLE public."AppointmentRequestLinkService" ADD CONSTRAINT "AppointmentRequestLinkService_requestLinkId_shopId_fkey"
-    FOREIGN KEY ("requestLinkId", "shopId") REFERENCES public."AppointmentRequestLink"("id", "shopId") ON DELETE CASCADE ON UPDATE CASCADE;
+  ALTER TABLE public."AppointmentRequestLinkService" ADD CONSTRAINT "AppointmentRequestLinkService_request_link_block_fkey"
+    FOREIGN KEY ("requestLinkId", "shopId", "smartMaintenanceBlockId") REFERENCES public."AppointmentRequestLink"("id", "shopId", "smartMaintenanceBlockId") ON DELETE CASCADE ON UPDATE CASCADE;
   ALTER TABLE public."AppointmentRequestLinkService" ADD CONSTRAINT "AppointmentRequestLinkService_shopId_fkey"
     FOREIGN KEY ("shopId") REFERENCES public."Shop"("id") ON DELETE CASCADE ON UPDATE CASCADE;
   ALTER TABLE public."AppointmentRequestLinkService" ADD CONSTRAINT "AppointmentRequestLinkService_serviceDefinitionId_shopId_fkey"
     FOREIGN KEY ("serviceDefinitionId", "shopId") REFERENCES public."ServiceDefinition"("id", "shopId") ON DELETE RESTRICT ON UPDATE CASCADE;
+  ALTER TABLE public."AppointmentRequestLinkService" ADD CONSTRAINT "AppointmentRequestLinkService_block_service_fkey"
+    FOREIGN KEY ("smartMaintenanceBlockId", "shopId", "serviceDefinitionId") REFERENCES public."SmartMaintenanceBlockService"("blockId", "shopId", "serviceDefinitionId") ON DELETE RESTRICT ON UPDATE CASCADE;
   ALTER TABLE public."AppointmentRequest" ADD CONSTRAINT "AppointmentRequest_shopId_fkey"
     FOREIGN KEY ("shopId") REFERENCES public."Shop"("id") ON DELETE CASCADE ON UPDATE CASCADE;
   ALTER TABLE public."AppointmentRequest" ADD CONSTRAINT "AppointmentRequest_customerId_fkey"
-    FOREIGN KEY ("customerId") REFERENCES public."Customer"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+    FOREIGN KEY ("customerId", "shopId") REFERENCES public."Customer"("id", "shopId") ON DELETE CASCADE ON UPDATE CASCADE;
   ALTER TABLE public."AppointmentRequest" ADD CONSTRAINT "AppointmentRequest_vehicleId_fkey"
-    FOREIGN KEY ("vehicleId") REFERENCES public."Vehicle"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-  ALTER TABLE public."AppointmentRequest" ADD CONSTRAINT "AppointmentRequest_opportunityId_shopId_fkey"
-    FOREIGN KEY ("opportunityId", "shopId") REFERENCES public."MaintenanceRevenueOpportunity"("id", "shopId") ON DELETE NO ACTION ON UPDATE CASCADE;
+    FOREIGN KEY ("vehicleId", "shopId", "customerId") REFERENCES public."Vehicle"("id", "shopId", "customerId") ON DELETE CASCADE ON UPDATE CASCADE;
+  ALTER TABLE public."AppointmentRequest" ADD CONSTRAINT "AppointmentRequest_opportunity_scope_fkey"
+    FOREIGN KEY ("opportunityId", "shopId", "customerId", "vehicleId") REFERENCES public."MaintenanceRevenueOpportunity"("id", "shopId", "customerId", "vehicleId") ON DELETE NO ACTION ON UPDATE CASCADE;
   ALTER TABLE public."AppointmentRequest" ADD CONSTRAINT "AppointmentRequest_smartMaintenanceBlockId_shopId_fkey"
     FOREIGN KEY ("smartMaintenanceBlockId", "shopId") REFERENCES public."SmartMaintenanceBlock"("id", "shopId") ON DELETE NO ACTION ON UPDATE CASCADE;
-  ALTER TABLE public."AppointmentRequest" ADD CONSTRAINT "AppointmentRequest_requestLinkId_shopId_fkey"
-    FOREIGN KEY ("requestLinkId", "shopId") REFERENCES public."AppointmentRequestLink"("id", "shopId") ON DELETE NO ACTION ON UPDATE CASCADE;
-  ALTER TABLE public."AppointmentRequest" ADD CONSTRAINT "AppointmentRequest_finalAppointmentId_shopId_fkey"
-    FOREIGN KEY ("finalAppointmentId", "shopId") REFERENCES public."Appointment"("id", "shopId") ON DELETE NO ACTION ON UPDATE CASCADE;
+  ALTER TABLE public."AppointmentRequest" ADD CONSTRAINT "AppointmentRequest_request_link_scope_fkey"
+    FOREIGN KEY ("requestLinkId", "shopId", "customerId", "vehicleId") REFERENCES public."AppointmentRequestLink"("id", "shopId", "customerId", "vehicleId") ON DELETE NO ACTION ON UPDATE CASCADE;
+  ALTER TABLE public."AppointmentRequest" ADD CONSTRAINT "AppointmentRequest_final_appointment_scope_fkey"
+    FOREIGN KEY ("finalAppointmentId", "shopId", "customerId", "vehicleId") REFERENCES public."Appointment"("id", "shopId", "customerId", "vehicleId") ON DELETE NO ACTION ON UPDATE CASCADE;
   ALTER TABLE public."AppointmentRequest" ADD CONSTRAINT "AppointmentRequest_decidedByUserId_fkey"
     FOREIGN KEY ("decidedByUserId") REFERENCES public."User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
-  ALTER TABLE public."AppointmentRequestService" ADD CONSTRAINT "AppointmentRequestService_appointmentRequestId_shopId_fkey"
-    FOREIGN KEY ("appointmentRequestId", "shopId") REFERENCES public."AppointmentRequest"("id", "shopId") ON DELETE CASCADE ON UPDATE CASCADE;
+  ALTER TABLE public."AppointmentRequestService" ADD CONSTRAINT "AppointmentRequestService_request_block_fkey"
+    FOREIGN KEY ("appointmentRequestId", "shopId", "smartMaintenanceBlockId") REFERENCES public."AppointmentRequest"("id", "shopId", "smartMaintenanceBlockId") ON DELETE CASCADE ON UPDATE CASCADE;
   ALTER TABLE public."AppointmentRequestService" ADD CONSTRAINT "AppointmentRequestService_shopId_fkey"
     FOREIGN KEY ("shopId") REFERENCES public."Shop"("id") ON DELETE CASCADE ON UPDATE CASCADE;
   ALTER TABLE public."AppointmentRequestService" ADD CONSTRAINT "AppointmentRequestService_serviceDefinitionId_shopId_fkey"
     FOREIGN KEY ("serviceDefinitionId", "shopId") REFERENCES public."ServiceDefinition"("id", "shopId") ON DELETE RESTRICT ON UPDATE CASCADE;
+  ALTER TABLE public."AppointmentRequestService" ADD CONSTRAINT "AppointmentRequestService_block_service_fkey"
+    FOREIGN KEY ("smartMaintenanceBlockId", "shopId", "serviceDefinitionId") REFERENCES public."SmartMaintenanceBlockService"("blockId", "shopId", "serviceDefinitionId") ON DELETE RESTRICT ON UPDATE CASCADE;
 END $$;
 
 DO $$

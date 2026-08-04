@@ -96,12 +96,17 @@ describe("production readiness safeguards", () => {
 
     expect(prismaSchema).toContain("model AppointmentRequest");
     expect(prismaSchema).toContain("model AppointmentRequestLink");
+    expect(prismaSchema).toContain("model AppointmentRequestLinkService");
     expect(migration).toContain('CREATE TYPE public."AppointmentRequestStatus"');
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS public."AppointmentRequest"');
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS public."AppointmentRequestLink"');
-    expect(migration).toContain('FOREIGN KEY ("requestLinkId", "shopId") REFERENCES public."AppointmentRequestLink"("id", "shopId")');
-    expect(migration).toContain('FOREIGN KEY ("appointmentRequestId", "shopId") REFERENCES public."AppointmentRequest"("id", "shopId")');
-    expect(migration).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "AppointmentRequest_shop_idempotency_key"');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS public."AppointmentRequestLinkService"');
+    expect(migration).toContain('FOREIGN KEY ("requestLinkId", "shopId", "customerId", "vehicleId") REFERENCES public."AppointmentRequestLink"("id", "shopId", "customerId", "vehicleId")');
+    expect(migration).toContain('FOREIGN KEY ("appointmentRequestId", "shopId", "smartMaintenanceBlockId") REFERENCES public."AppointmentRequest"("id", "shopId", "smartMaintenanceBlockId")');
+    expect(migration).toContain('FOREIGN KEY ("smartMaintenanceBlockId", "shopId", "serviceDefinitionId") REFERENCES public."SmartMaintenanceBlockService"("blockId", "shopId", "serviceDefinitionId")');
+    expect(migration).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "AppointmentRequest_link_idempotency_key"');
+    expect(migration).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "AppointmentRequest_link_active_key"');
+    expect(migration).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "AppointmentRequest_finalAppointment_key"');
     expect(migration).toContain('USING (public.maintiva_is_shop_member("shopId"))');
     expect(migration).toContain("REVOKE ALL ON TABLE");
     expect(migration).toContain("FROM anon, public");

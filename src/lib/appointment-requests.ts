@@ -1,36 +1,60 @@
-import { createHash, randomBytes } from "node:crypto";
 import type { AppointmentRequestRecord, AppointmentRequestStatus } from "@/lib/demo-data";
 import type { SmartBlockCapacityCommitment } from "@/lib/smart-maintenance-blocks";
 
-const tokenBytes = 32;
-const tokenAlphabet = "base64url";
 const capacityHoldingStatuses = new Set<AppointmentRequestStatus>([
   "PENDING",
   "APPROVED",
+  "ALTERNATE_PROPOSED",
+  "CUSTOMER_ACCEPTED_ALTERNATE",
+]);
+const alternateCapacityStatuses = new Set<AppointmentRequestStatus>([
+  "ALTERNATE_PROPOSED",
   "CUSTOMER_ACCEPTED_ALTERNATE",
 ]);
 
-export const appointmentRequestPathPrefix = "/request/";
 export const appointmentRequestNotice =
   "This is an appointment request. The shop will confirm the time after reviewing its schedule.";
 export const appointmentRequestSubmittedMessage = (shopName: string) =>
   `Your request was sent to ${shopName}. The shop will confirm the appointment or offer another time.`;
 
-export function createAppointmentRequestToken() {
-  return randomBytes(tokenBytes).toString(tokenAlphabet);
-}
+export type PublicAppointmentRequestContextInput = {
+  shop: { name: string } & Record<string, unknown>;
+  customer: { firstName: string } & Record<string, unknown>;
+  vehicle: { year: number; make: string; model: string } & Record<string, unknown>;
+  services: Array<{ name: string; laborMinutes: number } & Record<string, unknown>>;
+  slots: Array<{ startsAt: string; label: string; dateLabel: string } & Record<string, unknown>>;
+  notice: string;
+};
 
-export function hashAppointmentRequestToken(token: string) {
-  return createHash("sha256").update(token, "utf8").digest("hex");
-}
+export type PublicAppointmentRequestContext = {
+  shop: { name: string };
+  customer: { firstName: string };
+  vehicle: { year: number; make: string; model: string };
+  services: Array<{ name: string; laborMinutes: number }>;
+  slots: Array<{ startsAt: string; label: string; dateLabel: string }>;
+  notice: string;
+};
 
-export function appointmentRequestUrl(appUrl: string, token: string) {
-  const baseUrl = appUrl.endsWith("/") ? appUrl.slice(0, -1) : appUrl;
-  return `${baseUrl}${appointmentRequestPathPrefix}${encodeURIComponent(token)}`;
-}
-
-export function appointmentRequestIdempotencyKey(tokenHash: string, startsAt: string, clientKey: string) {
-  return hashAppointmentRequestToken(`${tokenHash}:${startsAt}:${clientKey}`);
+export function publicAppointmentRequestContext(input: PublicAppointmentRequestContextInput): PublicAppointmentRequestContext {
+  return {
+    shop: { name: input.shop.name },
+    customer: { firstName: input.customer.firstName },
+    vehicle: {
+      year: input.vehicle.year,
+      make: input.vehicle.make,
+      model: input.vehicle.model,
+    },
+    services: input.services.map((service) => ({
+      name: service.name,
+      laborMinutes: service.laborMinutes,
+    })),
+    slots: input.slots.map((slot) => ({
+      startsAt: slot.startsAt,
+      label: slot.label,
+      dateLabel: slot.dateLabel,
+    })),
+    notice: input.notice,
+  };
 }
 
 export function isAppointmentRequestActive(
@@ -51,7 +75,7 @@ export function appointmentRequestCapacityCommitment(
 ): SmartBlockCapacityCommitment | null {
   if (!isAppointmentRequestActive(request, now)) return null;
   const usesAlternate =
-    request.status === "ALTERNATE_PROPOSED" &&
+    alternateCapacityStatuses.has(request.status) &&
     request.alternateProposedStart &&
     request.alternateProposedEnd;
   return {

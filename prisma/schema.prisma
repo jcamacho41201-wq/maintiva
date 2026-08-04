@@ -358,6 +358,7 @@ model Customer {
   appointmentRequestLinks AppointmentRequestLink[]
   appointmentRequests     AppointmentRequest[]
 
+  @@unique([id, shopId])
   @@index([shopId, status])
   @@index([shopId, archivedAt])
   @@index([shopId, lastName, firstName])
@@ -397,6 +398,8 @@ model Vehicle {
   appointmentRequests     AppointmentRequest[]
 
   @@unique([shopId, vin])
+  @@unique([id, shopId])
+  @@unique([id, shopId, customerId])
   @@index([shopId, customerId])
   @@index([shopId, archivedAt])
 }
@@ -616,6 +619,7 @@ model MaintenanceRevenueOpportunity {
   appointmentRequests     AppointmentRequest[]
 
   @@unique([id, shopId])
+  @@unique([id, shopId, customerId, vehicleId])
   @@index([shopId, stage, priority])
   @@index([shopId, source])
   @@index([shopId, vehicleId])
@@ -699,6 +703,7 @@ model Appointment {
 
   @@unique([shopId, vehicleId, scheduledStart])
   @@unique([id, shopId])
+  @@unique([id, shopId, customerId, vehicleId])
   @@index([shopId, scheduledStart, status])
   @@index([shopId, bookingLinkId])
 }
@@ -915,8 +920,8 @@ model AppointmentRequestLink {
   tokenHash               String                          @unique
   customerId              String
   vehicleId               String
-  opportunityId           String?
-  smartMaintenanceBlockId String?
+  opportunityId           String
+  smartMaintenanceBlockId String
   status                  AppointmentRequestLinkStatus    @default(ACTIVE)
   expiresAt               DateTime
   revokedAt               DateTime?
@@ -928,10 +933,10 @@ model AppointmentRequestLink {
   createdAt               DateTime                        @default(now())
   updatedAt               DateTime                        @updatedAt
   shop                    Shop                            @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  customer                Customer                        @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  vehicle                 Vehicle                         @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
-  opportunity             MaintenanceRevenueOpportunity?  @relation(fields: [opportunityId, shopId], references: [id, shopId], onDelete: NoAction)
-  smartMaintenanceBlock   SmartMaintenanceBlock?          @relation(fields: [smartMaintenanceBlockId, shopId], references: [id, shopId], onDelete: NoAction)
+  customer                Customer                        @relation(fields: [customerId, shopId], references: [id, shopId], onDelete: Cascade)
+  vehicle                 Vehicle                         @relation(fields: [vehicleId, shopId, customerId], references: [id, shopId, customerId], onDelete: Cascade)
+  opportunity             MaintenanceRevenueOpportunity   @relation(fields: [opportunityId, shopId, customerId, vehicleId], references: [id, shopId, customerId, vehicleId], onDelete: NoAction)
+  smartMaintenanceBlock   SmartMaintenanceBlock           @relation(fields: [smartMaintenanceBlockId, shopId], references: [id, shopId], onDelete: NoAction)
   regeneratedFrom         AppointmentRequestLink?         @relation("AppointmentRequestLinkRegeneration", fields: [regeneratedFromId], references: [id], onDelete: SetNull)
   regeneratedLinks        AppointmentRequestLink[]        @relation("AppointmentRequestLinkRegeneration")
   createdBy               User?                           @relation("AppointmentRequestLinkCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
@@ -939,6 +944,8 @@ model AppointmentRequestLink {
   requests                AppointmentRequest[]
 
   @@unique([id, shopId])
+  @@unique([id, shopId, customerId, vehicleId])
+  @@unique([id, shopId, smartMaintenanceBlockId])
   @@index([shopId, customerId])
   @@index([shopId, vehicleId])
   @@index([shopId, opportunityId])
@@ -946,20 +953,23 @@ model AppointmentRequestLink {
 }
 
 model AppointmentRequestLinkService {
-  id                  String                 @id @default(cuid())
-  shopId              String
-  requestLinkId       String
-  serviceDefinitionId String
-  serviceNameSnapshot String
-  laborMinutes        Int
-  priceCents          Int
-  createdAt           DateTime               @default(now())
-  requestLink         AppointmentRequestLink @relation(fields: [requestLinkId, shopId], references: [id, shopId], onDelete: Cascade)
-  shop                Shop                   @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  serviceDefinition   ServiceDefinition      @relation(fields: [serviceDefinitionId, shopId], references: [id, shopId], onDelete: Restrict)
+  id                      String                       @id @default(cuid())
+  shopId                  String
+  requestLinkId           String
+  smartMaintenanceBlockId String
+  serviceDefinitionId     String
+  serviceNameSnapshot     String
+  laborMinutes            Int
+  priceCents              Int
+  createdAt               DateTime                     @default(now())
+  requestLink             AppointmentRequestLink       @relation(fields: [requestLinkId, shopId, smartMaintenanceBlockId], references: [id, shopId, smartMaintenanceBlockId], onDelete: Cascade)
+  shop                    Shop                         @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  serviceDefinition       ServiceDefinition            @relation(fields: [serviceDefinitionId, shopId], references: [id, shopId], onDelete: Restrict)
+  blockService            SmartMaintenanceBlockService @relation(fields: [smartMaintenanceBlockId, shopId, serviceDefinitionId], references: [blockId, shopId, serviceDefinitionId], onDelete: Restrict)
 
   @@unique([requestLinkId, serviceDefinitionId])
   @@index([shopId, requestLinkId])
+  @@index([shopId, smartMaintenanceBlockId])
   @@index([shopId, serviceDefinitionId])
 }
 
@@ -968,9 +978,9 @@ model AppointmentRequest {
   shopId                  String
   customerId              String
   vehicleId               String
-  opportunityId           String?
-  smartMaintenanceBlockId String?
-  requestLinkId           String?
+  opportunityId           String
+  smartMaintenanceBlockId String
+  requestLinkId           String
   requestedStart          DateTime
   requestedEnd            DateTime
   shopTimezone            String
@@ -990,17 +1000,17 @@ model AppointmentRequest {
   createdAt               DateTime                       @default(now())
   updatedAt               DateTime                       @updatedAt
   shop                    Shop                           @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  customer                Customer                       @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  vehicle                 Vehicle                        @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
-  opportunity             MaintenanceRevenueOpportunity? @relation(fields: [opportunityId, shopId], references: [id, shopId], onDelete: NoAction)
-  smartMaintenanceBlock   SmartMaintenanceBlock?         @relation(fields: [smartMaintenanceBlockId, shopId], references: [id, shopId], onDelete: NoAction)
-  requestLink             AppointmentRequestLink?        @relation(fields: [requestLinkId, shopId], references: [id, shopId], onDelete: NoAction)
-  finalAppointment        Appointment?                   @relation("AppointmentRequestFinalAppointment", fields: [finalAppointmentId, shopId], references: [id, shopId], onDelete: NoAction)
+  customer                Customer                       @relation(fields: [customerId, shopId], references: [id, shopId], onDelete: Cascade)
+  vehicle                 Vehicle                        @relation(fields: [vehicleId, shopId, customerId], references: [id, shopId, customerId], onDelete: Cascade)
+  opportunity             MaintenanceRevenueOpportunity  @relation(fields: [opportunityId, shopId, customerId, vehicleId], references: [id, shopId, customerId, vehicleId], onDelete: NoAction)
+  smartMaintenanceBlock   SmartMaintenanceBlock          @relation(fields: [smartMaintenanceBlockId, shopId], references: [id, shopId], onDelete: NoAction)
+  requestLink             AppointmentRequestLink         @relation(fields: [requestLinkId, shopId, customerId, vehicleId], references: [id, shopId, customerId, vehicleId], onDelete: NoAction)
+  finalAppointment        Appointment?                   @relation("AppointmentRequestFinalAppointment", fields: [finalAppointmentId, shopId, customerId, vehicleId], references: [id, shopId, customerId, vehicleId], onDelete: NoAction)
   decidedBy               User?                          @relation("AppointmentRequestDecidedBy", fields: [decidedByUserId], references: [id], onDelete: SetNull)
   services                AppointmentRequestService[]
 
-  @@unique([shopId, idempotencyKey])
   @@unique([id, shopId])
+  @@unique([id, shopId, smartMaintenanceBlockId])
   @@index([shopId, status, requestedStart])
   @@index([shopId, customerId])
   @@index([shopId, vehicleId])
@@ -1010,20 +1020,23 @@ model AppointmentRequest {
 }
 
 model AppointmentRequestService {
-  id                   String             @id @default(cuid())
-  shopId               String
-  appointmentRequestId String
-  serviceDefinitionId  String
-  serviceNameSnapshot  String
-  laborMinutes         Int
-  priceCents           Int
-  createdAt            DateTime           @default(now())
-  appointmentRequest   AppointmentRequest @relation(fields: [appointmentRequestId, shopId], references: [id, shopId], onDelete: Cascade)
-  shop                 Shop               @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  serviceDefinition    ServiceDefinition  @relation(fields: [serviceDefinitionId, shopId], references: [id, shopId], onDelete: Restrict)
+  id                      String                       @id @default(cuid())
+  shopId                  String
+  appointmentRequestId    String
+  smartMaintenanceBlockId String
+  serviceDefinitionId     String
+  serviceNameSnapshot     String
+  laborMinutes            Int
+  priceCents              Int
+  createdAt               DateTime                     @default(now())
+  appointmentRequest      AppointmentRequest           @relation(fields: [appointmentRequestId, shopId, smartMaintenanceBlockId], references: [id, shopId, smartMaintenanceBlockId], onDelete: Cascade)
+  shop                    Shop                         @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  serviceDefinition       ServiceDefinition            @relation(fields: [serviceDefinitionId, shopId], references: [id, shopId], onDelete: Restrict)
+  blockService            SmartMaintenanceBlockService @relation(fields: [smartMaintenanceBlockId, shopId, serviceDefinitionId], references: [blockId, shopId, serviceDefinitionId], onDelete: Restrict)
 
   @@unique([appointmentRequestId, serviceDefinitionId])
   @@index([shopId, appointmentRequestId])
+  @@index([shopId, smartMaintenanceBlockId])
   @@index([shopId, serviceDefinitionId])
 }
 
@@ -1036,8 +1049,11 @@ model SmartMaintenanceBlockService {
   shop                Shop                  @relation(fields: [shopId], references: [id], onDelete: Cascade)
   block               SmartMaintenanceBlock @relation(fields: [blockId], references: [id], onDelete: Cascade)
   serviceDefinition   ServiceDefinition     @relation(fields: [serviceDefinitionId], references: [id], onDelete: Cascade)
+  requestLinkServices AppointmentRequestLinkService[]
+  requestServices     AppointmentRequestService[]
 
   @@unique([blockId, serviceDefinitionId])
+  @@unique([blockId, shopId, serviceDefinitionId])
   @@index([shopId, blockId])
   @@index([shopId, serviceDefinitionId])
 }
