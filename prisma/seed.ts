@@ -243,6 +243,8 @@ async function main() {
           serviceRecords,
           outreachRecords,
           appointments,
+          appointmentRequestLinks: [],
+          appointmentRequests: [],
           declinedWorkRecords,
           bookingSettings: defaultBookingSettings,
           bookingWindows: defaultBookingWindows,

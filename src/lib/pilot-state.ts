@@ -2425,6 +2425,8 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
         notes: appointment.notes ?? "",
       };
     }),
+    appointmentRequestLinks: [],
+    appointmentRequests: [],
     bookingSettings,
     bookingWindows,
     bookingBlackouts,
