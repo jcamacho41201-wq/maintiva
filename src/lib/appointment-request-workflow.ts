@@ -32,7 +32,7 @@ import type {
   SmartMaintenanceBlock,
   SmartMaintenanceBlockBlackout,
 } from "@/lib/demo-data";
-import { SafeActionError } from "@/lib/server-diagnostics";
+import { safeDatabaseError, SafeActionError } from "@/lib/server-diagnostics";
 
 const activeRequestStatuses = ["PENDING", "APPROVED", "ALTERNATE_PROPOSED", "CUSTOMER_ACCEPTED_ALTERNATE"] as const;
 const noEligibleBlockMessage = "No Smart Maintenance Block currently supports this service.";
@@ -157,6 +157,12 @@ function addDateDays(date: string, days: number) {
   const [year, month, day] = date.split("-").map(Number);
   const value = new Date(Date.UTC(year, month - 1, day + days));
   return value.toISOString().slice(0, 10);
+}
+
+function safeId(value: string | null | undefined) {
+  if (!value) return undefined;
+  if (value.length <= 14) return value;
+  return `${value.slice(0, 8)}...${value.slice(-4)}`;
 }
 
 function dateWindow(now: Date, horizonDays: number, timezone: string) {
@@ -561,6 +567,34 @@ export async function createPilotAppointmentRequestLink(context: AuthenticatedSh
   const token = createAppointmentRequestToken();
   const tokenHash = hashAppointmentRequestToken(token);
   const rawUrl = appointmentRequestUrl(input.appUrl, token);
+  const persistenceScope = {
+    branch: "createPilotAppointmentRequestLink",
+    operation: "AppointmentRequestLink.create",
+    transactionRolledBackOnFailure: true,
+    linkPayload: {
+      shopId: safeId(context.shopId),
+      customerId: safeId(input.customerId),
+      vehicleId: safeId(input.vehicleId),
+      opportunityId: safeId(input.opportunityId),
+      smartMaintenanceBlockId: safeId(slot.blockId),
+      status: "ACTIVE",
+      expiresAt: expiresAt.toISOString(),
+      regeneratedFromPreviousActiveLink: undefined as boolean | undefined,
+      createdByUserId: safeId(context.userId),
+      tokenHashFormat: {
+        length: tokenHash.length,
+        lowercaseHexSha256: /^[a-f0-9]{64}$/.test(tokenHash),
+      },
+    },
+    serviceScope: target.services.map((service) => ({
+      shopId: safeId(context.shopId),
+      smartMaintenanceBlockId: safeId(slot.blockId),
+      serviceDefinitionId: safeId(service.serviceDefinitionId),
+      serviceNameSnapshotPresent: service.serviceNameSnapshot.trim().length > 0,
+      laborMinutes: service.laborMinutes,
+      priceCents: service.priceCents,
+    })),
+  };
 
   const created = await prisma.$transaction(async (tx) => {
     const previous = await tx.appointmentRequestLink.findFirst({
@@ -574,6 +608,7 @@ export async function createPilotAppointmentRequestLink(context: AuthenticatedSh
       orderBy: { createdAt: "desc" },
       select: { id: true },
     });
+    persistenceScope.linkPayload.regeneratedFromPreviousActiveLink = Boolean(previous);
     await tx.appointmentRequestLink.updateMany({
       where: {
         shopId: context.shopId,
@@ -608,6 +643,18 @@ export async function createPilotAppointmentRequestLink(context: AuthenticatedSh
       },
       select: { id: true, expiresAt: true },
     });
+  }).catch((error) => {
+    console.error("Maintiva appointment request link persistence failed", {
+      auth: {
+        userId: safeId(context.userId),
+        shopId: safeId(context.shopId),
+        membershipActive: true,
+        role: context.role,
+      },
+      persistence: persistenceScope,
+      database: safeDatabaseError(error),
+    });
+    throw error;
   });
 
   return {

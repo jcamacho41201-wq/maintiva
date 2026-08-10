@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { clientMutationError, safeDatabaseError } from "@/lib/server-diagnostics";
 
 function source(file: string) {
   return fs.readFileSync(path.join(process.cwd(), file), "utf8");
@@ -102,5 +103,58 @@ describe("appointment request link creation", () => {
     expect(createLink).not.toContain("appointment.create");
     expect(createLink).not.toContain("maintenanceRevenueOpportunity.update");
     expect(createLink).not.toContain("outreachRecord.create");
+  });
+
+  it("logs the sanitized link persistence scope without raw tokens or customer text", () => {
+    const workflow = source("src/lib/appointment-request-workflow.ts");
+
+    expect(workflow).toContain("Maintiva appointment request link persistence failed");
+    expect(workflow).toContain('operation: "AppointmentRequestLink.create"');
+    expect(workflow).toContain("transactionRolledBackOnFailure: true");
+    expect(workflow).toContain("tokenHashFormat");
+    expect(workflow).toContain("lowercaseHexSha256");
+    expect(workflow).toContain("serviceNameSnapshotPresent");
+    expect(workflow).not.toContain("token: token");
+    expect(workflow).not.toContain("tokenHash, token");
+  });
+
+  it("maps appointment request persistence failures to specific safe client errors", () => {
+    expect(clientMutationError(
+      {
+        code: "P2003",
+        message: "Foreign key constraint violated",
+        meta: {
+          modelName: "AppointmentRequestLinkService",
+          field_name: "AppointmentRequestLinkService_block_service_fkey",
+        },
+      },
+      { action: "createAppointmentRequestLink", table: "AppointmentRequestLink", operation: "INSERT" },
+    )).toMatchObject({
+      code: "APPOINTMENT_REQUEST_SCOPE_MISMATCH",
+      message: "Appointment request links are temporarily unavailable for this opportunity.",
+    });
+
+    expect(clientMutationError(
+      { code: "23514", message: "check constraint failed" },
+      { action: "createAppointmentRequestLink", table: "AppointmentRequestLink", operation: "INSERT" },
+    )).toMatchObject({
+      code: "APPOINTMENT_REQUEST_INVALID_LINK_PAYLOAD",
+      message: "Appointment request links are temporarily unavailable.",
+    });
+  });
+
+  it("preserves safe Prisma metadata for server-side diagnostics", () => {
+    expect(safeDatabaseError({
+      code: "P2003",
+      message: "Foreign key constraint violated",
+      meta: {
+        modelName: "AppointmentRequestLinkService",
+        field_name: "AppointmentRequestLinkService_block_service_fkey",
+      },
+    })).toMatchObject({
+      code: "P2003",
+      modelName: "AppointmentRequestLinkService",
+      fieldName: "AppointmentRequestLinkService_block_service_fkey",
+    });
   });
 });
