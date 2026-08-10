@@ -53,7 +53,7 @@ function blankForm(shopTimezone: string, serviceDefinitionIds: string[] = []): F
   };
 }
 
-function formFromBlock(block: SmartMaintenanceBlock): FormState {
+function formFromBlock(block: SmartMaintenanceBlock, activeServiceIds?: Set<string>): FormState {
   return {
     id: block.id,
     name: block.name,
@@ -62,7 +62,9 @@ function formFromBlock(block: SmartMaintenanceBlock): FormState {
     daysOfWeek: block.daysOfWeek,
     startTime: minutesToTime(block.startMinute),
     endTime: minutesToTime(block.endMinute),
-    serviceDefinitionIds: block.serviceDefinitionIds,
+    serviceDefinitionIds: activeServiceIds
+      ? block.serviceDefinitionIds.filter((id) => activeServiceIds.has(id))
+      : block.serviceDefinitionIds,
     maxVehicles: String(block.maxVehicles),
     maxLaborMinutes: String(block.maxLaborMinutes),
     minimumNoticeHours: String(Math.round(block.minimumNoticeMinutes / 60)),
@@ -97,15 +99,22 @@ function formToInput(form: FormState, timezone: string): SmartMaintenanceBlockIn
   };
 }
 
-export default function SmartMaintenanceBlocksPage() {
-  const store = useDemoStore();
-  const { state, ready } = store;
-  const enabled = isSmartMaintenanceBlocksEnabled();
-  const currentUser = state.users.find((user) => user.id === state.currentUserId);
-  const canManageSettings = canManageShopSettings(currentUser?.role);
+type SmartBlocksStore = ReturnType<typeof useDemoStore>;
+
+function SmartMaintenanceBlocksEditor({
+  store,
+  state,
+}: {
+  store: SmartBlocksStore;
+  state: SmartBlocksStore["state"];
+}) {
   const activeServices = useMemo(
     () => state.services.filter((service) => service.isActive),
     [state.services],
+  );
+  const activeServiceIdSet = useMemo(
+    () => new Set(activeServices.map((service) => service.id)),
+    [activeServices],
   );
   const activeBlocks = useMemo(
     () => state.smartMaintenanceBlocks.filter((block) => !block.archivedAt),
@@ -121,7 +130,7 @@ export default function SmartMaintenanceBlocksPage() {
   );
   const [form, setForm] = useState<FormState>(() => {
     const firstBlock = state.smartMaintenanceBlocks.find((block) => !block.archivedAt);
-    return firstBlock ? formFromBlock(firstBlock) : blankForm(state.shop.timezone, firstServiceIds);
+    return firstBlock ? formFromBlock(firstBlock, activeServiceIdSet) : blankForm(state.shop.timezone, firstServiceIds);
   });
   const [selectedBlockId, setSelectedBlockId] = useState(form.id ?? "");
   const [message, setMessage] = useState("");
@@ -199,7 +208,7 @@ export default function SmartMaintenanceBlocksPage() {
 
   function editBlock(block: SmartMaintenanceBlock) {
     setSelectedBlockId(block.id);
-    setForm(formFromBlock(block));
+    setForm(formFromBlock(block, activeServiceIdSet));
     setBlackout((current) => ({ ...current, blockId: block.id }));
     setMessage("");
   }
@@ -231,9 +240,13 @@ export default function SmartMaintenanceBlocksPage() {
 
   async function saveBlock() {
     setSaving(true);
-    const result = await store.saveSmartMaintenanceBlock(formToInput(form, state.shop.timezone));
+    const activeForm = {
+      ...form,
+      serviceDefinitionIds: form.serviceDefinitionIds.filter((id) => activeServiceIdSet.has(id)),
+    };
+    const result = await store.saveSmartMaintenanceBlock(formToInput(activeForm, state.shop.timezone));
     setSaving(false);
-    setMessage(result.ok ? "Smart maintenance block saved." : result.message ?? "Unable to save block.");
+    setMessage(result.ok ? "Smart maintenance block saved." : result.message ?? "Unable to save maintenance block.");
   }
 
   async function saveBlackout() {
@@ -258,49 +271,6 @@ export default function SmartMaintenanceBlocksPage() {
       isFullDay: blackout.isFullDay,
     });
     setMessage(result.ok ? "Blackout saved." : result.message ?? "Unable to save blackout.");
-  }
-
-  if (!enabled) {
-    return (
-      <div className="space-y-6">
-        <div>
-          <h1 className="text-3xl font-semibold tracking-tight">Smart Maintenance Blocks</h1>
-          <p className="mt-2 max-w-3xl text-sm text-zinc-600">Controlled Capacity is disabled for this environment.</p>
-        </div>
-        <Card>
-          <CardContent>
-            <p className="text-sm font-semibold">This internal settings feature is currently unavailable.</p>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
-  if (!ready) {
-    return (
-      <div className="space-y-6">
-        <div>
-          <h1 className="text-3xl font-semibold tracking-tight">Smart Maintenance Blocks</h1>
-          <p className="mt-2 max-w-3xl text-sm text-zinc-600">Loading authenticated shop settings.</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (!canManageSettings) {
-    return (
-      <div className="space-y-6">
-        <div>
-          <h1 className="text-3xl font-semibold tracking-tight">Smart Maintenance Blocks</h1>
-          <p className="mt-2 max-w-3xl text-sm text-zinc-600">Only owners and managers can manage recurring request windows.</p>
-        </div>
-        <Card>
-          <CardContent>
-            <p className="text-sm font-semibold">You do not have permission to manage shop settings.</p>
-          </CardContent>
-        </Card>
-      </div>
-    );
   }
 
   return (
@@ -552,4 +522,57 @@ export default function SmartMaintenanceBlocksPage() {
       </section>
     </div>
   );
+}
+
+export default function SmartMaintenanceBlocksPage() {
+  const store = useDemoStore();
+  const { state, ready } = store;
+  const enabled = isSmartMaintenanceBlocksEnabled();
+  const currentUser = state.users.find((user) => user.id === state.currentUserId);
+  const canManageSettings = canManageShopSettings(currentUser?.role);
+
+  if (!enabled) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-3xl font-semibold tracking-tight">Smart Maintenance Blocks</h1>
+          <p className="mt-2 max-w-3xl text-sm text-zinc-600">Controlled Capacity is disabled for this environment.</p>
+        </div>
+        <Card>
+          <CardContent>
+            <p className="text-sm font-semibold">This internal settings feature is currently unavailable.</p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  if (!ready) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-3xl font-semibold tracking-tight">Smart Maintenance Blocks</h1>
+          <p className="mt-2 max-w-3xl text-sm text-zinc-600">Loading authenticated shop settings.</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!canManageSettings) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-3xl font-semibold tracking-tight">Smart Maintenance Blocks</h1>
+          <p className="mt-2 max-w-3xl text-sm text-zinc-600">Only owners and managers can manage recurring request windows.</p>
+        </div>
+        <Card>
+          <CardContent>
+            <p className="text-sm font-semibold">You do not have permission to manage shop settings.</p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  return <SmartMaintenanceBlocksEditor key={state.shop.id} store={store} state={state} />;
 }

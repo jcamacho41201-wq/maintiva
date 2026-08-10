@@ -619,7 +619,7 @@ export async function createPilotAppointmentRequestLink(context: AuthenticatedSh
       },
       data: { status: "REVOKED", revokedAt: now },
     });
-    return tx.appointmentRequestLink.create({
+    const link = await tx.appointmentRequestLink.create({
       data: {
         shopId: context.shopId,
         tokenHash,
@@ -630,19 +630,21 @@ export async function createPilotAppointmentRequestLink(context: AuthenticatedSh
         expiresAt,
         regeneratedFromId: previous?.id,
         createdByUserId: context.userId,
-        services: {
-          create: target.services.map((service) => ({
-            shopId: context.shopId,
-            smartMaintenanceBlockId: slot.blockId,
-            serviceDefinitionId: service.serviceDefinitionId,
-            serviceNameSnapshot: service.serviceNameSnapshot,
-            laborMinutes: service.laborMinutes,
-            priceCents: service.priceCents,
-          })),
-        },
       },
       select: { id: true, expiresAt: true },
     });
+    await tx.appointmentRequestLinkService.createMany({
+      data: target.services.map((service) => ({
+        shopId: context.shopId,
+        requestLinkId: link.id,
+        smartMaintenanceBlockId: slot.blockId,
+        serviceDefinitionId: service.serviceDefinitionId,
+        serviceNameSnapshot: service.serviceNameSnapshot,
+        laborMinutes: service.laborMinutes,
+        priceCents: service.priceCents,
+      })),
+    });
+    return link;
   }).catch((error) => {
     console.error("Maintiva appointment request link persistence failed", {
       auth: {
@@ -839,7 +841,7 @@ export async function submitPublicAppointmentRequest(token: string, input: unkno
     const totalLaborMinutes = link.services.reduce((sum, service) => sum + service.laborMinutes, 0);
     const estimatedRevenueCents = link.services.reduce((sum, service) => sum + service.priceCents, 0);
 
-    await tx.appointmentRequest.create({
+    const request = await tx.appointmentRequest.create({
       data: {
         shopId: link.shopId,
         customerId: link.customerId,
@@ -855,17 +857,19 @@ export async function submitPublicAppointmentRequest(token: string, input: unkno
         status: "PENDING",
         expiresAt: link.expiresAt,
         idempotencyKey,
-        services: {
-          create: link.services.map((service) => ({
-            shopId: link.shopId,
-            smartMaintenanceBlockId: link.smartMaintenanceBlockId,
-            serviceDefinitionId: service.serviceDefinitionId,
-            serviceNameSnapshot: service.serviceNameSnapshot,
-            laborMinutes: service.laborMinutes,
-            priceCents: service.priceCents,
-          })),
-        },
       },
+      select: { id: true },
+    });
+    await tx.appointmentRequestService.createMany({
+      data: link.services.map((service) => ({
+        shopId: link.shopId,
+        appointmentRequestId: request.id,
+        smartMaintenanceBlockId: link.smartMaintenanceBlockId,
+        serviceDefinitionId: service.serviceDefinitionId,
+        serviceNameSnapshot: service.serviceNameSnapshot,
+        laborMinutes: service.laborMinutes,
+        priceCents: service.priceCents,
+      })),
     });
     await tx.appointmentRequestLink.update({
       where: { id: link.id },
@@ -939,17 +943,20 @@ export async function acceptPilotMaintenanceAppointmentRequest(context: Authenti
         opportunityId: request.opportunityId,
         approvedAt: now,
         notes: "Confirmed from Maintiva appointment request.",
-        services: {
-          create: request.services.map((service) => ({
-            shopId: context.shopId,
-            serviceDefinitionId: service.serviceDefinitionId,
-            serviceName: service.serviceNameSnapshot,
-            laborMinutes: service.laborMinutes,
-            priceCents: service.priceCents,
-          })),
-        },
       },
     });
+    if (!existingAppointment) {
+      await tx.appointmentService.createMany({
+        data: request.services.map((service) => ({
+          shopId: context.shopId,
+          appointmentId: appointment.id,
+          serviceDefinitionId: service.serviceDefinitionId,
+          serviceName: service.serviceNameSnapshot,
+          laborMinutes: service.laborMinutes,
+          priceCents: service.priceCents,
+        })),
+      });
+    }
     await tx.appointmentRequest.update({
       where: { id: request.id },
       data: {

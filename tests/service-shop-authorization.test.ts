@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 const prismaMock = vi.hoisted(() => ({
   $executeRaw: vi.fn(),
@@ -281,6 +282,29 @@ describe("service shop authorization", () => {
 
     expect(safeDatabaseError(error)).toMatchObject({ code: "P2010" });
     expect(isMissingAdaptiveMileageSchema(error)).toBe(true);
+  });
+
+  it("normalizes validation, Prisma, Error, and unknown thrown values safely", () => {
+    const validationError = z.object({ name: z.string().min(1) }).safeParse({ name: "" }).error;
+    const prismaError = {
+      code: "P2003",
+      message: "Foreign key constraint violated.",
+      meta: {
+        modelName: "AppointmentRequestLinkService",
+        field_name: "AppointmentRequestLinkService_block_service_fkey",
+      },
+    };
+
+    expect(() => safeDatabaseError(validationError)).not.toThrow();
+    expect(() => safeDatabaseError(prismaError)).not.toThrow();
+    expect(() => safeDatabaseError(new Error("Plain failure"))).not.toThrow();
+    expect(() => safeDatabaseError("string failure")).not.toThrow();
+    expect(() => safeDatabaseError(undefined)).not.toThrow();
+    expect(safeDatabaseError(prismaError)).toMatchObject({
+      code: "P2003",
+      modelName: "AppointmentRequestLinkService",
+      fieldName: "AppointmentRequestLinkService_block_service_fkey",
+    });
   });
 
   it("keeps safe action errors out of successful UI paths", () => {

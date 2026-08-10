@@ -98,11 +98,31 @@ describe("appointment request link creation", () => {
     const createLink = workflow.slice(start, end);
 
     expect(createLink).toContain("appointmentRequestLink.create");
-    expect(createLink).toContain("services: {");
+    expect(createLink).toContain("appointmentRequestLinkService.createMany");
     expect(createLink).not.toContain("appointmentRequest.create");
     expect(createLink).not.toContain("appointment.create");
     expect(createLink).not.toContain("maintenanceRevenueOpportunity.update");
     expect(createLink).not.toContain("outreachRecord.create");
+  });
+
+  it("uses unchecked createMany rows instead of nested relation creates for request workflow persistence", () => {
+    const workflow = source("src/lib/appointment-request-workflow.ts");
+    const createStart = workflow.indexOf("export async function createPilotAppointmentRequestLink");
+    const createEnd = workflow.indexOf("export async function revokePilotAppointmentRequestLink", createStart);
+    const createLink = workflow.slice(createStart, createEnd);
+    const submitStart = workflow.indexOf("export async function submitPublicAppointmentRequest");
+    const submitEnd = workflow.indexOf("export async function acceptPilotMaintenanceAppointmentRequest", submitStart);
+    const submitRequest = workflow.slice(submitStart, submitEnd);
+    const acceptStart = workflow.indexOf("export async function acceptPilotMaintenanceAppointmentRequest");
+    const acceptEnd = workflow.indexOf("export async function declinePilotMaintenanceAppointmentRequest", acceptStart);
+    const acceptRequest = workflow.slice(acceptStart, acceptEnd);
+
+    expect(createLink).toContain("appointmentRequestLinkService.createMany");
+    expect(createLink).not.toMatch(/services:\s*\{\s*create:/);
+    expect(submitRequest).toContain("appointmentRequestService.createMany");
+    expect(submitRequest).not.toMatch(/services:\s*\{\s*create:/);
+    expect(acceptRequest).toContain("appointmentService.createMany");
+    expect(acceptRequest).not.toMatch(/services:\s*\{\s*create:/);
   });
 
   it("logs the sanitized link persistence scope without raw tokens or customer text", () => {

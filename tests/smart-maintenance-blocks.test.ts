@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type {
   Appointment,
   MaintenanceService,
@@ -9,6 +11,8 @@ import {
   blockEligibleServices,
   calculateSmartMaintenanceBlockAvailability,
 } from "@/lib/smart-maintenance-blocks";
+
+const smartBlocksPageSource = readFileSync(join(process.cwd(), "src/app/settings/smart-maintenance-blocks/page.tsx"), "utf8");
 
 const services: Pick<MaintenanceService, "id" | "shopId" | "isActive" | "estimatedLaborMinutes">[] = [
   { id: "svc-oil", shopId: "shop-a", isActive: true, estimatedLaborMinutes: 45 },
@@ -274,5 +278,14 @@ describe("smart maintenance blocks", () => {
       remainingLaborMinutes: 480,
     });
     expect(slots.some((slot) => slot.dateLabel.includes("Tue"))).toBe(true);
+  });
+
+  it("hydrates the settings form from authenticated state before saving", () => {
+    expect(smartBlocksPageSource).toContain("function SmartMaintenanceBlocksEditor");
+    expect(smartBlocksPageSource).toContain("if (!ready)");
+    expect(smartBlocksPageSource).toContain("<SmartMaintenanceBlocksEditor key={state.shop.id}");
+    expect(smartBlocksPageSource).toContain("formFromBlock(firstBlock, activeServiceIdSet)");
+    expect(smartBlocksPageSource).toContain("serviceDefinitionIds: form.serviceDefinitionIds.filter((id) => activeServiceIdSet.has(id))");
+    expect(smartBlocksPageSource).toContain("Unable to save maintenance block.");
   });
 });
