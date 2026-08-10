@@ -49,7 +49,11 @@ describe("appointment request link creation", () => {
 
     expect(workflow).toContain("maintenanceRecord: {");
     expect(workflow).toContain("serviceDefinition: true");
+    expect(workflow).toContain("declinedWorkRecord: true");
+    expect(workflow).toContain("normalizedServiceName(declinedWorkRecord.serviceName)");
     expect(workflow).toContain("serviceDefinitionId: serviceDefinition.id");
+    expect(workflow).toContain("serviceLaborMinutesById");
+    expect(workflow).toContain("[service.serviceDefinitionId, service.laborMinutes]");
     expect(workflow).toContain("block.services.map((service) => service.serviceDefinitionId)");
     expect(workflow).toContain("serviceDefinitionIds.every((serviceDefinitionId) => blockServiceIds.has(serviceDefinitionId))");
     expect(workflow).not.toContain("serviceName ===");
@@ -57,13 +61,33 @@ describe("appointment request link creation", () => {
     expect(workflow).not.toContain("serviceDefinitionId: opportunity.id");
   });
 
+  it("does not collapse declined-work target resolution into a fake capacity error", () => {
+    const workflow = source("src/lib/appointment-request-workflow.ts");
+
+    expect(workflow).toContain("No active service definition matches this opportunity.");
+    expect(workflow).toContain("declinedWorkRecord?.laborMinutes");
+    expect(workflow).toContain("declinedWorkRecord?.recommendedPriceCents");
+    expect(workflow).toContain("declinedWorkRecord?.serviceName");
+  });
+
   it("distinguishes no eligible block from no future availability", () => {
     const workflow = source("src/lib/appointment-request-workflow.ts");
 
     expect(workflow).toContain('code: "APPOINTMENT_REQUEST_NO_ELIGIBLE_BLOCK"');
     expect(workflow).toContain("No Smart Maintenance Block currently supports this service.");
+    expect(workflow).toContain('code: "APPOINTMENT_REQUEST_NO_SERVICE_DURATION"');
+    expect(workflow).toContain("This service needs a labor duration before appointment times can be offered.");
     expect(workflow).toContain('code: "APPOINTMENT_REQUEST_NO_CAPACITY"');
     expect(workflow).toContain("No request times are currently available for this service.");
+  });
+
+  it("uses shop-local date windows like the Smart Maintenance Block preview", () => {
+    const workflow = source("src/lib/appointment-request-workflow.ts");
+    const previewPage = source("src/app/settings/smart-maintenance-blocks/page.tsx");
+
+    expect(previewPage).toContain("currentDateInTimeZone(state.shop.timezone)");
+    expect(workflow).toContain("currentDateInTimeZone(timezone, now)");
+    expect(workflow).toContain("dateWindow(input.now, maxHorizon, data.shop.timezone)");
   });
 
   it("keeps link creation side-effect-free for requests, appointments, opportunities, and outreach", () => {

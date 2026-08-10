@@ -235,4 +235,44 @@ describe("smart maintenance blocks", () => {
     expect(fall[0].label).toBe("8:00 AM");
     expect(fall[0].startsAt).toBe("2026-11-01T13:00:00.000Z");
   });
+
+  it("offers future slots for the August 10 appointment request QA block", () => {
+    const qaServices: Pick<MaintenanceService, "id" | "shopId" | "isActive" | "estimatedLaborMinutes">[] = [
+      { id: "svc-oil", shopId: "shop-a", isActive: true, estimatedLaborMinutes: 30 },
+      { id: "svc-brakes", shopId: "shop-a", isActive: true, estimatedLaborMinutes: 90 },
+      { id: "svc-tires", shopId: "shop-a", isActive: true, estimatedLaborMinutes: 45 },
+    ];
+    const qaBlock: SmartMaintenanceBlock = {
+      ...block,
+      id: "qa-maintenance-block",
+      daysOfWeek: [1, 2, 3, 4, 5],
+      startMinute: 8 * 60,
+      endMinute: 12 * 60,
+      serviceDefinitionIds: qaServices.map((service) => service.id),
+      maxVehicles: 5,
+      maxLaborMinutes: 480,
+      minimumNoticeMinutes: 0,
+      maximumHorizonDays: 30,
+      slotIntervalMinutes: 30,
+    };
+
+    const slots = availability({
+      blocks: [qaBlock],
+      services: qaServices,
+      selectedServiceIds: ["svc-oil"],
+      dateFrom: "2026-08-10",
+      dateTo: "2026-09-09",
+      now: new Date("2026-08-10T16:00:00.000Z"),
+    });
+
+    expect(slots.length).toBeGreaterThan(0);
+    expect(slots[0]).toMatchObject({
+      blockId: "qa-maintenance-block",
+      label: "8:00 AM",
+      dateLabel: "Tue, Aug 11",
+      remainingVehicles: 5,
+      remainingLaborMinutes: 480,
+    });
+    expect(slots.some((slot) => slot.dateLabel.includes("Tue"))).toBe(true);
+  });
 });

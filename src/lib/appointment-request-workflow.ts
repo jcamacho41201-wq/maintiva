@@ -23,6 +23,7 @@ import {
   type SmartBlockCapacityCommitment,
   type SmartBlockAvailabilitySlot,
 } from "@/lib/smart-maintenance-blocks";
+import { currentDateInTimeZone } from "@/lib/utils";
 import type {
   Appointment,
   AppointmentRequestLinkRecord,
@@ -36,6 +37,7 @@ import { SafeActionError } from "@/lib/server-diagnostics";
 const activeRequestStatuses = ["PENDING", "APPROVED", "ALTERNATE_PROPOSED", "CUSTOMER_ACCEPTED_ALTERNATE"] as const;
 const noEligibleBlockMessage = "No Smart Maintenance Block currently supports this service.";
 const noCapacityMessage = "No request times are currently available for this service.";
+const noServiceDurationMessage = "This service needs a labor duration before appointment times can be offered.";
 const finalSlotTakenMessage = "That time was just requested. Please choose another available time.";
 const linkLifetimeDays = 7;
 const maxContextRequestsPerMinute = 60;
@@ -123,6 +125,10 @@ function publicVehicleLabel(vehicle: { year: number; make: string; model: string
   return `${vehicle.year} ${vehicle.make} ${vehicle.model}`;
 }
 
+function normalizedServiceName(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
 function displaySlot(startsAt: string, endsAt: string, timezone: string) {
   const start = new Date(startsAt);
   const end = new Date(endsAt);
@@ -147,12 +153,17 @@ function displaySlot(startsAt: string, endsAt: string, timezone: string) {
   };
 }
 
-function dateWindow(now: Date, horizonDays: number) {
-  const from = new Date(now);
-  const to = new Date(now.getTime() + Math.max(1, horizonDays) * 86_400_000);
+function addDateDays(date: string, days: number) {
+  const [year, month, day] = date.split("-").map(Number);
+  const value = new Date(Date.UTC(year, month - 1, day + days));
+  return value.toISOString().slice(0, 10);
+}
+
+function dateWindow(now: Date, horizonDays: number, timezone: string) {
+  const from = currentDateInTimeZone(timezone, now);
   return {
-    dateFrom: from.toISOString().slice(0, 10),
-    dateTo: to.toISOString().slice(0, 10),
+    dateFrom: from,
+    dateTo: addDateDays(from, Math.max(1, horizonDays)),
   };
 }
 
@@ -374,14 +385,19 @@ async function availableSlots(client: AppointmentRequestWorkflowClient, input: {
   now: Date;
   blockId?: string;
   excludeRequestId?: string;
+  serviceLaborMinutesById?: Record<string, number>;
 }) {
   const data = await loadAvailabilityInputs(client, input.shopId, input.now, input);
   const maxHorizon = Math.max(14, ...data.blocks.map((block) => block.maximumHorizonDays));
-  const window = dateWindow(input.now, maxHorizon);
+  const window = dateWindow(input.now, maxHorizon, data.shop.timezone);
+  const services = data.services.map((service) => ({
+    ...service,
+    estimatedLaborMinutes: input.serviceLaborMinutesById?.[service.id] ?? service.estimatedLaborMinutes,
+  }));
   return calculateSmartMaintenanceBlockAvailability({
     shop: { id: data.shop.id, timezone: data.shop.timezone },
     blocks: data.blocks,
-    services: data.services,
+    services,
     selectedServiceIds: input.serviceDefinitionIds,
     appointments: data.appointments,
     blackouts: data.blackouts,
@@ -430,6 +446,7 @@ async function loadOpportunityTarget(context: AuthenticatedShopContext, input: {
           serviceDefinition: true,
         },
       },
+      declinedWorkRecord: true,
       customer: true,
       vehicle: true,
     },
@@ -446,14 +463,29 @@ async function loadOpportunityTarget(context: AuthenticatedShopContext, input: {
   assertSameShop(context, opportunity.vehicle.shopId);
 
   const record = opportunity.maintenanceRecord;
-  const serviceDefinition = record?.serviceDefinition;
-  if (!record || !serviceDefinition || !record.serviceDefinitionId || !serviceDefinition.isActive) {
+  const declinedWorkRecord = opportunity.declinedWorkRecord;
+  if (declinedWorkRecord) {
+    assertSameShop(context, declinedWorkRecord.shopId);
+  }
+  let serviceDefinition = record?.serviceDefinition;
+  if (!serviceDefinition && declinedWorkRecord) {
+    const activeServices = await prisma.serviceDefinition.findMany({
+      where: { shopId: context.shopId, isActive: true },
+    });
+    const declinedServiceName = normalizedServiceName(declinedWorkRecord.serviceName);
+    serviceDefinition = activeServices.find((service) =>
+      normalizedServiceName(service.name) === declinedServiceName,
+    );
+  }
+  if (!serviceDefinition || !serviceDefinition.isActive) {
     throw new SafeActionError({
       code: "APPOINTMENT_REQUEST_SERVICE_UNAVAILABLE",
-      message: noCapacityMessage,
+      message: "No active service definition matches this opportunity.",
       status: 409,
     });
   }
+  const laborMinutes = record?.laborMinutes || declinedWorkRecord?.laborMinutes || opportunity.estimatedLaborMinutes || serviceDefinition.estimatedLaborMinutes;
+  const priceCents = record?.priceCents || declinedWorkRecord?.recommendedPriceCents || opportunity.estimatedRevenueCents || serviceDefinition.defaultPriceCents;
 
   return {
     opportunity,
@@ -461,9 +493,9 @@ async function loadOpportunityTarget(context: AuthenticatedShopContext, input: {
     vehicle: opportunity.vehicle,
     services: [{
       serviceDefinitionId: serviceDefinition.id,
-      serviceNameSnapshot: record.serviceName || serviceDefinition.name,
-      laborMinutes: record.laborMinutes || serviceDefinition.estimatedLaborMinutes,
-      priceCents: record.priceCents || serviceDefinition.defaultPriceCents,
+      serviceNameSnapshot: record?.serviceName || declinedWorkRecord?.serviceName || serviceDefinition.name,
+      laborMinutes,
+      priceCents,
     }],
   };
 }
@@ -478,6 +510,16 @@ export async function createPilotAppointmentRequestLink(context: AuthenticatedSh
   assertAppointmentRequestAdvisor(context);
   const target = await loadOpportunityTarget(context, input);
   const serviceDefinitionIds = target.services.map((service) => service.serviceDefinitionId);
+  const serviceLaborMinutesById = Object.fromEntries(
+    target.services.map((service) => [service.serviceDefinitionId, service.laborMinutes]),
+  );
+  if (target.services.some((service) => !Number.isFinite(service.laborMinutes) || service.laborMinutes <= 0)) {
+    throw new SafeActionError({
+      code: "APPOINTMENT_REQUEST_NO_SERVICE_DURATION",
+      message: noServiceDurationMessage,
+      status: 409,
+    });
+  }
   const now = new Date();
   const eligibleBlocks = await prisma.smartMaintenanceBlock.findMany({
     where: {
@@ -508,6 +550,7 @@ export async function createPilotAppointmentRequestLink(context: AuthenticatedSh
   const slots = await availableSlots(prisma, {
     shopId: context.shopId,
     serviceDefinitionIds,
+    serviceLaborMinutesById,
     now,
   });
   const slot = slots[0];
@@ -625,9 +668,13 @@ export async function publicAppointmentRequestState(token: string, request: Requ
   if (tokenState !== "valid") return { state: "unavailable", message: "Appointment request link is not available." };
 
   const serviceDefinitionIds = link.services.map((service) => service.serviceDefinitionId);
+  const serviceLaborMinutesById = Object.fromEntries(
+    link.services.map((service) => [service.serviceDefinitionId, service.laborMinutes]),
+  );
   const slots = await availableSlots(prisma, {
     shopId: link.shopId,
     serviceDefinitionIds,
+    serviceLaborMinutesById,
     blockId: link.smartMaintenanceBlockId,
     now,
   });
@@ -728,9 +775,13 @@ export async function submitPublicAppointmentRequest(token: string, input: unkno
     }
 
     const serviceDefinitionIds = link.services.map((service) => service.serviceDefinitionId);
+    const serviceLaborMinutesById = Object.fromEntries(
+      link.services.map((service) => [service.serviceDefinitionId, service.laborMinutes]),
+    );
     const slots = await availableSlots(tx, {
       shopId: link.shopId,
       serviceDefinitionIds,
+      serviceLaborMinutesById,
       blockId: link.smartMaintenanceBlockId,
       now,
     });
@@ -804,9 +855,13 @@ export async function acceptPilotMaintenanceAppointmentRequest(context: Authenti
       throw new SafeActionError({ code: "APPOINTMENT_REQUEST_NOT_PENDING", message: "This request is no longer pending.", status: 409 });
     }
     const serviceDefinitionIds = request.services.map((service) => service.serviceDefinitionId);
+    const serviceLaborMinutesById = Object.fromEntries(
+      request.services.map((service) => [service.serviceDefinitionId, service.laborMinutes]),
+    );
     const slots = await availableSlots(tx, {
       shopId: context.shopId,
       serviceDefinitionIds,
+      serviceLaborMinutesById,
       blockId: request.smartMaintenanceBlockId,
       excludeRequestId: request.id,
       now,
