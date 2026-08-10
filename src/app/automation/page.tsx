@@ -404,7 +404,7 @@ export default function AutomationPage() {
           onSave={store.recordOpportunityContact}
           onCreateAppointmentRequestLink={store.createAppointmentRequestLink}
           onRevokeAppointmentRequestLink={store.revokeAppointmentRequestLink}
-          appointmentRequestsEnabled
+          appointmentRequestsEnabled={state.appointmentRequestsEnabled}
           appointmentRequestLink={state.appointmentRequestLinks.find((link) =>
             link.status === "ACTIVE" &&
             link.customerId === activeGroup.customerId &&

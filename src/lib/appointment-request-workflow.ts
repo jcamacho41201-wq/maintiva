@@ -34,7 +34,8 @@ import type {
 import { SafeActionError } from "@/lib/server-diagnostics";
 
 const activeRequestStatuses = ["PENDING", "APPROVED", "ALTERNATE_PROPOSED", "CUSTOMER_ACCEPTED_ALTERNATE"] as const;
-const noCapacityMessage = "No maintenance request times are currently available for this service.";
+const noEligibleBlockMessage = "No Smart Maintenance Block currently supports this service.";
+const noCapacityMessage = "No request times are currently available for this service.";
 const finalSlotTakenMessage = "That time was just requested. Please choose another available time.";
 const linkLifetimeDays = 7;
 const maxContextRequestsPerMinute = 60;
@@ -478,6 +479,32 @@ export async function createPilotAppointmentRequestLink(context: AuthenticatedSh
   const target = await loadOpportunityTarget(context, input);
   const serviceDefinitionIds = target.services.map((service) => service.serviceDefinitionId);
   const now = new Date();
+  const eligibleBlocks = await prisma.smartMaintenanceBlock.findMany({
+    where: {
+      shopId: context.shopId,
+      isActive: true,
+      archivedAt: null,
+      services: {
+        some: {
+          serviceDefinitionId: {
+            in: serviceDefinitionIds,
+          },
+        },
+      },
+    },
+    include: { services: { select: { serviceDefinitionId: true } } },
+  });
+  const eligibleBlock = eligibleBlocks.find((block) => {
+    const blockServiceIds = new Set(block.services.map((service) => service.serviceDefinitionId));
+    return serviceDefinitionIds.every((serviceDefinitionId) => blockServiceIds.has(serviceDefinitionId));
+  });
+  if (!eligibleBlock) {
+    throw new SafeActionError({
+      code: "APPOINTMENT_REQUEST_NO_ELIGIBLE_BLOCK",
+      message: noEligibleBlockMessage,
+      status: 409,
+    });
+  }
   const slots = await availableSlots(prisma, {
     shopId: context.shopId,
     serviceDefinitionIds,

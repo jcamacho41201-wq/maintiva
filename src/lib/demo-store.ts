@@ -173,6 +173,7 @@ function normalizeState(state: DemoState): DemoState {
   return {
     ...baseline,
     ...state,
+    appointmentRequestsEnabled: state.appointmentRequestsEnabled ?? baseline.appointmentRequestsEnabled,
     revenueOpportunities: state.revenueOpportunities ?? [],
     currentUserId: state.currentUserId ?? state.users?.[0]?.id ?? baseline.currentUserId,
     services,

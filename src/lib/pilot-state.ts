@@ -39,7 +39,7 @@ import {
 import { resolveForecastAsOfDate } from "@/lib/forecast-dates";
 import { currentDateInTimeZone } from "@/lib/utils";
 import { safeDatabaseError, SafeActionError } from "@/lib/server-diagnostics";
-import { isCustomerBookingEnabled, isSmartMaintenanceBlocksEnabled } from "@/lib/feature-flags";
+import { isAppointmentRequestsEnabled, isCustomerBookingEnabled, isSmartMaintenanceBlocksEnabled } from "@/lib/feature-flags";
 import { canManageShopSettings } from "@/lib/permissions";
 import {
   MAINTIVA_IMPORT_ROW_LIMIT,
@@ -2435,6 +2435,7 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
     }),
     appointmentRequestLinks,
     appointmentRequests,
+    appointmentRequestsEnabled: isAppointmentRequestsEnabled(),
     bookingSettings,
     bookingWindows,
     bookingBlackouts,

@@ -1,0 +1,82 @@
+import fs from "node:fs";
+import path from "node:path";
+import { describe, expect, it } from "vitest";
+
+function source(file: string) {
+  return fs.readFileSync(path.join(process.cwd(), file), "utf8");
+}
+
+describe("appointment request link creation", () => {
+  it("makes the Revenue Queue link button actionable and never silent", () => {
+    const modal = source("src/components/contact-customer-modal.tsx");
+    const dashboardPage = source("src/app/page.tsx");
+    const automationPage = source("src/app/automation/page.tsx");
+
+    expect(modal).toContain("async function createLink()");
+    expect(modal).toContain('setCreatingLink(true)');
+    expect(modal).toContain('Creating link...');
+    expect(modal).toContain("try {");
+    expect(modal).toContain("finally {");
+    expect(modal).toContain('setLinkError("Could not create the appointment request link. Please try again.")');
+    expect(modal).toContain("Appointment Request Link");
+    expect(modal).toContain('aria-label="Appointment request link"');
+    expect(modal).toContain("copyRequestLink");
+    expect(modal).toContain("Copy failed. Select the request link and copy it manually.");
+    expect(modal).toContain("Insert in draft");
+    expect(dashboardPage).toContain("appointmentRequestsEnabled={state.appointmentRequestsEnabled}");
+    expect(automationPage).toContain("appointmentRequestsEnabled={state.appointmentRequestsEnabled}");
+  });
+
+  it("returns the raw URL only at creation and displays existing metadata safely", () => {
+    const workflow = source("src/lib/appointment-request-workflow.ts");
+    const createStart = workflow.indexOf("export async function createPilotAppointmentRequestLink");
+    const createEnd = workflow.indexOf("export async function revokePilotAppointmentRequestLink", createStart);
+    const createLink = workflow.slice(createStart, createEnd);
+    const modal = source("src/components/contact-customer-modal.tsx");
+
+    expect(createLink).toContain("const token = createAppointmentRequestToken()");
+    expect(createLink).toContain("const tokenHash = hashAppointmentRequestToken(token)");
+    expect(createLink).toContain("const rawUrl = appointmentRequestUrl(input.appUrl, token)");
+    expect(createLink).toContain("tokenHash,");
+    expect(createLink).not.toContain("token,");
+    expect(createLink).toContain("url: rawUrl");
+    expect(workflow).toContain("stateAppointmentRequestLinks");
+    expect(modal).toContain("Regenerate this active link to create a new secure URL.");
+  });
+
+  it("matches opportunities to Smart Maintenance Blocks by canonical ServiceDefinition ID", () => {
+    const workflow = source("src/lib/appointment-request-workflow.ts");
+
+    expect(workflow).toContain("maintenanceRecord: {");
+    expect(workflow).toContain("serviceDefinition: true");
+    expect(workflow).toContain("serviceDefinitionId: serviceDefinition.id");
+    expect(workflow).toContain("block.services.map((service) => service.serviceDefinitionId)");
+    expect(workflow).toContain("serviceDefinitionIds.every((serviceDefinitionId) => blockServiceIds.has(serviceDefinitionId))");
+    expect(workflow).not.toContain("serviceName ===");
+    expect(workflow).not.toContain("serviceDefinitionId: record.id");
+    expect(workflow).not.toContain("serviceDefinitionId: opportunity.id");
+  });
+
+  it("distinguishes no eligible block from no future availability", () => {
+    const workflow = source("src/lib/appointment-request-workflow.ts");
+
+    expect(workflow).toContain('code: "APPOINTMENT_REQUEST_NO_ELIGIBLE_BLOCK"');
+    expect(workflow).toContain("No Smart Maintenance Block currently supports this service.");
+    expect(workflow).toContain('code: "APPOINTMENT_REQUEST_NO_CAPACITY"');
+    expect(workflow).toContain("No request times are currently available for this service.");
+  });
+
+  it("keeps link creation side-effect-free for requests, appointments, opportunities, and outreach", () => {
+    const workflow = source("src/lib/appointment-request-workflow.ts");
+    const start = workflow.indexOf("export async function createPilotAppointmentRequestLink");
+    const end = workflow.indexOf("export async function revokePilotAppointmentRequestLink", start);
+    const createLink = workflow.slice(start, end);
+
+    expect(createLink).toContain("appointmentRequestLink.create");
+    expect(createLink).toContain("services: {");
+    expect(createLink).not.toContain("appointmentRequest.create");
+    expect(createLink).not.toContain("appointment.create");
+    expect(createLink).not.toContain("maintenanceRevenueOpportunity.update");
+    expect(createLink).not.toContain("outreachRecord.create");
+  });
+});

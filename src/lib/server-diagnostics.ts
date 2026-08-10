@@ -170,6 +170,13 @@ export function safeMutationOperation(value: unknown): SafeMutationOperation {
       channel: typeof payload.channel === "string" ? payload.channel : undefined,
       outreachStage: typeof payload.responseStatus === "string" ? payload.responseStatus : undefined,
     },
+    createAppointmentRequestLink: {
+      table: "AppointmentRequestLink",
+      operation: "INSERT",
+      customerId: safeId(payload.customerId),
+      vehicleId: safeId(payload.vehicleId),
+      opportunityId: safeId(payload.opportunityId),
+    },
     bookAppointment: {
       table: "Appointment",
       operation: "INSERT",
@@ -270,6 +277,14 @@ export function clientMutationError(error: unknown, operation: SafeMutationOpera
     return {
       code: "OUTREACH_SCHEMA_COMPATIBILITY_ERROR",
       message: "The outreach could not be recorded because a required application update is missing.",
+      status: 500,
+    };
+  }
+
+  if (schemaCodes.has(database.code ?? "") && ["createAppointmentRequestLink", "acceptAppointmentRequest", "declineMaintenanceRequest"].includes(operation.action ?? "")) {
+    return {
+      code: "APPOINTMENT_REQUEST_SCHEMA_COMPATIBILITY_ERROR",
+      message: "The appointment request could not be saved because a required application update is missing.",
       status: 500,
     };
   }

@@ -533,6 +533,7 @@ export type AppointmentRequestRecord = {
 export type DemoState = {
   shop: Shop;
   forecastAsOfDate?: string;
+  appointmentRequestsEnabled: boolean;
   currentUserId?: string;
   users: User[];
   customers: Customer[];
@@ -1197,6 +1198,7 @@ export const initialDemoState: DemoState = {
   smartMaintenanceBlocks: defaultSmartMaintenanceBlocks,
   smartMaintenanceBlockBlackouts: [],
   importHistory,
+  appointmentRequestsEnabled: true,
   seededAt: demoSeedTimestamp.toISOString(),
 };
 
