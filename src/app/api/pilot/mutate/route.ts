@@ -50,6 +50,12 @@ import {
 } from "@/lib/server-diagnostics";
 import { BrowserShopIdError, rejectBrowserShopId } from "@/lib/tenant-security";
 import { appointmentRequestsDisabledResponse, isAppointmentRequestsEnabled } from "@/lib/feature-flags";
+import {
+  acceptPilotMaintenanceAppointmentRequest,
+  createPilotAppointmentRequestLink,
+  declinePilotMaintenanceAppointmentRequest,
+  revokePilotAppointmentRequestLink,
+} from "@/lib/appointment-request-workflow";
 
 const mutationSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("addCustomer"), payload: z.unknown() }),
@@ -157,6 +163,18 @@ const mutationSchema = z.discriminatedUnion("action", [
       vehicleId: z.string().min(1),
       opportunityIds: z.array(z.string().min(1)).min(1),
     }),
+  }),
+  z.object({
+    action: z.literal("createAppointmentRequestLink"),
+    payload: z.object({
+      customerId: z.string().min(1),
+      vehicleId: z.string().min(1),
+      opportunityId: z.string().min(1),
+    }),
+  }),
+  z.object({
+    action: z.literal("revokeAppointmentRequestLink"),
+    id: z.string().min(1),
   }),
   z.object({
     action: z.literal("bookAppointment"),
@@ -403,6 +421,17 @@ export async function POST(request: Request) {
         });
         mutationCommitted = true;
         break;
+      case "createAppointmentRequestLink":
+        bookingLink = await createPilotAppointmentRequestLink(context, {
+          ...body.payload,
+          appUrl: request.headers.get("origin") ?? process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000",
+        });
+        mutationCommitted = true;
+        break;
+      case "revokeAppointmentRequestLink":
+        await revokePilotAppointmentRequestLink(context, body.id);
+        mutationCommitted = true;
+        break;
       case "bookAppointment":
         await bookPilotAppointment(context, body.payload);
         mutationCommitted = true;
@@ -428,7 +457,13 @@ export async function POST(request: Request) {
         mutationCommitted = true;
         break;
       case "acceptAppointmentRequest":
+        await acceptPilotMaintenanceAppointmentRequest(context, body.id);
+        mutationCommitted = true;
+        break;
       case "declineMaintenanceRequest":
+        await declinePilotMaintenanceAppointmentRequest(context, body.id, body.payload);
+        mutationCommitted = true;
+        break;
       case "proposeAppointmentRequestAlternate":
         if (!isAppointmentRequestsEnabled()) {
           return NextResponse.json(appointmentRequestsDisabledResponse(), { status: 404 });

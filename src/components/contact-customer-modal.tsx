@@ -9,7 +9,7 @@ import {
   defaultContactChannel,
   type ContactWorkflowChannel,
 } from "@/lib/contact-workflow";
-import type { Customer, CustomerResponseStatus, OutreachChannel, Shop, Vehicle, VehicleMaintenanceRecord } from "@/lib/demo-data";
+import type { AppointmentRequestLinkRecord, Customer, CustomerResponseStatus, OutreachChannel, Shop, Vehicle, VehicleMaintenanceRecord } from "@/lib/demo-data";
 import {
   buildOutreachDraft,
   outreachTemplateReasons,
@@ -105,8 +105,10 @@ export function ContactCustomerModal({
   onClose,
   onBook,
   onSave,
-  onCreateBookingLink,
-  customerBookingEnabled,
+  onCreateAppointmentRequestLink,
+  onRevokeAppointmentRequestLink,
+  appointmentRequestsEnabled,
+  appointmentRequestLink,
 }: {
   group: RevenueQueueGroup;
   customer: Customer;
@@ -128,12 +130,14 @@ export function ContactCustomerModal({
     bookingLinkId?: string;
     idempotencyKey?: string;
   }) => Promise<{ ok: boolean; message?: string }>;
-  onCreateBookingLink: (input: {
+  onCreateAppointmentRequestLink: (input: {
     customerId: string;
     vehicleId: string;
-    opportunityIds: string[];
+    opportunityId: string;
   }) => Promise<{ ok: boolean; message?: string; bookingLink?: { id: string; url: string; expiresAt: string; message?: string } }>;
-  customerBookingEnabled: boolean;
+  onRevokeAppointmentRequestLink: (id: string) => Promise<{ ok: boolean; message?: string }>;
+  appointmentRequestsEnabled: boolean;
+  appointmentRequestLink?: AppointmentRequestLinkRecord;
 }) {
   const channels = availableContactChannels(customer);
   const initialChannel = defaultContactChannel(customer) ?? "EMAIL";
@@ -164,7 +168,9 @@ export function ContactCustomerModal({
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
   const [creatingLink, setCreatingLink] = useState(false);
-  const [bookingLink, setBookingLink] = useState<{ id: string; url: string; expiresAt: string } | null>(null);
+  const [bookingLink, setBookingLink] = useState<{ id: string; url?: string; expiresAt: string } | null>(
+    appointmentRequestLink ? { id: appointmentRequestLink.id, expiresAt: appointmentRequestLink.expiresAt, url: appointmentRequestLink.url } : null,
+  );
   const idempotencyKeyRef = useRef<string | null>(null);
   const rows = serviceRows(group, records);
   const selectedChannelAvailable = channels.some((item) => item.channel === channel && item.available);
@@ -212,15 +218,20 @@ export function ContactCustomerModal({
   }
 
   async function createLink() {
-    if (!customerBookingEnabled) {
+    if (!appointmentRequestsEnabled) {
+      return;
+    }
+    const opportunityId = selectedOpportunityIds(group)[0];
+    if (!opportunityId) {
+      setError("Choose an open opportunity before creating a request link.");
       return;
     }
     setCreatingLink(true);
     setError("");
-    const result = await onCreateBookingLink({
+    const result = await onCreateAppointmentRequestLink({
       customerId: group.customerId,
       vehicleId: group.vehicleId,
-      opportunityIds: selectedOpportunityIds(group),
+      opportunityId,
     });
     setCreatingLink(false);
     if (!result.ok || !result.bookingLink) {
@@ -236,6 +247,21 @@ export function ContactCustomerModal({
     } else if (!draftEdited) {
       replaceDraft(channel, templateReason, true, result.bookingLink.url);
     }
+    setCopied(false);
+  }
+
+  async function revokeLink() {
+    if (!bookingLink) return;
+    setCreatingLink(true);
+    setError("");
+    const result = await onRevokeAppointmentRequestLink(bookingLink.id);
+    setCreatingLink(false);
+    if (!result.ok) {
+      setError(result.message ?? "Request link could not be revoked.");
+      return;
+    }
+    setBookingLink(null);
+    setIncludeBookingLink(false);
     setCopied(false);
   }
 
@@ -292,7 +318,7 @@ export function ContactCustomerModal({
       channel,
       responseStatus,
       followUpDate: followUpDate || undefined,
-      bookingLinkId: bookingLink?.id,
+      bookingLinkId: undefined,
       idempotencyKey: idempotencyKeyRef.current,
     });
     setSaving(false);
@@ -309,7 +335,7 @@ export function ContactCustomerModal({
       <div className="space-y-5 p-5">
         {error && <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">{error}</p>}
         {copied && !saved && <p className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-medium text-violet-700">Message copied. Copying alone does not mark the customer contacted.</p>}
-        {bookingLink && !saved && <p className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm font-medium text-zinc-700">Booking link ready. It will be tied to this outreach when you mark the message as sent.</p>}
+        {bookingLink && !saved && <p className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm font-medium text-zinc-700">Appointment request link ready. It expires {formatDate(bookingLink.expiresAt)}. Creating it did not mark outreach sent.</p>}
         {saved && <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700">Outreach saved. No appointment was created.</p>}
 
         <div className="rounded-lg border border-zinc-200 p-4">
@@ -396,22 +422,34 @@ export function ContactCustomerModal({
               }}
               className="h-4 w-4 rounded border-zinc-300 text-violet-950 focus:ring-violet-500"
             />
-            Include booking link
+            Include request link
           </label>
-          {customerBookingEnabled && (
+          {appointmentRequestsEnabled && (
             <button
               onClick={createLink}
-              disabled={creatingLink || saving || Boolean(bookingLink)}
+              disabled={creatingLink || saving}
               className="inline-flex items-center gap-2 rounded-lg border border-violet-200 px-4 py-2 text-sm font-semibold text-violet-950 disabled:opacity-60"
             >
               <CalendarCheck className="h-4 w-4" />
-              {creatingLink ? "Creating link..." : bookingLink ? "Booking link created" : "Create booking link"}
+              {creatingLink ? "Creating link..." : bookingLink ? "Regenerate link" : "Create Appointment Request Link"}
+            </button>
+          )}
+          {appointmentRequestsEnabled && bookingLink && (
+            <button
+              onClick={revokeLink}
+              disabled={creatingLink || saving}
+              className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 px-4 py-2 text-sm font-semibold text-zinc-800 disabled:opacity-60"
+            >
+              Revoke Link
             </button>
           )}
           {!bookingLink && (
             <span className="text-sm text-zinc-500">
-              {customerBookingEnabled ? "No booking link has been created for this message." : "Booking links are not available for this shop yet."}
+              {appointmentRequestsEnabled ? "No request link has been created for this message." : "Appointment request links are disabled."}
             </span>
+          )}
+          {bookingLink && !bookingLink.url && (
+            <span className="text-sm text-zinc-500">This active link was created earlier. Regenerate it to copy a new secure URL.</span>
           )}
         </div>
 

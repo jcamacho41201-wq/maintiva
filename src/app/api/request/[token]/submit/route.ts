@@ -1,39 +1,20 @@
 import { NextResponse } from "next/server";
-import { z } from "zod";
-import { appointmentRequestSubmittedMessage } from "@/lib/appointment-requests";
-import {
-  appointmentRequestsDisabledResponse,
-  isAppointmentRequestsEnabled,
-} from "@/lib/feature-flags";
-
-const submitSchema = z.object({
-  startsAt: z.iso.datetime(),
-  idempotencyKey: z.string().min(8).max(120),
-});
+import { submitPublicAppointmentRequest } from "@/lib/appointment-request-workflow";
+import { SafeActionError } from "@/lib/server-diagnostics";
 
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ token: string }> },
 ) {
-  await params;
+  const { token } = await params;
   const body = await request.json().catch(() => ({}));
-  const parsed = submitSchema.safeParse(body);
-  if (!parsed.success) {
-    return NextResponse.json(
-      { code: "APPOINTMENT_REQUEST_INVALID", message: "Choose a valid request time." },
-      { status: 400 },
-    );
+  try {
+    return NextResponse.json(await submitPublicAppointmentRequest(token, body, request));
+  } catch (error) {
+    if (error instanceof SafeActionError) {
+      return NextResponse.json({ code: error.code, message: error.message }, { status: error.status });
+    }
+    console.error("Maintiva appointment request submission failed", { error: error instanceof Error ? error.message : "unknown" });
+    return NextResponse.json({ code: "APPOINTMENT_REQUEST_SUBMIT_FAILED", message: "This time is no longer available. Choose another time." }, { status: 500 });
   }
-
-  if (!isAppointmentRequestsEnabled()) {
-    return NextResponse.json(appointmentRequestsDisabledResponse(), { status: 404 });
-  }
-
-  return NextResponse.json(
-    {
-      code: "APPOINTMENT_REQUESTS_NOT_RELEASED",
-      message: appointmentRequestSubmittedMessage("the shop"),
-    },
-    { status: 404 },
-  );
 }

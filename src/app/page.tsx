@@ -10,7 +10,6 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { canContactCustomerForDraft } from "@/lib/contact-workflow";
 import { useDemoStore } from "@/lib/demo-store";
-import { isCustomerBookingEnabled } from "@/lib/feature-flags";
 import {
   getDashboardMetrics,
 } from "@/lib/demo-calculations";
@@ -297,8 +296,15 @@ export default function DashboardPage() {
           onClose={() => setSelectedVehicleId(null)}
           onBook={() => router.push("/automation")}
           onSave={store.recordOpportunityContact}
-          onCreateBookingLink={store.createBookingLink}
-          customerBookingEnabled={isCustomerBookingEnabled()}
+          onCreateAppointmentRequestLink={store.createAppointmentRequestLink}
+          onRevokeAppointmentRequestLink={store.revokeAppointmentRequestLink}
+          appointmentRequestsEnabled
+          appointmentRequestLink={state.appointmentRequestLinks.find((link) =>
+            link.status === "ACTIVE" &&
+            link.customerId === selectedOpportunity.customerId &&
+            link.vehicleId === selectedOpportunity.vehicleId &&
+            selectedOpportunity.opportunities.some((opportunity) => opportunity.id === link.opportunityId)
+          )}
         />
       )}
     </div>

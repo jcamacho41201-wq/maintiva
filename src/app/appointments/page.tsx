@@ -7,7 +7,6 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
-  Clock3,
   ListFilter,
   Plus,
   XCircle,
@@ -31,7 +30,7 @@ type CalendarEvent =
   | { id: string; type: "BLACKOUT"; startsAt: string; endsAt: string; blackout: SmartMaintenanceBlockBlackout };
 
 const advisoryNotice =
-  "Shows Maintiva appointment requests, confirmed Maintiva appointments, and Smart Maintenance Block capacity. Check your primary shop calendar before approving requests.";
+  "Shows Maintiva appointment requests, confirmed Maintiva appointments, and Smart Maintenance Block capacity. Check your primary shop calendar before confirming this request.";
 
 const dayFormatter = new Intl.DateTimeFormat("en-US", { weekday: "short", month: "short", day: "numeric" });
 const fullDayFormatter = new Intl.DateTimeFormat("en-US", { weekday: "long", month: "long", day: "numeric" });
@@ -88,7 +87,6 @@ export default function AppointmentsPage() {
     completeAppointment,
     acceptAppointmentRequest,
     declineMaintenanceRequest,
-    proposeAppointmentRequestAlternate,
   } = useDemoStore();
   const [tab, setTab] = useState<ActiveTab>("CALENDAR");
   const [view, setView] = useState<CalendarView>("WEEK");
@@ -102,7 +100,6 @@ export default function AppointmentsPage() {
     completedAt: string;
     notes: string;
   } | null>(null);
-  const [alternate, setAlternate] = useState<{ requestId: string; startsAt: string; endsAt: string } | null>(null);
   const metrics = getDashboardMetrics(state);
   const committedHours = state.shop.dailyBayHours - metrics.openBayCapacityHours;
   const pendingRequests = state.appointmentRequests
@@ -282,7 +279,6 @@ export default function AppointmentsPage() {
           {request.status === "PENDING" && (
             <div className="mt-4 flex flex-wrap gap-2">
               <button onClick={() => void acceptAppointmentRequest(request.id)} className="inline-flex items-center gap-2 rounded-lg bg-violet-950 px-3 py-2 text-sm font-semibold text-white"><CheckCircle2 className="h-4 w-4" />Accept</button>
-              <button onClick={() => setAlternate({ requestId: request.id, startsAt: request.requestedStart, endsAt: request.requestedEnd })} className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 px-3 py-2 text-sm font-semibold text-zinc-800"><Clock3 className="h-4 w-4" />Offer Another Time</button>
               <button onClick={() => void declineMaintenanceRequest(request.id, "Declined from Maintiva calendar.")} className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 px-3 py-2 text-sm font-semibold text-zinc-800"><XCircle className="h-4 w-4" />Decline</button>
               <Link href={`/customers/${request.customerId}`} className="rounded-lg border border-zinc-200 px-3 py-2 text-sm font-semibold text-zinc-800">Open Customer</Link>
             </div>
@@ -446,7 +442,6 @@ export default function AppointmentsPage() {
               </div>
               <div className="mt-4 flex flex-wrap gap-2">
                 <button onClick={() => void acceptAppointmentRequest(request.id)} className="rounded-lg bg-violet-950 px-3 py-2 text-sm font-semibold text-white">Accept</button>
-                <button onClick={() => setAlternate({ requestId: request.id, startsAt: request.requestedStart, endsAt: request.requestedEnd })} className="rounded-lg border border-zinc-200 px-3 py-2 text-sm font-semibold text-zinc-800">Offer Another Time</button>
                 <button onClick={() => void declineMaintenanceRequest(request.id, "Declined from request list.")} className="rounded-lg border border-zinc-200 px-3 py-2 text-sm font-semibold text-zinc-800">Decline</button>
                 <Link href={`/customers/${request.customerId}`} className="rounded-lg border border-zinc-200 px-3 py-2 text-sm font-semibold text-zinc-800">Open Customer</Link>
               </div>
@@ -507,23 +502,6 @@ export default function AppointmentsPage() {
             <div className="mt-5 flex justify-end gap-2">
               <button onClick={() => setCompletion(null)} className="rounded-lg border border-zinc-200 px-4 py-2 text-sm font-semibold text-zinc-800">Cancel</button>
               <button onClick={submitCompletion} className="rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white">Save completion</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {alternate && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/40 p-4">
-          <div className="w-full max-w-lg rounded-lg border border-zinc-200 bg-white p-5 shadow-xl">
-            <h2 className="text-lg font-semibold">Offer Another Time</h2>
-            <p className="mt-1 text-sm text-zinc-500">Check your primary shop calendar before sending an alternate request time.</p>
-            <div className="mt-5 grid gap-4 sm:grid-cols-2">
-              <label className="text-sm font-medium">Alternate start<input value={alternate.startsAt.slice(0, 16)} onChange={(event) => setAlternate({ ...alternate, startsAt: new Date(event.target.value).toISOString() })} type="datetime-local" className="mt-2 h-10 w-full rounded-lg border border-zinc-200 px-3 outline-none focus:border-violet-500" /></label>
-              <label className="text-sm font-medium">Alternate end<input value={alternate.endsAt.slice(0, 16)} onChange={(event) => setAlternate({ ...alternate, endsAt: new Date(event.target.value).toISOString() })} type="datetime-local" className="mt-2 h-10 w-full rounded-lg border border-zinc-200 px-3 outline-none focus:border-violet-500" /></label>
-            </div>
-            <div className="mt-5 flex justify-end gap-2">
-              <button onClick={() => setAlternate(null)} className="rounded-lg border border-zinc-200 px-4 py-2 text-sm font-semibold text-zinc-800">Cancel</button>
-              <button onClick={() => { void proposeAppointmentRequestAlternate(alternate.requestId, alternate.startsAt, alternate.endsAt); setAlternate(null); }} className="rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white">Save alternate</button>
             </div>
           </div>
         </div>
