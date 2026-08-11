@@ -60,21 +60,11 @@ BEGIN
   END IF;
 END $$;
 
-ALTER TYPE public."OutreachChannel" ADD VALUE IF NOT EXISTS 'SMS';
-
 ALTER TABLE public."Customer"
   ADD COLUMN IF NOT EXISTS "smsConsentStatus" public."SmsConsentStatus" NOT NULL DEFAULT 'UNKNOWN',
   ADD COLUMN IF NOT EXISTS "smsConsentSource" public."SmsConsentSource",
   ADD COLUMN IF NOT EXISTS "smsConsentRecordedAt" TIMESTAMP(3),
   ADD COLUMN IF NOT EXISTS "smsConsentRecordedByUserId" TEXT;
-
-UPDATE public."Customer"
-SET
-  "smsConsentStatus" = 'OPTED_IN',
-  "smsConsentSource" = COALESCE("smsConsentSource", 'EXISTING_CUSTOMER_RECORD'::public."SmsConsentSource"),
-  "smsConsentRecordedAt" = COALESCE("smsConsentRecordedAt", "updatedAt")
-WHERE "smsConsent" = true
-  AND "smsConsentStatus" = 'UNKNOWN';
 
 DO $$
 BEGIN
