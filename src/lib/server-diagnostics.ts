@@ -210,6 +210,11 @@ export function safeMutationOperation(value: unknown): SafeMutationOperation {
       vehicleId: safeId(payload.vehicleId),
       opportunityId: Array.isArray(payload.opportunityIds) ? safeId(payload.opportunityIds[0]) : undefined,
     },
+    deleteCustomer: {
+      table: "Customer",
+      operation: "DELETE",
+      customerId: safeId(id),
+    },
   };
 
   return {

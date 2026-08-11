@@ -11,12 +11,12 @@ import {
   LayoutDashboard,
   Library,
   Menu,
-  Search,
   Settings,
   Users,
   Wrench,
   LogOut,
 } from "lucide-react";
+import { GlobalSearch } from "@/components/global-search";
 import { useDemoStore } from "@/lib/demo-store";
 import {
   createSupabaseBrowserClient,
@@ -122,10 +122,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           >
             <Menu className="h-5 w-5" />
           </button>
-          <div className="flex h-10 flex-1 items-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 px-3 text-zinc-500">
-            <Search className="h-4 w-4" aria-hidden="true" />
-            <span className="text-sm">Search customers, vehicles, VINs, services</span>
-          </div>
+          <GlobalSearch />
           {canResetLocalDemo ? (
             <button
               onClick={resetDemoData}

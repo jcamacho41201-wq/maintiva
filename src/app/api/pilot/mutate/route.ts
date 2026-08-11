@@ -17,6 +17,7 @@ import {
   buildPilotState,
   completePilotAppointment,
   createPilotBookingLink,
+  deletePilotCustomer,
   declinePilotAppointmentRequest,
   deactivatePilotMaintenanceItem,
   endPilotOpportunitySnooze,
@@ -64,6 +65,10 @@ const mutationSchema = z.discriminatedUnion("action", [
     action: z.literal("updateCustomer"),
     id: z.string().min(1),
     payload: z.unknown(),
+  }),
+  z.object({
+    action: z.literal("deleteCustomer"),
+    id: z.string().min(1),
   }),
   z.object({ action: z.literal("addVehicle"), payload: z.unknown() }),
   z.object({
@@ -321,6 +326,10 @@ export async function POST(request: Request) {
         break;
       case "updateCustomer":
         await updatePilotCustomer(context, body.id, body.payload);
+        mutationCommitted = true;
+        break;
+      case "deleteCustomer":
+        await deletePilotCustomer(context, body.id);
         mutationCommitted = true;
         break;
       case "addVehicle":

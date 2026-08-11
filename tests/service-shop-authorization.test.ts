@@ -3,6 +3,7 @@ import { z } from "zod";
 
 const prismaMock = vi.hoisted(() => ({
   $executeRaw: vi.fn(),
+  $queryRaw: vi.fn(),
   $transaction: vi.fn(),
   serviceDefinition: {
     findUnique: vi.fn(),
@@ -11,9 +12,46 @@ const prismaMock = vi.hoisted(() => ({
     create: vi.fn(),
     update: vi.fn(),
   },
+  customer: {
+    findFirst: vi.fn(),
+    deleteMany: vi.fn(),
+  },
   vehicle: {
     findUnique: vi.fn(),
     findFirst: vi.fn(),
+    findMany: vi.fn(),
+    deleteMany: vi.fn(),
+  },
+  appointment: {
+    findMany: vi.fn(),
+    deleteMany: vi.fn(),
+  },
+  appointmentService: {
+    deleteMany: vi.fn(),
+  },
+  appointmentChangeRecord: {
+    deleteMany: vi.fn(),
+  },
+  appointmentRequest: {
+    findMany: vi.fn(),
+    deleteMany: vi.fn(),
+  },
+  appointmentRequestService: {
+    deleteMany: vi.fn(),
+  },
+  appointmentRequestLink: {
+    findMany: vi.fn(),
+    deleteMany: vi.fn(),
+  },
+  appointmentRequestLinkService: {
+    deleteMany: vi.fn(),
+  },
+  customerBookingLink: {
+    findMany: vi.fn(),
+    deleteMany: vi.fn(),
+  },
+  outreachRecord: {
+    deleteMany: vi.fn(),
   },
   vehicleMaintenanceRecord: {
     findUnique: vi.fn(),
@@ -21,11 +59,25 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
     create: vi.fn(),
     update: vi.fn(),
+    deleteMany: vi.fn(),
+  },
+  serviceHistoryRecord: {
+    deleteMany: vi.fn(),
+  },
+  declinedWorkRecord: {
+    deleteMany: vi.fn(),
   },
   maintenanceRevenueOpportunity: {
     findFirst: vi.fn(),
     create: vi.fn(),
     update: vi.fn(),
+    deleteMany: vi.fn(),
+  },
+  vehicleMileageReading: {
+    deleteMany: vi.fn(),
+  },
+  vehicleDrivingProfile: {
+    deleteMany: vi.fn(),
   },
   smartMaintenanceBlock: {
     findFirst: vi.fn(),
@@ -45,6 +97,7 @@ import {
   addPilotMaintenanceItem,
   addPilotServiceDefinition,
   canManageDrivingEstimates,
+  deletePilotCustomer,
   resetPilotManualMileageOverride,
   reviewPilotMileageReading,
   savePilotSmartMaintenanceBlock,
@@ -79,7 +132,13 @@ beforeEach(() => {
   vi.clearAllMocks();
   prismaMock.$executeRaw.mockResolvedValue(0);
   prismaMock.$transaction.mockImplementation((callback) => callback(prismaMock));
+  prismaMock.$queryRaw.mockResolvedValue([{ exists: true }]);
   prismaMock.vehicleMaintenanceRecord.findMany.mockResolvedValue([]);
+  prismaMock.vehicle.findMany.mockResolvedValue([]);
+  prismaMock.appointment.findMany.mockResolvedValue([]);
+  prismaMock.appointmentRequest.findMany.mockResolvedValue([]);
+  prismaMock.appointmentRequestLink.findMany.mockResolvedValue([]);
+  prismaMock.customerBookingLink.findMany.mockResolvedValue([]);
 });
 
 describe("service shop authorization", () => {
@@ -144,6 +203,73 @@ describe("service shop authorization", () => {
       isActive: true,
     })).rejects.toMatchObject({ code: "DUPLICATE_SERVICE_DEFINITION" });
     expect(prismaMock.serviceDefinition.create).not.toHaveBeenCalled();
+  });
+
+  it("allows only owners and managers to permanently delete customers", async () => {
+    await expect(deletePilotCustomer(advisorContext, "customer-a")).rejects.toMatchObject({
+      code: "CUSTOMER_DELETE_FORBIDDEN",
+      status: 403,
+    });
+    expect(prismaMock.customer.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("deletes customer-owned records inside the active shop transaction", async () => {
+    prismaMock.customer.findFirst.mockResolvedValue({ id: "customer-a" });
+    prismaMock.vehicle.findMany.mockResolvedValue([{ id: "vehicle-a" }]);
+    prismaMock.appointment.findMany.mockResolvedValue([{ id: "appointment-a" }]);
+    prismaMock.appointmentRequest.findMany.mockResolvedValue([{ id: "request-a" }]);
+    prismaMock.appointmentRequestLink.findMany.mockResolvedValue([{ id: "request-link-a" }]);
+    prismaMock.customerBookingLink.findMany.mockResolvedValue([{ id: "booking-link-a" }]);
+
+    await deletePilotCustomer(context, "customer-a");
+
+    expect(prismaMock.customer.findFirst).toHaveBeenCalledWith({
+      where: { id: "customer-a", shopId: "shop-a", archivedAt: null },
+      select: { id: true },
+    });
+    expect(prismaMock.appointmentRequestService.deleteMany).toHaveBeenCalledWith({
+      where: { shopId: "shop-a", appointmentRequestId: { in: ["request-a"] } },
+    });
+    expect(prismaMock.appointmentRequest.deleteMany).toHaveBeenCalledWith({
+      where: { shopId: "shop-a", customerId: "customer-a" },
+    });
+    expect(prismaMock.maintenanceRevenueOpportunity.deleteMany).toHaveBeenCalledWith({
+      where: { shopId: "shop-a", customerId: "customer-a" },
+    });
+    expect(prismaMock.customer.deleteMany).toHaveBeenCalledWith({
+      where: { id: "customer-a", shopId: "shop-a" },
+    });
+  });
+
+  it("does not require optional self-scheduling tables to delete a customer", async () => {
+    prismaMock.$queryRaw.mockResolvedValue([{ exists: false }]);
+    prismaMock.customer.findFirst.mockResolvedValue({ id: "customer-a" });
+    prismaMock.vehicle.findMany.mockResolvedValue([{ id: "vehicle-a" }]);
+    prismaMock.appointment.findMany.mockResolvedValue([{ id: "appointment-a" }]);
+    prismaMock.appointmentRequest.findMany.mockResolvedValue([{ id: "request-a" }]);
+    prismaMock.appointmentRequestLink.findMany.mockResolvedValue([{ id: "request-link-a" }]);
+
+    await deletePilotCustomer(context, "customer-a");
+
+    expect(prismaMock.customerBookingLink.findMany).not.toHaveBeenCalled();
+    expect(prismaMock.customerBookingLink.deleteMany).not.toHaveBeenCalled();
+    expect(prismaMock.appointmentChangeRecord.deleteMany).not.toHaveBeenCalled();
+    expect(prismaMock.appointmentRequest.deleteMany).toHaveBeenCalledWith({
+      where: { shopId: "shop-a", customerId: "customer-a" },
+    });
+    expect(prismaMock.customer.deleteMany).toHaveBeenCalledWith({
+      where: { id: "customer-a", shopId: "shop-a" },
+    });
+  });
+
+  it("rejects deleting a customer outside the active shop", async () => {
+    prismaMock.customer.findFirst.mockResolvedValue(null);
+
+    await expect(deletePilotCustomer(context, "customer-b")).rejects.toMatchObject({
+      code: "CUSTOMER_NOT_IN_ACTIVE_SHOP",
+      status: 404,
+    });
+    expect(prismaMock.customer.deleteMany).not.toHaveBeenCalled();
   });
 
   it("assigns a service only when the vehicle and service both belong to the active shop", async () => {
