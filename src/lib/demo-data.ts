@@ -4,6 +4,9 @@ const demoSeedTimestamp = new Date("2026-07-28T12:00:00-04:00");
 
 export type ContactMethod = "SMS" | "EMAIL" | "CALL";
 export type CustomerStatus = "ACTIVE" | "WATCHLIST" | "PAUSED" | "ARCHIVED";
+export type SmsConsentStatus = "UNKNOWN" | "OPTED_IN" | "OPTED_OUT";
+export type SmsConsentSource = "STAFF_RECORDED" | "CUSTOMER_REQUEST" | "PAPER_FORM" | "VERBAL" | "EXISTING_CUSTOMER_RECORD" | "OTHER";
+export type SmsDeliveryStatus = "DRAFT" | "QUEUED" | "SENT" | "DELIVERED" | "FAILED" | "SIMULATED";
 export type MaintenanceStatus = "HEALTHY" | "DUE_SOON" | "DUE" | "OVERDUE";
 export type OutreachStatus =
   | "NEEDS_OUTREACH"
@@ -111,6 +114,10 @@ export type Customer = {
   email: string;
   preferredContact: ContactMethod;
   smsConsent: boolean;
+  smsConsentStatus: SmsConsentStatus;
+  smsConsentSource?: SmsConsentSource;
+  smsConsentRecordedAt?: string;
+  smsConsentRecordedByUserId?: string;
   emailConsent: boolean;
   callConsent: boolean;
   address: string;
@@ -291,7 +298,18 @@ export type OutreachRecord = {
   followUpDate?: string;
   appointmentId?: string;
   bookingLinkId?: string;
+  opportunityId?: string;
+  appointmentRequestLinkId?: string;
   performedByUserId?: string;
+  smsRecipientPhone?: string;
+  smsProvider?: string;
+  smsDeliveryStatus?: SmsDeliveryStatus;
+  smsSentAt?: string;
+  smsDeliveredAt?: string;
+  smsFailureCode?: string;
+  smsFailureMessage?: string;
+  smsIdempotencyKey?: string;
+  providerExternalId?: string;
   status: OutreachStatus;
 };
 
@@ -767,6 +785,7 @@ export const customers: Customer[] = customerSeed.map(
     email,
     preferredContact,
     smsConsent,
+    smsConsentStatus: "UNKNOWN",
     emailConsent,
     callConsent,
     address: "Atlanta, GA",

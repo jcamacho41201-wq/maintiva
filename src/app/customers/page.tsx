@@ -17,7 +17,7 @@ function emptyCustomerForm() {
     phone: "",
     email: "",
     preferredContact: "SMS" as ContactMethod,
-    smsConsent: true,
+    smsConsent: false,
     emailConsent: true,
     callConsent: false,
     address: "",
@@ -185,7 +185,9 @@ export default function CustomersPage() {
                     <td className="px-5 py-4">{formatCurrency(customer.lifetimeRevenueCents)}</td>
                     <td className="px-5 py-4">
                       <div className="flex gap-1">
-                        {customer.smsConsent && <Badge variant="green">SMS</Badge>}
+                        <Badge variant={customer.smsConsentStatus === "OPTED_IN" ? "green" : customer.smsConsentStatus === "OPTED_OUT" ? "red" : "neutral"}>
+                          SMS {customer.smsConsentStatus === "OPTED_IN" ? "eligible" : customer.smsConsentStatus === "OPTED_OUT" ? "opted out" : "unknown"}
+                        </Badge>
                         {customer.emailConsent && <Badge variant="green">Email</Badge>}
                         {customer.callConsent && <Badge variant="green">Call</Badge>}
                       </div>

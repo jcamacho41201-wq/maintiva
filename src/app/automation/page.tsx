@@ -402,6 +402,8 @@ export default function AutomationPage() {
           onClose={() => setQueueModal(null)}
           onBook={() => setQueueModal({ kind: "book", vehicleId: activeGroup.vehicleId })}
           onSave={store.recordOpportunityContact}
+          onSendSms={store.sendCustomerSms}
+          onRecordSmsConsent={store.recordCustomerSmsConsent}
           onCreateAppointmentRequestLink={store.createAppointmentRequestLink}
           onRevokeAppointmentRequestLink={store.revokeAppointmentRequestLink}
           appointmentRequestsEnabled={state.appointmentRequestsEnabled}

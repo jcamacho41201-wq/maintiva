@@ -380,6 +380,8 @@ export default function DashboardPage() {
           onClose={() => setSelectedVehicleId(null)}
           onBook={() => router.push("/automation")}
           onSave={store.recordOpportunityContact}
+          onSendSms={store.sendCustomerSms}
+          onRecordSmsConsent={store.recordCustomerSmsConsent}
           onCreateAppointmentRequestLink={store.createAppointmentRequestLink}
           onRevokeAppointmentRequestLink={store.revokeAppointmentRequestLink}
           appointmentRequestsEnabled={state.appointmentRequestsEnabled}

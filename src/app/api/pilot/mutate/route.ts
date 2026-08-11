@@ -58,6 +58,7 @@ import {
   declinePilotMaintenanceAppointmentRequest,
   revokePilotAppointmentRequestLink,
 } from "@/lib/appointment-request-workflow";
+import { recordPilotCustomerSmsConsent, sendPilotCustomerSms } from "@/lib/sms";
 
 const mutationSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("addCustomer"), payload: z.unknown() }),
@@ -160,6 +161,26 @@ const mutationSchema = z.discriminatedUnion("action", [
       followUpDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().or(z.literal("")),
       bookingLinkId: z.string().min(1).optional(),
       idempotencyKey: z.string().regex(/^[a-zA-Z0-9_-]{8,120}$/).optional(),
+    }),
+  }),
+  z.object({
+    action: z.literal("recordCustomerSmsConsent"),
+    payload: z.object({
+      customerId: z.string().min(1),
+      status: z.enum(["UNKNOWN", "OPTED_IN", "OPTED_OUT"]),
+      source: z.enum(["STAFF_RECORDED", "CUSTOMER_REQUEST", "PAPER_FORM", "VERBAL", "EXISTING_CUSTOMER_RECORD", "OTHER"]).optional(),
+    }),
+  }),
+  z.object({
+    action: z.literal("sendCustomerSms"),
+    payload: z.object({
+      customerId: z.string().min(1),
+      vehicleId: z.string().min(1),
+      opportunityIds: z.array(z.string().min(1)).min(1),
+      message: z.string().min(3).max(1600),
+      appointmentRequestLinkId: z.string().min(1).optional(),
+      idempotencyKey: z.string().regex(/^[a-zA-Z0-9_-]{8,120}$/).optional(),
+      duplicateOverride: z.boolean().optional(),
     }),
   }),
   z.object({
@@ -422,6 +443,14 @@ export async function POST(request: Request) {
         break;
       case "recordOpportunityContact":
         await recordPilotOpportunityContact(context, body.payload);
+        mutationCommitted = true;
+        break;
+      case "recordCustomerSmsConsent":
+        await recordPilotCustomerSmsConsent(context, body.payload);
+        mutationCommitted = true;
+        break;
+      case "sendCustomerSms":
+        await sendPilotCustomerSms(context, body.payload);
         mutationCommitted = true;
         break;
       case "createBookingLink":

@@ -86,7 +86,7 @@ export type BookingLinkResult = {
   expiresAt: string;
   message?: string;
 };
-export type MutationResult = { ok: boolean; message?: string; bookingLink?: BookingLinkResult };
+export type MutationResult = { ok: boolean; code?: string; message?: string; bookingLink?: BookingLinkResult };
 
 export type ServiceDefinitionInput = Omit<MaintenanceService, "id" | "shopId">;
 export type MaintenanceItemInput = {
@@ -177,6 +177,10 @@ function normalizeState(state: DemoState): DemoState {
     appointmentRequestsEnabled: state.appointmentRequestsEnabled ?? baseline.appointmentRequestsEnabled,
     revenueOpportunities: state.revenueOpportunities ?? [],
     currentUserId: state.currentUserId ?? state.users?.[0]?.id ?? baseline.currentUserId,
+    customers: (state.customers ?? baseline.customers).map((customer) => ({
+      ...customer,
+      smsConsentStatus: customer.smsConsentStatus ?? "UNKNOWN",
+    })),
     services,
     mileageReadings: state.mileageReadings ?? baseline.mileageReadings,
     drivingProfiles: state.drivingProfiles ?? baseline.drivingProfiles,
@@ -329,6 +333,7 @@ export async function mutatePilotState(body: unknown): Promise<MutationResult> {
     if (!response.ok || !data.state) {
       return {
         ok: false,
+        code: data.code,
         message: data.message ?? "Unable to save changes. Confirm the Supabase database schema has been applied.",
       };
     }
@@ -338,6 +343,7 @@ export async function mutatePilotState(body: unknown): Promise<MutationResult> {
   } catch {
     return {
       ok: false,
+      code: "NETWORK_ERROR",
       message: "Unable to reach the server. Check your connection and try the import again.",
     };
   }
@@ -907,7 +913,7 @@ export function useDemoStore() {
         }));
         return Promise.resolve({ ok: true, message: undefined });
       },
-      addCustomer(input: Omit<Customer, "id" | "shopId" | "customerScore" | "lifetimeRevenueCents" | "lastVisit">) {
+      addCustomer(input: Omit<Customer, "id" | "shopId" | "smsConsentStatus" | "smsConsentSource" | "smsConsentRecordedAt" | "smsConsentRecordedByUserId" | "customerScore" | "lifetimeRevenueCents" | "lastVisit">) {
         if (!shouldUseLocalDemoPersistence()) {
           return mutatePilotState({ action: "addCustomer", payload: input });
         }
@@ -918,6 +924,7 @@ export function useDemoStore() {
             ...draft.customers,
             {
               ...input,
+              smsConsentStatus: "UNKNOWN",
               id: `cust-${Date.now()}`,
               shopId: draft.shop.id,
               customerScore: 70,
@@ -1767,6 +1774,98 @@ export function useDemoStore() {
         });
         return { ok: true, message: undefined };
       },
+      async recordCustomerSmsConsent(input: {
+        customerId: string;
+        status: "UNKNOWN" | "OPTED_IN" | "OPTED_OUT";
+        source?: "STAFF_RECORDED" | "CUSTOMER_REQUEST" | "PAPER_FORM" | "VERBAL" | "EXISTING_CUSTOMER_RECORD" | "OTHER";
+      }) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "recordCustomerSmsConsent", payload: input });
+        }
+        update((draft) => ({
+          ...draft,
+          customers: draft.customers.map((customer) =>
+            customer.id === input.customerId
+              ? {
+                  ...customer,
+                  smsConsent: input.status === "OPTED_IN",
+                  smsConsentStatus: input.status,
+                  smsConsentSource: input.status === "UNKNOWN" ? undefined : input.source ?? "STAFF_RECORDED",
+                  smsConsentRecordedAt: input.status === "UNKNOWN" ? undefined : new Date().toISOString(),
+                  smsConsentRecordedByUserId: input.status === "UNKNOWN" ? undefined : actorUserId(draft),
+                }
+              : customer,
+          ),
+        }));
+        return { ok: true, message: undefined };
+      },
+      async sendCustomerSms(input: {
+        customerId: string;
+        vehicleId: string;
+        opportunityIds: string[];
+        message: string;
+        appointmentRequestLinkId?: string;
+        idempotencyKey?: string;
+        duplicateOverride?: boolean;
+      }) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "sendCustomerSms", payload: input });
+        }
+        const now = new Date().toISOString();
+        const outreachId = input.idempotencyKey ? `outreach-${input.idempotencyKey}` : `outreach-sms-${Date.now()}`;
+        update((draft) => {
+          const customer = draft.customers.find((item) => item.id === input.customerId);
+          if (!customer || customer.smsConsentStatus !== "OPTED_IN") return draft;
+          const selected = draft.maintenanceRecords.filter((record) =>
+            draft.revenueOpportunities.some((opportunity) =>
+              input.opportunityIds.includes(opportunity.id) && opportunity.maintenanceRecordId === record.id,
+            ),
+          );
+          const declined = draft.declinedWorkRecords.filter((record) =>
+            draft.revenueOpportunities.some((opportunity) =>
+              input.opportunityIds.includes(opportunity.id) && opportunity.declinedWorkRecordId === record.id,
+            ),
+          );
+          return {
+            ...draft,
+            outreachRecords: [
+              ...draft.outreachRecords.filter((record) => record.smsIdempotencyKey !== input.idempotencyKey),
+              {
+                id: outreachId,
+                shopId: draft.shop.id,
+                customerId: input.customerId,
+                vehicleId: input.vehicleId,
+                maintenanceRecordIds: selected.map((record) => record.id),
+                serviceNames: [
+                  ...selected.map((record) => record.serviceName),
+                  ...declined.map((record) => record.serviceName),
+                ],
+                message: input.message,
+                channel: "TEXT",
+                sentAt: now,
+                manuallySentAt: now,
+                responseStatus: "NO_RESPONSE",
+                opportunityId: input.opportunityIds[0],
+                appointmentRequestLinkId: input.appointmentRequestLinkId,
+                performedByUserId: actorUserId(draft),
+                smsRecipientPhone: customer.phone,
+                smsProvider: "local-demo",
+                smsDeliveryStatus: "SIMULATED",
+                smsSentAt: now,
+                smsIdempotencyKey: input.idempotencyKey,
+                providerExternalId: `local-demo-${Date.now()}`,
+                status: "MANUALLY_SENT",
+              },
+            ],
+            revenueOpportunities: draft.revenueOpportunities.map((opportunity) =>
+              input.opportunityIds.includes(opportunity.id)
+                ? { ...opportunity, stage: "CONTACTED", lastActivityAt: now }
+                : opportunity,
+            ),
+          };
+        });
+        return { ok: true, message: "Simulated SMS sent in local demo." };
+      },
       async snoozeOpportunity(input: {
         customerId: string;
         vehicleId: string;
@@ -2096,6 +2195,7 @@ export function useDemoStore() {
               email: text(normalized.customerEmail),
               preferredContact: "SMS" as const,
               smsConsent: Boolean(text(normalized.customerPhone)),
+              smsConsentStatus: "UNKNOWN" as const,
               emailConsent: Boolean(text(normalized.customerEmail)),
               callConsent: Boolean(text(normalized.customerPhone)),
               address: "",

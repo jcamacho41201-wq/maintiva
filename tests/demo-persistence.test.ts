@@ -40,6 +40,7 @@ describe("demo persistence mode", () => {
 
     await expect(mutatePilotState({ action: "importCsvRows", payload: {} })).resolves.toEqual({
       ok: false,
+      code: "MUTATION_FAILED",
       message: "Unable to save changes.",
     });
   });
