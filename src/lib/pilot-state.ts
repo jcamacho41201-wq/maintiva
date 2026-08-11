@@ -57,6 +57,7 @@ import {
   type NormalizedCsvValue,
 } from "@/lib/csv-import";
 import { createCustomerBookingLink } from "@/lib/customer-booking";
+import { canPermanentlyDeleteCustomers } from "@/lib/customer-deletion";
 import {
   stateAppointmentRequestLinks,
   stateAppointmentRequests,
@@ -2502,6 +2503,125 @@ export async function updatePilotCustomer(
   await prisma.customer.update({
     where: { id: customerId },
     data: parsed,
+  });
+}
+
+export async function deletePilotCustomer(
+  context: AuthenticatedShopContext,
+  customerId: string,
+) {
+  if (!canPermanentlyDeleteCustomers(context.role)) {
+    throw new SafeActionError({
+      code: "CUSTOMER_DELETE_FORBIDDEN",
+      message: "Only owners and managers can permanently delete customers.",
+      status: 403,
+      table: "Customer",
+      operation: "DELETE",
+    });
+  }
+
+  const existing = await prisma.customer.findFirst({
+    where: { id: customerId, shopId: context.shopId, archivedAt: null },
+    select: { id: true },
+  });
+
+  if (!existing) {
+    throw new SafeActionError({
+      code: "CUSTOMER_NOT_IN_ACTIVE_SHOP",
+      message: "Customer was not found in the active shop.",
+      status: 404,
+      table: "Customer",
+      operation: "DELETE",
+    });
+  }
+
+  await prisma.$transaction(async (tx) => {
+    const [vehicles, appointments, requestLinks, requests, bookingLinks] = await Promise.all([
+      tx.vehicle.findMany({
+        where: { shopId: context.shopId, customerId },
+        select: { id: true },
+      }),
+      tx.appointment.findMany({
+        where: { shopId: context.shopId, customerId },
+        select: { id: true },
+      }),
+      tx.appointmentRequestLink.findMany({
+        where: { shopId: context.shopId, customerId },
+        select: { id: true },
+      }),
+      tx.appointmentRequest.findMany({
+        where: { shopId: context.shopId, customerId },
+        select: { id: true },
+      }),
+      tx.customerBookingLink.findMany({
+        where: { shopId: context.shopId, customerId },
+        select: { id: true },
+      }),
+    ]);
+
+    const vehicleIds = vehicles.map((vehicle) => vehicle.id);
+    const appointmentIds = appointments.map((appointment) => appointment.id);
+    const requestLinkIds = requestLinks.map((link) => link.id);
+    const requestIds = requests.map((request) => request.id);
+    const bookingLinkIds = bookingLinks.map((link) => link.id);
+
+    await tx.appointmentRequestService.deleteMany({
+      where: { shopId: context.shopId, appointmentRequestId: { in: requestIds } },
+    });
+    await tx.appointmentRequest.deleteMany({
+      where: { shopId: context.shopId, customerId },
+    });
+    await tx.appointmentRequestLinkService.deleteMany({
+      where: { shopId: context.shopId, requestLinkId: { in: requestLinkIds } },
+    });
+    await tx.appointmentRequestLink.deleteMany({
+      where: { shopId: context.shopId, customerId },
+    });
+    await tx.appointmentService.deleteMany({
+      where: { shopId: context.shopId, appointmentId: { in: appointmentIds } },
+    });
+    await tx.appointmentChangeRecord.deleteMany({
+      where: {
+        shopId: context.shopId,
+        OR: [
+          { appointmentId: { in: appointmentIds } },
+          { bookingLinkId: { in: bookingLinkIds } },
+        ],
+      },
+    });
+    await tx.outreachRecord.deleteMany({
+      where: { shopId: context.shopId, customerId },
+    });
+    await tx.customerBookingLink.deleteMany({
+      where: { shopId: context.shopId, customerId },
+    });
+    await tx.maintenanceRevenueOpportunity.deleteMany({
+      where: { shopId: context.shopId, customerId },
+    });
+    await tx.declinedWorkRecord.deleteMany({
+      where: { shopId: context.shopId, customerId },
+    });
+    await tx.serviceHistoryRecord.deleteMany({
+      where: { shopId: context.shopId, customerId },
+    });
+    await tx.vehicleMaintenanceRecord.deleteMany({
+      where: { shopId: context.shopId, vehicleId: { in: vehicleIds } },
+    });
+    await tx.vehicleMileageReading.deleteMany({
+      where: { shopId: context.shopId, vehicleId: { in: vehicleIds } },
+    });
+    await tx.vehicleDrivingProfile.deleteMany({
+      where: { shopId: context.shopId, vehicleId: { in: vehicleIds } },
+    });
+    await tx.appointment.deleteMany({
+      where: { shopId: context.shopId, customerId },
+    });
+    await tx.vehicle.deleteMany({
+      where: { shopId: context.shopId, customerId },
+    });
+    await tx.customer.deleteMany({
+      where: { id: customerId, shopId: context.shopId },
+    });
   });
 }
 

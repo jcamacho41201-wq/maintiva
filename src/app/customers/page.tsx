@@ -32,6 +32,13 @@ export default function CustomersPage() {
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState(emptyCustomerForm());
   const [error, setError] = useState("");
+  const [success] = useState(() => {
+    if (typeof window === "undefined") return "";
+    const message = window.sessionStorage.getItem("maintiva-customer-delete-success");
+    if (!message) return "";
+    window.sessionStorage.removeItem("maintiva-customer-delete-success");
+    return message;
+  });
 
   const filteredCustomers = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -116,6 +123,12 @@ export default function CustomersPage() {
           </button>
         </div>
       </div>
+
+      {success && (
+        <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700">
+          {success}
+        </p>
+      )}
 
       <Card>
         <CardHeader className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">

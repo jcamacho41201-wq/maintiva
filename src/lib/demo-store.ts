@@ -40,6 +40,7 @@ import {
   type NormalizedCsvValue,
 } from "@/lib/csv-import";
 import { calculateDrivingProfile } from "@/lib/adaptive-mileage";
+import { removeDeletedCustomerFromState } from "@/lib/customer-deletion";
 import { resolveForecastAsOfDate } from "@/lib/forecast-dates";
 import { currentDateInTimeZone } from "@/lib/utils";
 
@@ -938,6 +939,14 @@ export function useDemoStore() {
             customer.id === customerId ? { ...customer, ...input } : customer,
           ),
         }));
+        return Promise.resolve({ ok: true, message: undefined });
+      },
+      deleteCustomer(customerId: string) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "deleteCustomer", id: customerId });
+        }
+
+        update((draft) => removeDeletedCustomerFromState(draft, customerId));
         return Promise.resolve({ ok: true, message: undefined });
       },
       addVehicle(input: Omit<Vehicle, "id" | "shopId" | "overallHealth" | "lastServiceDate" | "vehicleType"> & { initialMileageReadingDate?: string }) {

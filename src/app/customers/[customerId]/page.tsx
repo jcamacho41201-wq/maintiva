@@ -1,9 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
-import { Car, ClipboardCheck, Gauge, Pencil, Plus, X } from "lucide-react";
+import { AlertTriangle, Car, ClipboardCheck, Gauge, Pencil, Plus, Trash2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
@@ -19,6 +19,7 @@ import {
 import { getOpenRevenueOpportunitiesForCustomer, type RevenueOpportunity } from "@/lib/revenue-recovery";
 import { useDemoStore } from "@/lib/demo-store";
 import { type Customer, type Vehicle } from "@/lib/demo-data";
+import { canPermanentlyDeleteCustomers, customerDeletionSummary, type CustomerDeletionSummary } from "@/lib/customer-deletion";
 import { currentDateInTimeZone, formatCurrency, formatDate, formatLaborHours, formatMileage, formatServiceMileage } from "@/lib/utils";
 
 function editableCustomerFields(customer: Customer) {
@@ -64,12 +65,14 @@ function vehicleMileageDisplayValue(state: ReturnType<typeof useDemoStore>["stat
 
 export default function CustomerDetailPage() {
   const params = useParams<{ customerId: string }>();
+  const router = useRouter();
   const store = useDemoStore();
   const { state } = store;
   const customer = state.customers.find((item) => item.id === params.customerId);
   const [editingCustomer, setEditingCustomer] = useState(false);
   const [addingVehicle, setAddingVehicle] = useState(false);
   const [editingVehicleId, setEditingVehicleId] = useState<string | null>(null);
+  const [deletingCustomer, setDeletingCustomer] = useState(false);
   const [error, setError] = useState("");
 
   if (!customer) {
@@ -97,6 +100,9 @@ export default function CustomerDetailPage() {
   const outreach = state.outreachRecords.filter((record) => record.customerId === customer.id);
   const openRevenueOpportunities = getOpenRevenueOpportunitiesForCustomer(state, customer.id);
   const openOpportunityValue = openRevenueOpportunities.reduce((sum, opportunity) => sum + opportunity.estimatedRevenueCents, 0);
+  const currentUser = state.users.find((user) => user.id === state.currentUserId) ?? state.users[0];
+  const canDeleteCustomer = canPermanentlyDeleteCustomers(currentUser?.role);
+  const deleteSummary = customerDeletionSummary(state, customer.id);
 
   async function saveCustomer(input: ReturnType<typeof editableCustomerFields>) {
     if (!input.firstName.trim() || !input.lastName.trim()) {
@@ -147,6 +153,18 @@ export default function CustomerDetailPage() {
     setError("");
   }
 
+  async function permanentlyDeleteCustomer() {
+    const result = await store.deleteCustomer(customerId);
+    if (!result.ok) {
+      setError(result.message ?? "Customer could not be deleted. Check permissions and try again.");
+      setDeletingCustomer(false);
+      return;
+    }
+
+    window.sessionStorage.setItem("maintiva-customer-delete-success", "Customer deleted permanently.");
+    router.push("/customers");
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
@@ -156,11 +174,17 @@ export default function CustomerDetailPage() {
             {customer.phone} · {customer.email} · Prefers {customer.preferredContact}
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <button onClick={() => setEditingCustomer(true)} className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 bg-white px-4 py-2 text-sm font-semibold">
             <Pencil className="h-4 w-4" />
             Edit customer
           </button>
+          {canDeleteCustomer && (
+            <button onClick={() => setDeletingCustomer(true)} className="inline-flex items-center gap-2 rounded-lg border border-red-200 bg-white px-4 py-2 text-sm font-semibold text-red-700">
+              <Trash2 className="h-4 w-4" />
+              Delete customer
+            </button>
+          )}
           <button onClick={() => setAddingVehicle(true)} className="inline-flex items-center gap-2 rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white">
             <Plus className="h-4 w-4" />
             Add Vehicle
@@ -379,6 +403,15 @@ export default function CustomerDetailPage() {
         />
       )}
 
+      {deletingCustomer && (
+        <CustomerDeleteModal
+          customer={customer}
+          summary={deleteSummary}
+          onClose={() => setDeletingCustomer(false)}
+          onDelete={permanentlyDeleteCustomer}
+        />
+      )}
+
       {addingVehicle && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/40 p-4">
           <form onSubmit={addVehicle} className="w-full max-w-2xl rounded-lg border border-zinc-200 bg-white shadow-xl">
@@ -497,6 +530,96 @@ function CustomerEditModal({
         <div className="flex justify-end gap-2 border-t border-zinc-100 p-5">
           <button onClick={onClose} className="rounded-lg border border-zinc-200 px-4 py-2 text-sm font-semibold">Cancel</button>
           <button onClick={() => void onSave(form)} className="rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white">Save changes</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CustomerDeleteModal({
+  customer,
+  summary,
+  onClose,
+  onDelete,
+}: {
+  customer: Customer;
+  summary: CustomerDeletionSummary;
+  onClose: () => void;
+  onDelete: () => Promise<void>;
+}) {
+  const [confirmation, setConfirmation] = useState("");
+  const [saving, setSaving] = useState(false);
+  const canSubmit = confirmation.trim().toUpperCase() === "DELETE";
+  const counts = [
+    ["Vehicles", summary.vehicles],
+    ["Maintenance items", summary.maintenanceRecords],
+    ["Service history", summary.serviceRecords],
+    ["Declined work", summary.declinedWorkRecords],
+    ["Revenue opportunities", summary.revenueOpportunities],
+    ["Outreach records", summary.outreachRecords],
+    ["Appointments", summary.appointments],
+    ["Request links", summary.appointmentRequestLinks],
+    ["Appointment requests", summary.appointmentRequests],
+    ["Booking links", summary.customerBookingLinks],
+    ["Mileage readings", summary.mileageReadings],
+  ];
+
+  async function submitDelete() {
+    if (!canSubmit || saving) return;
+    setSaving(true);
+    try {
+      await onDelete();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/40 p-4">
+      <div className="w-full max-w-2xl rounded-lg border border-red-200 bg-white shadow-xl">
+        <div className="flex items-start justify-between gap-4 border-b border-red-100 p-5">
+          <div className="flex gap-3">
+            <span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-red-50 text-red-700">
+              <AlertTriangle className="h-5 w-5" />
+            </span>
+            <div>
+              <h2 className="text-lg font-semibold text-red-800">Delete customer permanently</h2>
+              <p className="mt-1 text-sm text-zinc-600">
+                This removes {customer.firstName} {customer.lastName} and customer-specific vehicle, appointment, request, outreach, and opportunity records.
+              </p>
+            </div>
+          </div>
+          <button onClick={onClose} className="grid h-9 w-9 place-items-center rounded-lg border border-zinc-200">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="space-y-4 p-5">
+          <div className="grid gap-2 sm:grid-cols-2">
+            {counts.map(([label, value]) => (
+              <div key={label} className="flex items-center justify-between rounded-lg border border-zinc-200 px-3 py-2 text-sm">
+                <span className="text-zinc-600">{label}</span>
+                <span className="font-semibold">{value}</span>
+              </div>
+            ))}
+          </div>
+          <label className="block text-sm font-medium">
+            Type DELETE to confirm
+            <input
+              value={confirmation}
+              onChange={(event) => setConfirmation(event.target.value)}
+              className="mt-2 h-10 w-full rounded-lg border border-zinc-200 px-3 outline-none focus:border-red-400"
+            />
+          </label>
+        </div>
+        <div className="flex justify-end gap-2 border-t border-zinc-100 p-5">
+          <button onClick={onClose} className="rounded-lg border border-zinc-200 px-4 py-2 text-sm font-semibold">Cancel</button>
+          <button
+            onClick={() => void submitDelete()}
+            disabled={!canSubmit || saving}
+            className="rounded-lg bg-red-700 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:bg-red-200"
+          >
+            {saving ? "Deleting..." : "Delete permanently"}
+          </button>
         </div>
       </div>
     </div>
