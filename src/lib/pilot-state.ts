@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { Prisma } from "@/generated/prisma/client";
+import { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
 import {
   serviceDefinitions as defaultServices,
@@ -2506,6 +2506,22 @@ export async function updatePilotCustomer(
   });
 }
 
+async function transactionTableExists(tx: Prisma.TransactionClient, tableName: string) {
+  try {
+    const rows = await tx.$queryRaw<Array<{ exists: boolean }>>(Prisma.sql`
+      select exists (
+        select 1
+        from information_schema.tables
+        where table_schema = 'public'
+          and table_name = ${tableName}
+      ) as "exists"
+    `);
+    return Boolean(rows[0]?.exists);
+  } catch {
+    return false;
+  }
+}
+
 export async function deletePilotCustomer(
   context: AuthenticatedShopContext,
   customerId: string,
@@ -2536,7 +2552,12 @@ export async function deletePilotCustomer(
   }
 
   await prisma.$transaction(async (tx) => {
-    const [vehicles, appointments, requestLinks, requests, bookingLinks] = await Promise.all([
+    const [hasCustomerBookingLinkTable, hasAppointmentChangeRecordTable] = await Promise.all([
+      transactionTableExists(tx, "CustomerBookingLink"),
+      transactionTableExists(tx, "AppointmentChangeRecord"),
+    ]);
+
+    const [vehicles, appointments, requestLinks, requests] = await Promise.all([
       tx.vehicle.findMany({
         where: { shopId: context.shopId, customerId },
         select: { id: true },
@@ -2553,17 +2574,18 @@ export async function deletePilotCustomer(
         where: { shopId: context.shopId, customerId },
         select: { id: true },
       }),
-      tx.customerBookingLink.findMany({
-        where: { shopId: context.shopId, customerId },
-        select: { id: true },
-      }),
     ]);
 
     const vehicleIds = vehicles.map((vehicle) => vehicle.id);
     const appointmentIds = appointments.map((appointment) => appointment.id);
     const requestLinkIds = requestLinks.map((link) => link.id);
     const requestIds = requests.map((request) => request.id);
-    const bookingLinkIds = bookingLinks.map((link) => link.id);
+    const bookingLinkIds = hasCustomerBookingLinkTable
+      ? (await tx.customerBookingLink.findMany({
+          where: { shopId: context.shopId, customerId },
+          select: { id: true },
+        })).map((link) => link.id)
+      : [];
 
     await tx.appointmentRequestService.deleteMany({
       where: { shopId: context.shopId, appointmentRequestId: { in: requestIds } },
@@ -2580,21 +2602,25 @@ export async function deletePilotCustomer(
     await tx.appointmentService.deleteMany({
       where: { shopId: context.shopId, appointmentId: { in: appointmentIds } },
     });
-    await tx.appointmentChangeRecord.deleteMany({
-      where: {
-        shopId: context.shopId,
-        OR: [
-          { appointmentId: { in: appointmentIds } },
-          { bookingLinkId: { in: bookingLinkIds } },
-        ],
-      },
-    });
+    if (hasAppointmentChangeRecordTable) {
+      await tx.appointmentChangeRecord.deleteMany({
+        where: {
+          shopId: context.shopId,
+          OR: [
+            { appointmentId: { in: appointmentIds } },
+            { bookingLinkId: { in: bookingLinkIds } },
+          ],
+        },
+      });
+    }
     await tx.outreachRecord.deleteMany({
       where: { shopId: context.shopId, customerId },
     });
-    await tx.customerBookingLink.deleteMany({
-      where: { shopId: context.shopId, customerId },
-    });
+    if (hasCustomerBookingLinkTable) {
+      await tx.customerBookingLink.deleteMany({
+        where: { shopId: context.shopId, customerId },
+      });
+    }
     await tx.maintenanceRevenueOpportunity.deleteMany({
       where: { shopId: context.shopId, customerId },
     });

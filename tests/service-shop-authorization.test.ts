@@ -3,6 +3,7 @@ import { z } from "zod";
 
 const prismaMock = vi.hoisted(() => ({
   $executeRaw: vi.fn(),
+  $queryRaw: vi.fn(),
   $transaction: vi.fn(),
   serviceDefinition: {
     findUnique: vi.fn(),
@@ -131,6 +132,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   prismaMock.$executeRaw.mockResolvedValue(0);
   prismaMock.$transaction.mockImplementation((callback) => callback(prismaMock));
+  prismaMock.$queryRaw.mockResolvedValue([{ exists: true }]);
   prismaMock.vehicleMaintenanceRecord.findMany.mockResolvedValue([]);
   prismaMock.vehicle.findMany.mockResolvedValue([]);
   prismaMock.appointment.findMany.mockResolvedValue([]);
@@ -232,6 +234,27 @@ describe("service shop authorization", () => {
       where: { shopId: "shop-a", customerId: "customer-a" },
     });
     expect(prismaMock.maintenanceRevenueOpportunity.deleteMany).toHaveBeenCalledWith({
+      where: { shopId: "shop-a", customerId: "customer-a" },
+    });
+    expect(prismaMock.customer.deleteMany).toHaveBeenCalledWith({
+      where: { id: "customer-a", shopId: "shop-a" },
+    });
+  });
+
+  it("does not require optional self-scheduling tables to delete a customer", async () => {
+    prismaMock.$queryRaw.mockResolvedValue([{ exists: false }]);
+    prismaMock.customer.findFirst.mockResolvedValue({ id: "customer-a" });
+    prismaMock.vehicle.findMany.mockResolvedValue([{ id: "vehicle-a" }]);
+    prismaMock.appointment.findMany.mockResolvedValue([{ id: "appointment-a" }]);
+    prismaMock.appointmentRequest.findMany.mockResolvedValue([{ id: "request-a" }]);
+    prismaMock.appointmentRequestLink.findMany.mockResolvedValue([{ id: "request-link-a" }]);
+
+    await deletePilotCustomer(context, "customer-a");
+
+    expect(prismaMock.customerBookingLink.findMany).not.toHaveBeenCalled();
+    expect(prismaMock.customerBookingLink.deleteMany).not.toHaveBeenCalled();
+    expect(prismaMock.appointmentChangeRecord.deleteMany).not.toHaveBeenCalled();
+    expect(prismaMock.appointmentRequest.deleteMany).toHaveBeenCalledWith({
       where: { shopId: "shop-a", customerId: "customer-a" },
     });
     expect(prismaMock.customer.deleteMany).toHaveBeenCalledWith({

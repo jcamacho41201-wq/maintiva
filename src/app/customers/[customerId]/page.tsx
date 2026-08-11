@@ -156,12 +156,12 @@ export default function CustomerDetailPage() {
   async function permanentlyDeleteCustomer() {
     const result = await store.deleteCustomer(customerId);
     if (!result.ok) {
-      setError(result.message ?? "Customer could not be deleted. Check permissions and try again.");
+      setError("Unable to delete customer. No records were removed.");
       setDeletingCustomer(false);
       return;
     }
 
-    window.sessionStorage.setItem("maintiva-customer-delete-success", "Customer deleted permanently.");
+    window.sessionStorage.setItem("maintiva-customer-delete-success", "Customer deleted.");
     router.push("/customers");
   }
 
