@@ -1045,9 +1045,9 @@ export async function acceptPilotMaintenanceAppointmentRequest(context: Authenti
         source: "AUTOMATION",
         attributionSource: "MAINTIVA_OUTREACH",
         opportunityId: request.opportunityId,
-        approvedAt: now,
         notes: "Confirmed from Maintiva appointment request.",
       },
+      select: { id: true },
     });
     if (!existingAppointment) {
       await tx.appointmentService.createMany({

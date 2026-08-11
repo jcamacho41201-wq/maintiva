@@ -85,7 +85,48 @@ describe("appointment request link creation", () => {
     expect(loadLinkByToken).not.toContain("bookingLinkId");
     expect(acceptRequest).toContain("finalAppointment: { select: { id: true } }");
     expect(acceptRequest).toContain("select: { id: true }");
+    expect(acceptRequest).toContain("select: { id: true },");
     expect(acceptRequest).not.toContain("finalAppointment: true");
+    expect(acceptRequest).not.toContain("approvedAt");
+    expect(acceptRequest).not.toContain("bookingLinkId");
+    expect(acceptRequest).not.toContain("requestedAt");
+    expect(acceptRequest).not.toContain("customerNotes");
+    expect(acceptRequest).not.toContain("internalNotes");
+  });
+
+  it("accepts pending maintenance requests idempotently without counting its own capacity hold", () => {
+    const workflow = source("src/lib/appointment-request-workflow.ts");
+    const acceptStart = workflow.indexOf("export async function acceptPilotMaintenanceAppointmentRequest");
+    const acceptEnd = workflow.indexOf("export async function declinePilotMaintenanceAppointmentRequest", acceptStart);
+    const acceptRequest = workflow.slice(acceptStart, acceptEnd);
+
+    expect(acceptRequest).toContain("pg_advisory_xact_lock");
+    expect(acceptRequest).toContain('request.status === "APPROVED" && request.finalAppointmentId');
+    expect(acceptRequest).toContain('request.status !== "PENDING" || request.expiresAt <= now');
+    expect(acceptRequest).toContain("excludeRequestId: request.id");
+    expect(acceptRequest).toContain("const appointmentId = `appt-${request.id}`");
+    expect(acceptRequest).toContain("const existingAppointment = await tx.appointment.findUnique");
+    expect(acceptRequest).toContain("existingAppointment ?? await tx.appointment.create");
+    expect(acceptRequest).toContain('status: "CONFIRMED"');
+    expect(acceptRequest).toContain("totalLaborMinutes: request.totalLaborMinutes");
+    expect(acceptRequest).toContain("totalPriceCents: request.estimatedRevenueCents");
+    expect(acceptRequest).toContain("appointmentService.createMany");
+    expect(acceptRequest).toContain('status: "APPROVED"');
+    expect(acceptRequest).toContain("finalAppointmentId: appointment.id");
+    expect(acceptRequest).toContain('status: "USED"');
+    expect(acceptRequest).toContain('data: { stage: "BOOKED", lastActivityAt: now }');
+    expect(acceptRequest).not.toContain("bookPilotAppointment");
+  });
+
+  it("shows visible Accept progress/errors and removes approved request events from the calendar", () => {
+    const appointmentsPage = source("src/app/appointments/page.tsx");
+
+    expect(appointmentsPage).toContain("processingRequestId");
+    expect(appointmentsPage).toContain("requestActionError");
+    expect(appointmentsPage).toContain("Accepting...");
+    expect(appointmentsPage).toContain("Unable to confirm this appointment.");
+    expect(appointmentsPage).toContain("disabled={processingRequestId === request.id}");
+    expect(appointmentsPage).toContain('.filter((request) => request.status === "PENDING")');
   });
 
   it("matches opportunities to Smart Maintenance Blocks by canonical ServiceDefinition ID", () => {

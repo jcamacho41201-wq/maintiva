@@ -93,6 +93,8 @@ export default function AppointmentsPage() {
   const [filter, setFilter] = useState<CalendarFilter>("ALL");
   const [cursor, setCursor] = useState(() => startOfWeek(new Date()));
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
+  const [processingRequestId, setProcessingRequestId] = useState<string | null>(null);
+  const [requestActionError, setRequestActionError] = useState<{ requestId: string; message: string } | null>(null);
   const [completion, setCompletion] = useState<{
     appointmentId: string;
     revenue: string;
@@ -144,13 +146,15 @@ export default function AppointmentsPage() {
           block,
         }];
       }),
-      ...state.appointmentRequests.map((request): CalendarEvent => ({
-        id: `request-${request.id}`,
-        type: "REQUEST",
-        startsAt: request.alternateProposedStart ?? request.requestedStart,
-        endsAt: request.alternateProposedEnd ?? request.requestedEnd,
-        request,
-      })),
+      ...state.appointmentRequests
+        .filter((request) => request.status === "PENDING")
+        .map((request): CalendarEvent => ({
+          id: `request-${request.id}`,
+          type: "REQUEST",
+          startsAt: request.alternateProposedStart ?? request.requestedStart,
+          endsAt: request.alternateProposedEnd ?? request.requestedEnd,
+          request,
+        })),
       ...state.appointments.map((appointment): CalendarEvent => ({
         id: `appointment-${appointment.id}`,
         type: "APPOINTMENT",
@@ -174,6 +178,32 @@ export default function AppointmentsPage() {
   }, [dateFrom, dateTo, filter, state.appointmentRequests, state.appointments, state.services, state.shop.id, state.shop.timezone, state.smartMaintenanceBlockBlackouts, state.smartMaintenanceBlocks, view]);
 
   const selectedEvent = calendarEvents.find((event) => event.id === selectedEventId) ?? null;
+
+  async function acceptRequest(requestId: string) {
+    setProcessingRequestId(requestId);
+    setRequestActionError(null);
+    const result = await acceptAppointmentRequest(requestId);
+    setProcessingRequestId(null);
+    if (!result.ok) {
+      setRequestActionError({
+        requestId,
+        message: result.message ?? "Unable to confirm this appointment.",
+      });
+    }
+  }
+
+  async function declineRequest(requestId: string, reason: string) {
+    setProcessingRequestId(requestId);
+    setRequestActionError(null);
+    const result = await declineMaintenanceRequest(requestId, reason);
+    setProcessingRequestId(null);
+    if (!result.ok) {
+      setRequestActionError({
+        requestId,
+        message: result.message ?? "Unable to update this appointment request.",
+      });
+    }
+  }
 
   function customerName(customerId: string) {
     const customer = state.customers.find((item) => item.id === customerId);
@@ -278,9 +308,26 @@ export default function AppointmentsPage() {
           </div>
           {request.status === "PENDING" && (
             <div className="mt-4 flex flex-wrap gap-2">
-              <button onClick={() => void acceptAppointmentRequest(request.id)} className="inline-flex items-center gap-2 rounded-lg bg-violet-950 px-3 py-2 text-sm font-semibold text-white"><CheckCircle2 className="h-4 w-4" />Accept</button>
-              <button onClick={() => void declineMaintenanceRequest(request.id, "Declined from Maintiva calendar.")} className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 px-3 py-2 text-sm font-semibold text-zinc-800"><XCircle className="h-4 w-4" />Decline</button>
+              <button
+                onClick={() => void acceptRequest(request.id)}
+                disabled={processingRequestId === request.id}
+                className="inline-flex items-center gap-2 rounded-lg bg-violet-950 px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
+              >
+                <CheckCircle2 className="h-4 w-4" />
+                {processingRequestId === request.id ? "Accepting..." : "Accept"}
+              </button>
+              <button
+                onClick={() => void declineRequest(request.id, "Declined from Maintiva calendar.")}
+                disabled={processingRequestId === request.id}
+                className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 px-3 py-2 text-sm font-semibold text-zinc-800 disabled:opacity-60"
+              >
+                <XCircle className="h-4 w-4" />
+                Decline
+              </button>
               <Link href={`/customers/${request.customerId}`} className="rounded-lg border border-zinc-200 px-3 py-2 text-sm font-semibold text-zinc-800">Open Customer</Link>
+              {requestActionError?.requestId === request.id && (
+                <p className="w-full rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">{requestActionError.message}</p>
+              )}
             </div>
           )}
         </div>
@@ -441,9 +488,24 @@ export default function AppointmentsPage() {
                 </div>
               </div>
               <div className="mt-4 flex flex-wrap gap-2">
-                <button onClick={() => void acceptAppointmentRequest(request.id)} className="rounded-lg bg-violet-950 px-3 py-2 text-sm font-semibold text-white">Accept</button>
-                <button onClick={() => void declineMaintenanceRequest(request.id, "Declined from request list.")} className="rounded-lg border border-zinc-200 px-3 py-2 text-sm font-semibold text-zinc-800">Decline</button>
+                <button
+                  onClick={() => void acceptRequest(request.id)}
+                  disabled={processingRequestId === request.id}
+                  className="rounded-lg bg-violet-950 px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                >
+                  {processingRequestId === request.id ? "Accepting..." : "Accept"}
+                </button>
+                <button
+                  onClick={() => void declineRequest(request.id, "Declined from request list.")}
+                  disabled={processingRequestId === request.id}
+                  className="rounded-lg border border-zinc-200 px-3 py-2 text-sm font-semibold text-zinc-800 disabled:opacity-60"
+                >
+                  Decline
+                </button>
                 <Link href={`/customers/${request.customerId}`} className="rounded-lg border border-zinc-200 px-3 py-2 text-sm font-semibold text-zinc-800">Open Customer</Link>
+                {requestActionError?.requestId === request.id && (
+                  <p className="w-full rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">{requestActionError.message}</p>
+                )}
               </div>
             </div>
           ))}
