@@ -122,6 +122,11 @@ Optional:
 - `GOOGLE_CLIENT_SECRET`
 - `VIN_API_BASE_URL`
 
+Customer-facing appointment request links resolve their public base URL by environment:
+production Vercel deployments use `https://app.getmaintiva.com`, preview deployments
+may use the current preview origin for QA, and local development uses the local origin
+or `APP_URL`. Production request links must not use a `vercel.app` hostname.
+
 ## Demo and Admin Procedure
 
 The seeded demo shop is `Cedar Bay Auto Works` with demo-compatible users:

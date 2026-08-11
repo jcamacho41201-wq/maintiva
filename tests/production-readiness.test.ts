@@ -92,6 +92,7 @@ describe("production readiness safeguards", () => {
     expect(workflow).toContain("hashAppointmentRequestToken");
     expect(workflow).toContain("pg_advisory_xact_lock");
     expect(workflow).toContain("appointmentRequestIdempotencyKey");
+    expect(source("src/app/api/pilot/mutate/route.ts")).toContain("publicAppBaseUrl");
   });
 
   it("adds a tenant-scoped AppointmentRequest migration without enabling anonymous table access", () => {

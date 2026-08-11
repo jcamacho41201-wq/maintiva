@@ -1,6 +1,23 @@
 import { NextResponse } from "next/server";
 import { publicAppointmentRequestState } from "@/lib/appointment-request-workflow";
+import {
+  hashAppointmentRequestToken,
+  isAppointmentRequestTokenFormat,
+  normalizeAppointmentRequestToken,
+} from "@/lib/appointment-request-tokens";
 import { SafeActionError } from "@/lib/server-diagnostics";
+
+function safeRequestDiagnostics(token: string) {
+  const normalizedToken = normalizeAppointmentRequestToken(token);
+  const tokenHash = normalizedToken ? hashAppointmentRequestToken(normalizedToken) : "";
+  return {
+    reason: "SERVER_ERROR",
+    route: "/api/request/[token]/context",
+    tokenLength: normalizedToken.length,
+    tokenFormatValid: isAppointmentRequestTokenFormat(normalizedToken),
+    tokenHashPrefix: tokenHash.slice(0, 8),
+  };
+}
 
 export async function GET(
   request: Request,
@@ -13,7 +30,10 @@ export async function GET(
     if (error instanceof SafeActionError) {
       return NextResponse.json({ code: error.code, message: error.message }, { status: error.status });
     }
-    console.error("Maintiva appointment request context failed", { error: error instanceof Error ? error.message : "unknown" });
+    console.error("Maintiva appointment request context failed", {
+      ...safeRequestDiagnostics(token),
+      error: error instanceof Error ? error.message : "unknown",
+    });
     return NextResponse.json({ code: "APPOINTMENT_REQUEST_CONTEXT_FAILED", message: "Appointment request link is not available." }, { status: 500 });
   }
 }

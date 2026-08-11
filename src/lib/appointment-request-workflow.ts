@@ -64,18 +64,21 @@ type PublicRequestState =
   | { state: "unavailable"; message: string };
 
 type PublicRequestResolutionReason =
-  | "INVALID_TOKEN"
-  | "LINK_NOT_FOUND"
-  | "TOKEN_HASH_MISMATCH"
-  | "REVOKED"
-  | "EXPIRED"
-  | "ALREADY_USED"
+  | "INVALID_TOKEN_FORMAT"
+  | "TOKEN_HASH_NOT_FOUND"
+  | "LINK_REVOKED"
+  | "LINK_EXPIRED"
+  | "LINK_USED"
   | "INVALID_SCOPE"
+  | "CUSTOMER_NOT_FOUND"
+  | "VEHICLE_NOT_FOUND"
+  | "OPPORTUNITY_NOT_FOUND"
+  | "OPPORTUNITY_INELIGIBLE"
   | "SERVICE_SCOPE_MISSING"
-  | "OPPORTUNITY_CLOSED"
-  | "NO_AVAILABILITY"
+  | "NO_ELIGIBLE_BLOCK"
+  | "NO_FUTURE_AVAILABILITY"
   | "FEATURE_DISABLED"
-  | "UNKNOWN";
+  | "SERVER_ERROR";
 
 type PublicResolvedRequest = {
   shop: { name: string };
@@ -459,7 +462,10 @@ async function loadLinkByToken(token: string, client: AppointmentRequestWorkflow
       smartMaintenanceBlock: true,
       services: { orderBy: { createdAt: "asc" } },
       requests: {
-        include: { services: { orderBy: { createdAt: "asc" } }, finalAppointment: true },
+        include: {
+          services: { orderBy: { createdAt: "asc" } },
+          finalAppointment: { select: { scheduledStart: true, scheduledEnd: true } },
+        },
         orderBy: { createdAt: "desc" },
         take: 1,
       },
@@ -727,12 +733,19 @@ function resolvedRequestContext(link: NonNullable<Awaited<ReturnType<typeof load
 }
 
 export async function publicAppointmentRequestState(token: string, request: Request): Promise<PublicRequestState> {
-  assertAppointmentRequestsReleased();
   const normalizedToken = normalizeAppointmentRequestToken(token);
   const tokenHash = normalizedToken ? hashAppointmentRequestToken(normalizedToken) : "";
   const tokenDiagnostics = safeTokenDiagnostics(normalizedToken, tokenHash);
+  if (!isAppointmentRequestsEnabled()) {
+    logPublicRequestResolution("FEATURE_DISABLED", tokenDiagnostics);
+    throw new SafeActionError({
+      code: appointmentRequestsDisabledResponse().code,
+      message: appointmentRequestsDisabledResponse().message,
+      status: 404,
+    });
+  }
   if (!normalizedToken || !isAppointmentRequestTokenFormat(normalizedToken)) {
-    logPublicRequestResolution("INVALID_TOKEN", tokenDiagnostics);
+    logPublicRequestResolution("INVALID_TOKEN_FORMAT", tokenDiagnostics);
     return { state: "unavailable", message: "Appointment request link is not available." };
   }
   const remoteKey = `${request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown"}:${tokenHash.slice(0, 16)}`;
@@ -743,14 +756,7 @@ export async function publicAppointmentRequestState(token: string, request: Requ
   const loaded = await loadLinkByToken(normalizedToken);
   const { link } = loaded;
   if (!link) {
-    logPublicRequestResolution("LINK_NOT_FOUND", tokenDiagnostics);
-    return { state: "unavailable", message: "Appointment request link is not available." };
-  }
-  if (loaded.tokenHash !== tokenHash) {
-    logPublicRequestResolution("TOKEN_HASH_MISMATCH", {
-      ...tokenDiagnostics,
-      loadedHashPrefix: loaded.tokenHash.slice(0, 8),
-    });
+    logPublicRequestResolution("TOKEN_HASH_NOT_FOUND", tokenDiagnostics);
     return { state: "unavailable", message: "Appointment request link is not available." };
   }
 
@@ -766,15 +772,15 @@ export async function publicAppointmentRequestState(token: string, request: Requ
     return { state: "declined", message: "This appointment request was declined. Please contact the shop for another time." };
   }
   if (tokenState === "revoked") {
-    logPublicRequestResolution("REVOKED", { ...tokenDiagnostics, linkStatus: link.status });
+    logPublicRequestResolution("LINK_REVOKED", { ...tokenDiagnostics, linkStatus: link.status });
     return { state: "revoked", message: "This appointment request link is no longer active." };
   }
   if (tokenState === "expired") {
-    logPublicRequestResolution("EXPIRED", { ...tokenDiagnostics, linkStatus: link.status, expiresAt: iso(link.expiresAt) });
+    logPublicRequestResolution("LINK_EXPIRED", { ...tokenDiagnostics, linkStatus: link.status, expiresAt: iso(link.expiresAt) });
     return { state: "expired", message: "This appointment request link has expired." };
   }
   if (tokenState !== "valid") {
-    logPublicRequestResolution(tokenState === "used" ? "ALREADY_USED" : "UNKNOWN", {
+    logPublicRequestResolution("LINK_USED", {
       ...tokenDiagnostics,
       linkStatus: link.status,
     });
@@ -792,7 +798,7 @@ export async function publicAppointmentRequestState(token: string, request: Requ
     return { state: "unavailable", message: "Appointment request link is not available." };
   }
   if (["BOOKED", "COMPLETED", "LOST"].includes(link.opportunity.stage)) {
-    logPublicRequestResolution("OPPORTUNITY_CLOSED", {
+    logPublicRequestResolution("OPPORTUNITY_INELIGIBLE", {
       ...tokenDiagnostics,
       linkStatus: link.status,
       opportunityStage: link.opportunity.stage,
@@ -812,7 +818,7 @@ export async function publicAppointmentRequestState(token: string, request: Requ
     now,
   });
   if (slots.length === 0) {
-    logPublicRequestResolution("NO_AVAILABILITY", {
+    logPublicRequestResolution("NO_FUTURE_AVAILABILITY", {
       ...tokenDiagnostics,
       linkStatus: link.status,
       shopId: safeId(link.shopId),
@@ -993,7 +999,7 @@ export async function acceptPilotMaintenanceAppointmentRequest(context: Authenti
         services: true,
         requestLink: true,
         opportunity: true,
-        finalAppointment: true,
+        finalAppointment: { select: { id: true } },
       },
     });
     if (!request) {
@@ -1024,7 +1030,7 @@ export async function acceptPilotMaintenanceAppointmentRequest(context: Authenti
       });
     }
     const appointmentId = `appt-${request.id}`;
-    const existingAppointment = await tx.appointment.findUnique({ where: { id: appointmentId } });
+    const existingAppointment = await tx.appointment.findUnique({ where: { id: appointmentId }, select: { id: true } });
     const appointment = existingAppointment ?? await tx.appointment.create({
       data: {
         id: appointmentId,

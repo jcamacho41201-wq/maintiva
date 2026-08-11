@@ -50,6 +50,7 @@ import {
 } from "@/lib/server-diagnostics";
 import { BrowserShopIdError, rejectBrowserShopId } from "@/lib/tenant-security";
 import { appointmentRequestsDisabledResponse, isAppointmentRequestsEnabled } from "@/lib/feature-flags";
+import { publicAppBaseUrl } from "@/lib/public-app-url";
 import {
   acceptPilotMaintenanceAppointmentRequest,
   createPilotAppointmentRequestLink,
@@ -417,14 +418,14 @@ export async function POST(request: Request) {
       case "createBookingLink":
         bookingLink = await createPilotBookingLink(context, {
           ...body.payload,
-          appUrl: request.headers.get("origin") ?? process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000",
+          appUrl: publicAppBaseUrl({ requestOrigin: request.headers.get("origin") }),
         });
         mutationCommitted = true;
         break;
       case "createAppointmentRequestLink":
         bookingLink = await createPilotAppointmentRequestLink(context, {
           ...body.payload,
-          appUrl: request.headers.get("origin") ?? process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000",
+          appUrl: publicAppBaseUrl({ requestOrigin: request.headers.get("origin") }),
         });
         mutationCommitted = true;
         break;

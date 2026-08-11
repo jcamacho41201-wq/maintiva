@@ -53,15 +53,15 @@ describe("appointment request link creation", () => {
     expect(workflow).toContain("isAppointmentRequestTokenFormat(normalizedToken)");
     expect(workflow).toContain("Maintiva appointment request public resolution");
     for (const reason of [
-      "INVALID_TOKEN",
-      "LINK_NOT_FOUND",
-      "TOKEN_HASH_MISMATCH",
-      "REVOKED",
-      "EXPIRED",
-      "ALREADY_USED",
+      "INVALID_TOKEN_FORMAT",
+      "TOKEN_HASH_NOT_FOUND",
+      "LINK_REVOKED",
+      "LINK_EXPIRED",
+      "LINK_USED",
       "SERVICE_SCOPE_MISSING",
-      "OPPORTUNITY_CLOSED",
-      "NO_AVAILABILITY",
+      "OPPORTUNITY_INELIGIBLE",
+      "NO_FUTURE_AVAILABILITY",
+      "SERVER_ERROR",
     ]) {
       expect(workflow).toContain(reason);
     }
@@ -69,6 +69,23 @@ describe("appointment request link creation", () => {
     expect(workflow).toContain("tokenFormatValid");
     expect(workflow).not.toContain("rawToken");
     expect(page).toContain("encodeURIComponent(token.trim())");
+  });
+
+  it("keeps public request resolution off unapplied Appointment self-scheduling columns", () => {
+    const workflow = source("src/lib/appointment-request-workflow.ts");
+    const loadStart = workflow.indexOf("async function loadLinkByToken");
+    const loadEnd = workflow.indexOf("async function loadOpportunityTarget", loadStart);
+    const loadLinkByToken = workflow.slice(loadStart, loadEnd);
+    const acceptStart = workflow.indexOf("export async function acceptPilotMaintenanceAppointmentRequest");
+    const acceptEnd = workflow.indexOf("export async function declinePilotMaintenanceAppointmentRequest", acceptStart);
+    const acceptRequest = workflow.slice(acceptStart, acceptEnd);
+
+    expect(loadLinkByToken).toContain("finalAppointment: { select: { scheduledStart: true, scheduledEnd: true } }");
+    expect(loadLinkByToken).not.toContain("finalAppointment: true");
+    expect(loadLinkByToken).not.toContain("bookingLinkId");
+    expect(acceptRequest).toContain("finalAppointment: { select: { id: true } }");
+    expect(acceptRequest).toContain("select: { id: true }");
+    expect(acceptRequest).not.toContain("finalAppointment: true");
   });
 
   it("matches opportunities to Smart Maintenance Blocks by canonical ServiceDefinition ID", () => {
