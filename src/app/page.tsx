@@ -10,9 +10,9 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { canContactCustomerForDraft } from "@/lib/contact-workflow";
 import { useDemoStore } from "@/lib/demo-store";
-import { isCustomerBookingEnabled } from "@/lib/feature-flags";
 import {
   getDashboardMetrics,
+  vehicleLabel,
 } from "@/lib/demo-calculations";
 import {
   getCapacitySummary,
@@ -22,7 +22,29 @@ import {
   buildRevenueOpportunities,
   opportunityTimingLabel,
 } from "@/lib/revenue-recovery";
-import { formatCurrency, formatLaborHours } from "@/lib/utils";
+import { formatCurrency, formatLaborHours, formatLaborMinutes } from "@/lib/utils";
+
+function dashboardDay(value: string, timeZone: string) {
+  return new Intl.DateTimeFormat("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    timeZone,
+  }).format(new Date(value));
+}
+
+function dashboardTime(value: string, timeZone: string) {
+  return new Intl.DateTimeFormat("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone,
+  }).format(new Date(value));
+}
+
+function serviceSummary(names: string[]) {
+  if (names.length <= 1) return names[0] ?? "Service";
+  return `${names[0]} + ${names.length - 1} more`;
+}
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -81,6 +103,11 @@ export default function DashboardPage() {
     { label: "Appointments booked through Maintiva", value: metrics.appointmentsBookedThroughMaintiva, icon: Bot },
     { label: "Outreach-to-booking conversion", value: `${metrics.outreachToBookingConversionRate}%`, icon: Users },
   ];
+  const pendingAppointmentRequests = state.appointmentRequests
+    .filter((request) => request.status === "PENDING")
+    .sort((a, b) => a.customerSubmittedAt.localeCompare(b.customerSubmittedAt))
+    .slice(0, 4);
+  const shopTimeZone = state.shop.timezone || "America/New_York";
 
   return (
     <div className="space-y-6">
@@ -123,6 +150,62 @@ export default function DashboardPage() {
           );
         })}
       </section>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold">Pending Appointment Requests</h2>
+              <p className="mt-1 text-sm text-zinc-500">Customer-selected times waiting for advisor review.</p>
+            </div>
+            <Link href="/appointments" className="text-sm font-semibold text-violet-800">View all</Link>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {pendingAppointmentRequests.length === 0 ? (
+            <p className="rounded-lg border border-zinc-200 p-4 text-sm text-zinc-500">No appointment requests need review.</p>
+          ) : (
+            <div className="grid gap-3 xl:grid-cols-2">
+              {pendingAppointmentRequests.map((request) => {
+                const customer = state.customers.find((item) => item.id === request.customerId);
+                const vehicle = state.vehicles.find((item) => item.id === request.vehicleId);
+                const serviceNames = request.services.map((service) => service.serviceNameSnapshot);
+                return (
+                  <div key={request.id} className="rounded-lg border border-amber-200 bg-amber-50/60 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <Badge variant="yellow">Pending</Badge>
+                        <p className="mt-3 font-semibold">
+                          {customer ? `${customer.firstName} ${customer.lastName}` : "Customer"}
+                        </p>
+                        <p className="text-sm text-zinc-600">{vehicle ? vehicleLabel(vehicle) : "Vehicle"}</p>
+                        <p className="mt-1 text-sm text-zinc-600">{serviceSummary(serviceNames)}</p>
+                      </div>
+                      <Link href="/appointments" className="shrink-0 rounded-lg bg-violet-950 px-3 py-2 text-sm font-semibold text-white">
+                        Review Request
+                      </Link>
+                    </div>
+                    <div className="mt-4 grid gap-3 text-sm sm:grid-cols-3">
+                      <div>
+                        <p className="text-zinc-500">Requested</p>
+                        <p className="font-semibold">{dashboardDay(request.requestedStart, shopTimeZone)} · {dashboardTime(request.requestedStart, shopTimeZone)}</p>
+                      </div>
+                      <div>
+                        <p className="text-zinc-500">Duration</p>
+                        <p className="font-semibold">{formatLaborMinutes(request.totalLaborMinutes)}</p>
+                      </div>
+                      <div>
+                        <p className="text-zinc-500">Value</p>
+                        <p className="font-semibold">{formatCurrency(request.estimatedRevenueCents)}</p>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {secondaryStats.map((stat) => {
@@ -297,8 +380,15 @@ export default function DashboardPage() {
           onClose={() => setSelectedVehicleId(null)}
           onBook={() => router.push("/automation")}
           onSave={store.recordOpportunityContact}
-          onCreateBookingLink={store.createBookingLink}
-          customerBookingEnabled={isCustomerBookingEnabled()}
+          onCreateAppointmentRequestLink={store.createAppointmentRequestLink}
+          onRevokeAppointmentRequestLink={store.revokeAppointmentRequestLink}
+          appointmentRequestsEnabled={state.appointmentRequestsEnabled}
+          appointmentRequestLink={state.appointmentRequestLinks.find((link) =>
+            link.status === "ACTIVE" &&
+            link.customerId === selectedOpportunity.customerId &&
+            link.vehicleId === selectedOpportunity.vehicleId &&
+            selectedOpportunity.opportunities.some((opportunity) => opportunity.id === link.opportunityId)
+          )}
         />
       )}
     </div>

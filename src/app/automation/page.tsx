@@ -17,7 +17,6 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import type { Appointment, Customer, Vehicle, VehicleMaintenanceRecord } from "@/lib/demo-data";
 import { useDemoStore } from "@/lib/demo-store";
-import { isCustomerBookingEnabled } from "@/lib/feature-flags";
 import {
   buildRevenueOpportunities,
   groupRevenueOpportunities,
@@ -113,7 +112,6 @@ type QueueModal = {
 
 export default function AutomationPage() {
   const store = useDemoStore();
-  const customerBookingEnabled = isCustomerBookingEnabled();
   const { state, ready, loadError } = store;
   const [queueModal, setQueueModal] = useState<QueueModal>(null);
   const [tab, setTab] = useState<QueueTab>("NEEDS_ATTENTION");
@@ -404,8 +402,15 @@ export default function AutomationPage() {
           onClose={() => setQueueModal(null)}
           onBook={() => setQueueModal({ kind: "book", vehicleId: activeGroup.vehicleId })}
           onSave={store.recordOpportunityContact}
-          onCreateBookingLink={store.createBookingLink}
-          customerBookingEnabled={customerBookingEnabled}
+          onCreateAppointmentRequestLink={store.createAppointmentRequestLink}
+          onRevokeAppointmentRequestLink={store.revokeAppointmentRequestLink}
+          appointmentRequestsEnabled={state.appointmentRequestsEnabled}
+          appointmentRequestLink={state.appointmentRequestLinks.find((link) =>
+            link.status === "ACTIVE" &&
+            link.customerId === activeGroup.customerId &&
+            link.vehicleId === activeGroup.vehicleId &&
+            activeGroup.opportunities.some((opportunity) => opportunity.id === link.opportunityId)
+          )}
         />
       )}
       {activeGroup && queueModal?.kind === "book" && (

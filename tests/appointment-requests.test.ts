@@ -13,6 +13,8 @@ import {
   appointmentRequestUrl,
   createAppointmentRequestToken,
   hashAppointmentRequestToken,
+  isAppointmentRequestTokenFormat,
+  normalizeAppointmentRequestToken,
 } from "@/lib/appointment-request-tokens";
 
 function request(overrides: Partial<AppointmentRequestRecord> = {}): AppointmentRequestRecord {
@@ -56,11 +58,32 @@ describe("appointment request security helpers", () => {
     const url = appointmentRequestUrl("https://maintiva.example/", token);
 
     expect(token.length).toBeGreaterThanOrEqual(40);
+    expect(isAppointmentRequestTokenFormat(token)).toBe(true);
     expect(url).toBe(`https://maintiva.example${appointmentRequestPathPrefix}${token}`);
     expect(url).not.toContain("shop-a");
     expect(url).not.toContain("customer-a");
     expect(url).not.toContain("vehicle-a");
     expect(url).not.toContain("opportunity-a");
+  });
+
+  it("round-trips generated URL tokens to the same lookup hash", () => {
+    const token = createAppointmentRequestToken();
+    const url = appointmentRequestUrl("https://maintiva.example/", token);
+    const pathToken = new URL(url).pathname.slice(appointmentRequestPathPrefix.length);
+    const normalized = normalizeAppointmentRequestToken(pathToken);
+
+    expect(normalized).toBe(token);
+    expect(hashAppointmentRequestToken(normalized)).toBe(hashAppointmentRequestToken(token));
+  });
+
+  it("normalizes only base64url appointment request tokens", () => {
+    const token = `${"a".repeat(41)}_-`;
+
+    expect(token).toHaveLength(43);
+    expect(normalizeAppointmentRequestToken(` ${encodeURIComponent(token)} `)).toBe(token);
+    expect(isAppointmentRequestTokenFormat(token)).toBe(true);
+    expect(isAppointmentRequestTokenFormat(`${token}.`)).toBe(false);
+    expect(isAppointmentRequestTokenFormat("token/with/slash")).toBe(false);
   });
 
   it("hashes tokens and derives stable idempotency keys", () => {

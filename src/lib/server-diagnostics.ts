@@ -5,6 +5,9 @@ type SafeError = {
   message?: string;
   details?: string;
   hint?: string;
+  constraint?: string;
+  fieldName?: string;
+  modelName?: string;
 };
 
 export type SafeMutationOperation = {
@@ -57,7 +60,7 @@ export class SafeActionError extends Error {
   }
 }
 
-function valueFrom(error: unknown, key: "code" | "message" | "detail" | "details" | "hint") {
+function valueFrom(error: unknown, key: string) {
   if (!error || typeof error !== "object") return undefined;
   const value = (error as Record<string, unknown>)[key];
   return typeof value === "string" ? value : undefined;
@@ -72,6 +75,9 @@ export function safeDatabaseError(error: unknown): SafeError {
     message: valueFrom(error, "message") ?? valueFrom(meta, "message") ?? valueFrom(cause, "message") ?? valueFrom(causeMeta, "message"),
     details: valueFrom(error, "details") ?? valueFrom(error, "detail") ?? valueFrom(meta, "details") ?? valueFrom(meta, "detail") ?? valueFrom(meta, "message") ?? valueFrom(cause, "details") ?? valueFrom(cause, "detail") ?? valueFrom(causeMeta, "details") ?? valueFrom(causeMeta, "detail") ?? valueFrom(causeMeta, "message"),
     hint: valueFrom(error, "hint") ?? valueFrom(meta, "hint") ?? valueFrom(cause, "hint") ?? valueFrom(causeMeta, "hint"),
+    constraint: valueFrom(error, "constraint") ?? valueFrom(meta, "constraint") ?? valueFrom(cause, "constraint") ?? valueFrom(causeMeta, "constraint"),
+    fieldName: valueFrom(error, "field_name") ?? valueFrom(error, "fieldName") ?? valueFrom(meta, "field_name") ?? valueFrom(meta, "fieldName") ?? valueFrom(cause, "field_name") ?? valueFrom(cause, "fieldName") ?? valueFrom(causeMeta, "field_name") ?? valueFrom(causeMeta, "fieldName"),
+    modelName: valueFrom(error, "model_name") ?? valueFrom(error, "modelName") ?? valueFrom(meta, "model_name") ?? valueFrom(meta, "modelName") ?? valueFrom(cause, "model_name") ?? valueFrom(cause, "modelName") ?? valueFrom(causeMeta, "model_name") ?? valueFrom(causeMeta, "modelName"),
   };
 }
 
@@ -170,6 +176,13 @@ export function safeMutationOperation(value: unknown): SafeMutationOperation {
       channel: typeof payload.channel === "string" ? payload.channel : undefined,
       outreachStage: typeof payload.responseStatus === "string" ? payload.responseStatus : undefined,
     },
+    createAppointmentRequestLink: {
+      table: "AppointmentRequestLink",
+      operation: "INSERT",
+      customerId: safeId(payload.customerId),
+      vehicleId: safeId(payload.vehicleId),
+      opportunityId: safeId(payload.opportunityId),
+    },
     bookAppointment: {
       table: "Appointment",
       operation: "INSERT",
@@ -226,6 +239,8 @@ export function clientMutationError(error: unknown, operation: SafeMutationOpera
   const schemaCodes = new Set(["P2010", "P2021", "P2022", "42703", "42P01", "42704"]);
   const duplicateCodes = new Set(["P2002", "23505"]);
   const invalidIdCodes = new Set(["22P02", "P2023"]);
+  const foreignKeyCodes = new Set(["P2003", "23503"]);
+  const checkConstraintCodes = new Set(["23514"]);
 
   if (schemaCodes.has(database.code ?? "") && serviceIntervalActions.has(operation.action ?? "")) {
     return {
@@ -270,6 +285,30 @@ export function clientMutationError(error: unknown, operation: SafeMutationOpera
     return {
       code: "OUTREACH_SCHEMA_COMPATIBILITY_ERROR",
       message: "The outreach could not be recorded because a required application update is missing.",
+      status: 500,
+    };
+  }
+
+  if (schemaCodes.has(database.code ?? "") && ["createAppointmentRequestLink", "acceptAppointmentRequest", "declineMaintenanceRequest"].includes(operation.action ?? "")) {
+    return {
+      code: "APPOINTMENT_REQUEST_SCHEMA_COMPATIBILITY_ERROR",
+      message: "The appointment request could not be saved because a required application update is missing.",
+      status: 500,
+    };
+  }
+
+  if (operation.action === "createAppointmentRequestLink" && foreignKeyCodes.has(database.code ?? "")) {
+    return {
+      code: "APPOINTMENT_REQUEST_SCOPE_MISMATCH",
+      message: "Appointment request links are temporarily unavailable for this opportunity.",
+      status: 409,
+    };
+  }
+
+  if (operation.action === "createAppointmentRequestLink" && checkConstraintCodes.has(database.code ?? "")) {
+    return {
+      code: "APPOINTMENT_REQUEST_INVALID_LINK_PAYLOAD",
+      message: "Appointment request links are temporarily unavailable.",
       status: 500,
     };
   }

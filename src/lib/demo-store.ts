@@ -4,6 +4,7 @@ import { useEffect, useMemo, useSyncExternalStore } from "react";
 import {
   createInitialDemoState,
   type Appointment,
+  type AppointmentRequestLinkRecord,
   type BookingMode,
   type Customer,
   type CustomerBookingLink,
@@ -172,6 +173,7 @@ function normalizeState(state: DemoState): DemoState {
   return {
     ...baseline,
     ...state,
+    appointmentRequestsEnabled: state.appointmentRequestsEnabled ?? baseline.appointmentRequestsEnabled,
     revenueOpportunities: state.revenueOpportunities ?? [],
     currentUserId: state.currentUserId ?? state.users?.[0]?.id ?? baseline.currentUserId,
     services,
@@ -516,6 +518,87 @@ export function useDemoStore() {
           };
         });
         return Promise.resolve({ ok: true, bookingLink: result, message: undefined });
+      },
+      createAppointmentRequestLink(input: {
+        customerId: string;
+        vehicleId: string;
+        opportunityId: string;
+      }) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "createAppointmentRequestLink", payload: input });
+        }
+
+        let result: BookingLinkResult | undefined;
+        update((draft) => {
+          const opportunity = draft.revenueOpportunities.find((item) => item.id === input.opportunityId);
+          const record = opportunity?.maintenanceRecordId
+            ? draft.maintenanceRecords.find((item) => item.id === opportunity.maintenanceRecordId)
+            : undefined;
+          const block = record?.serviceId
+            ? draft.smartMaintenanceBlocks.find((item) => item.isActive && !item.archivedAt && item.serviceDefinitionIds.includes(record.serviceId!))
+            : undefined;
+          if (!opportunity || !record?.serviceId || !block) return draft;
+          const linkId = `requestlink-${Date.now()}`;
+          result = {
+            id: linkId,
+            url: `${window.location.origin}/request/demo-${linkId}`,
+            expiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+          };
+          const service = {
+            id: `requestlinkservice-${Date.now()}`,
+            shopId: draft.shop.id,
+            requestLinkId: linkId,
+            smartMaintenanceBlockId: block.id,
+            serviceDefinitionId: record.serviceId,
+            serviceNameSnapshot: record.serviceName,
+            laborMinutes: Math.round(record.laborHours * 60),
+            priceCents: record.priceCents,
+            createdAt: new Date().toISOString(),
+          };
+          const link: AppointmentRequestLinkRecord = {
+            id: linkId,
+            shopId: draft.shop.id,
+            customerId: input.customerId,
+            vehicleId: input.vehicleId,
+            opportunityId: input.opportunityId,
+            smartMaintenanceBlockId: block.id,
+            status: "ACTIVE",
+            url: result.url,
+            expiresAt: result.expiresAt,
+            requestAttemptCount: 0,
+            services: [service],
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          };
+          return {
+            ...draft,
+            appointmentRequestLinks: [
+              ...draft.appointmentRequestLinks.map((item) =>
+                item.opportunityId === input.opportunityId && item.status === "ACTIVE"
+                  ? { ...item, status: "REVOKED" as const, revokedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
+                  : item,
+              ),
+              link,
+            ],
+          };
+        });
+        return Promise.resolve(result
+          ? { ok: true, bookingLink: result, message: undefined }
+          : { ok: false, message: "No maintenance request times are currently available for this service." });
+      },
+      revokeAppointmentRequestLink(linkId: string) {
+        if (!shouldUseLocalDemoPersistence()) {
+          return mutatePilotState({ action: "revokeAppointmentRequestLink", id: linkId });
+        }
+        update((draft) => ({
+          ...draft,
+          appointmentRequestLinks: draft.appointmentRequestLinks.map((link) =>
+            link.id === linkId && link.status === "ACTIVE"
+              ? { ...link, status: "REVOKED", revokedAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
+              : link,
+          ),
+        }));
+        return Promise.resolve({ ok: true, message: undefined });
       },
       acceptAppointmentRequest(requestId: string) {
         if (!shouldUseLocalDemoPersistence()) {

@@ -39,7 +39,7 @@ import {
 import { resolveForecastAsOfDate } from "@/lib/forecast-dates";
 import { currentDateInTimeZone } from "@/lib/utils";
 import { safeDatabaseError, SafeActionError } from "@/lib/server-diagnostics";
-import { isCustomerBookingEnabled, isSmartMaintenanceBlocksEnabled } from "@/lib/feature-flags";
+import { isAppointmentRequestsEnabled, isCustomerBookingEnabled, isSmartMaintenanceBlocksEnabled } from "@/lib/feature-flags";
 import { canManageShopSettings } from "@/lib/permissions";
 import {
   MAINTIVA_IMPORT_ROW_LIMIT,
@@ -57,6 +57,10 @@ import {
   type NormalizedCsvValue,
 } from "@/lib/csv-import";
 import { createCustomerBookingLink } from "@/lib/customer-booking";
+import {
+  stateAppointmentRequestLinks,
+  stateAppointmentRequests,
+} from "@/lib/appointment-request-workflow";
 
 const onboardingSchema = z.object({
   shopName: z.string().min(2),
@@ -2047,6 +2051,8 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
     customerBookingLinks,
     smartMaintenanceBlocks,
     smartMaintenanceBlockBlackouts,
+    appointmentRequestLinks,
+    appointmentRequests,
     outreachBookingLinkIds,
     appointmentBookingMetadata,
   ] = await Promise.all([
@@ -2061,6 +2067,8 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
     loadStateCustomerBookingLinks(context.shopId),
     loadStateSmartMaintenanceBlocks(context.shopId),
     loadStateSmartMaintenanceBlockBlackouts(context.shopId),
+    stateAppointmentRequestLinks(context.shopId),
+    stateAppointmentRequests(context.shopId),
     loadStateOutreachBookingLinkIds(context.shopId),
     loadStateAppointmentBookingMetadata(context.shopId),
   ]);
@@ -2425,8 +2433,9 @@ export async function buildPilotState(context: AuthenticatedShopContext): Promis
         notes: appointment.notes ?? "",
       };
     }),
-    appointmentRequestLinks: [],
-    appointmentRequests: [],
+    appointmentRequestLinks,
+    appointmentRequests,
+    appointmentRequestsEnabled: isAppointmentRequestsEnabled(),
     bookingSettings,
     bookingWindows,
     bookingBlackouts,

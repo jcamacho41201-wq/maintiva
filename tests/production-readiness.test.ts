@@ -66,27 +66,33 @@ describe("production readiness safeguards", () => {
     expect(smartBlocksPage).toContain("canManageShopSettings");
   });
 
-  it("keeps controlled appointment request submission disabled until its migration is approved", () => {
+  it("activates secure appointment requests with a server-side kill switch", () => {
     const envExample = source(".env.example");
     const flags = source("src/lib/feature-flags.ts");
     const proxy = source("src/proxy.ts");
     const requestPage = source("src/app/request/[token]/page.tsx");
     const contextRoute = source("src/app/api/request/[token]/context/route.ts");
     const submitRoute = source("src/app/api/request/[token]/submit/route.ts");
+    const workflow = source("src/lib/appointment-request-workflow.ts");
 
-    expect(APPOINTMENT_REQUESTS_RELEASED).toBe(false);
-    expect(isAppointmentRequestsEnabled({ MAINTIVA_APPOINTMENT_REQUESTS_ENABLED: "true" })).toBe(false);
-    expect(envExample).toContain('MAINTIVA_APPOINTMENT_REQUESTS_ENABLED="false"');
-    expect(envExample).toContain('MAINTIVA_APPOINTMENT_REQUESTS_DISABLED="true"');
-    expect(flags).toContain("APPOINTMENT_REQUESTS_RELEASED = false");
-    expect(flags).toContain("MAINTIVA_APPOINTMENT_REQUESTS_ENABLED");
+    expect(APPOINTMENT_REQUESTS_RELEASED).toBe(true);
+    expect(isAppointmentRequestsEnabled({})).toBe(true);
+    expect(isAppointmentRequestsEnabled({ MAINTIVA_APPOINTMENT_REQUESTS_DISABLED: "true" })).toBe(false);
+    expect(envExample).toContain('MAINTIVA_APPOINTMENT_REQUESTS_DISABLED="false"');
+    expect(flags).toContain("APPOINTMENT_REQUESTS_RELEASED = true");
+    expect(flags).not.toContain("MAINTIVA_APPOINTMENT_REQUESTS_ENABLED");
     expect(proxy).toContain('pathname.startsWith("/request/")');
     expect(proxy).toContain('pathname.startsWith("/api/request/")');
     expect(requestPage).toContain("Request This Time");
     expect(requestPage).toContain("This is an appointment request. The shop will confirm the time after reviewing its schedule.");
     expect(requestPage).not.toContain("Book Appointment");
-    expect(contextRoute).toContain("appointmentRequestsDisabledResponse");
-    expect(submitRoute).toContain("appointmentRequestsDisabledResponse");
+    expect(contextRoute).toContain("publicAppointmentRequestState");
+    expect(submitRoute).toContain("submitPublicAppointmentRequest");
+    expect(workflow).toContain("createAppointmentRequestToken");
+    expect(workflow).toContain("hashAppointmentRequestToken");
+    expect(workflow).toContain("pg_advisory_xact_lock");
+    expect(workflow).toContain("appointmentRequestIdempotencyKey");
+    expect(source("src/app/api/pilot/mutate/route.ts")).toContain("publicAppBaseUrl");
   });
 
   it("adds a tenant-scoped AppointmentRequest migration without enabling anonymous table access", () => {
@@ -114,7 +120,7 @@ describe("production readiness safeguards", () => {
     expect(migration).not.toContain("WITH CHECK (true)");
     expect(migration).not.toContain("USING (true)");
     expect(appointmentsPage).toContain("Maintiva Maintenance Calendar");
-    expect(appointmentsPage).toContain("Check your primary shop calendar before approving requests.");
+    expect(appointmentsPage).toContain("Check your primary shop calendar before confirming this request.");
     expect(appointmentsPage).toContain("Open maintenance capacity");
     expect(appointmentsPage).toContain("Pending request");
   });

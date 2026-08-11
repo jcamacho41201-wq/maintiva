@@ -232,6 +232,7 @@ async function main() {
       const status = getRecordStatus(
         {
           shop: demoShop,
+          appointmentRequestsEnabled: true,
           users: demoUsers,
           customers,
           vehicles,

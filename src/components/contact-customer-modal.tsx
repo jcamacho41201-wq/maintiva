@@ -9,7 +9,7 @@ import {
   defaultContactChannel,
   type ContactWorkflowChannel,
 } from "@/lib/contact-workflow";
-import type { Customer, CustomerResponseStatus, OutreachChannel, Shop, Vehicle, VehicleMaintenanceRecord } from "@/lib/demo-data";
+import type { AppointmentRequestLinkRecord, Customer, CustomerResponseStatus, OutreachChannel, Shop, Vehicle, VehicleMaintenanceRecord } from "@/lib/demo-data";
 import {
   buildOutreachDraft,
   outreachTemplateReasons,
@@ -105,8 +105,10 @@ export function ContactCustomerModal({
   onClose,
   onBook,
   onSave,
-  onCreateBookingLink,
-  customerBookingEnabled,
+  onCreateAppointmentRequestLink,
+  onRevokeAppointmentRequestLink,
+  appointmentRequestsEnabled,
+  appointmentRequestLink,
 }: {
   group: RevenueQueueGroup;
   customer: Customer;
@@ -128,12 +130,14 @@ export function ContactCustomerModal({
     bookingLinkId?: string;
     idempotencyKey?: string;
   }) => Promise<{ ok: boolean; message?: string }>;
-  onCreateBookingLink: (input: {
+  onCreateAppointmentRequestLink: (input: {
     customerId: string;
     vehicleId: string;
-    opportunityIds: string[];
+    opportunityId: string;
   }) => Promise<{ ok: boolean; message?: string; bookingLink?: { id: string; url: string; expiresAt: string; message?: string } }>;
-  customerBookingEnabled: boolean;
+  onRevokeAppointmentRequestLink: (id: string) => Promise<{ ok: boolean; message?: string }>;
+  appointmentRequestsEnabled: boolean;
+  appointmentRequestLink?: AppointmentRequestLinkRecord;
 }) {
   const channels = availableContactChannels(customer);
   const initialChannel = defaultContactChannel(customer) ?? "EMAIL";
@@ -161,10 +165,15 @@ export function ContactCustomerModal({
   const [notes, setNotes] = useState("");
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
+  const [linkError, setLinkError] = useState("");
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
   const [creatingLink, setCreatingLink] = useState(false);
-  const [bookingLink, setBookingLink] = useState<{ id: string; url: string; expiresAt: string } | null>(null);
+  const [bookingLink, setBookingLink] = useState<{ id: string; url?: string; expiresAt: string } | null>(
+    appointmentRequestLink ? { id: appointmentRequestLink.id, expiresAt: appointmentRequestLink.expiresAt, url: appointmentRequestLink.url } : null,
+  );
+  const linkInputRef = useRef<HTMLInputElement | null>(null);
   const idempotencyKeyRef = useRef<string | null>(null);
   const rows = serviceRows(group, records);
   const selectedChannelAvailable = channels.some((item) => item.channel === channel && item.available);
@@ -212,31 +221,96 @@ export function ContactCustomerModal({
   }
 
   async function createLink() {
-    if (!customerBookingEnabled) {
+    if (!appointmentRequestsEnabled) {
+      setLinkError("Appointment request links are disabled.");
+      return;
+    }
+    const opportunityId = selectedOpportunityIds(group)[0];
+    if (!opportunityId) {
+      setLinkError("Choose an open opportunity before creating a request link.");
       return;
     }
     setCreatingLink(true);
+    setLinkError("");
     setError("");
-    const result = await onCreateBookingLink({
-      customerId: group.customerId,
-      vehicleId: group.vehicleId,
-      opportunityIds: selectedOpportunityIds(group),
-    });
-    setCreatingLink(false);
-    if (!result.ok || !result.bookingLink) {
-      setError(result.message ?? "Booking link could not be created.");
+    setLinkCopied(false);
+    try {
+      const result = await onCreateAppointmentRequestLink({
+        customerId: group.customerId,
+        vehicleId: group.vehicleId,
+        opportunityId,
+      });
+      if (!result.ok || !result.bookingLink) {
+        setLinkError(result.message ?? "Could not create the appointment request link. Please try again.");
+        return;
+      }
+      setBookingLink(result.bookingLink);
+      if (channel === "CALL") {
+        const writtenChannel = channels.find((item) => item.available && item.channel !== "CALL")?.channel;
+        if (writtenChannel) {
+          replaceDraft(writtenChannel, templateReason, true, result.bookingLink.url);
+        }
+      } else if (!draftEdited) {
+        replaceDraft(channel, templateReason, true, result.bookingLink.url);
+      }
+      setCopied(false);
+    } catch {
+      setLinkError("Could not create the appointment request link. Please try again.");
+    } finally {
+      setCreatingLink(false);
+    }
+  }
+
+  async function revokeLink() {
+    if (!bookingLink) return;
+    setCreatingLink(true);
+    setLinkError("");
+    setError("");
+    try {
+      const result = await onRevokeAppointmentRequestLink(bookingLink.id);
+      if (!result.ok) {
+        setLinkError(result.message ?? "Request link could not be revoked.");
+        return;
+      }
+      setBookingLink(null);
+      setIncludeBookingLink(false);
+      setCopied(false);
+      setLinkCopied(false);
+    } catch {
+      setLinkError("Request link could not be revoked.");
+    } finally {
+      setCreatingLink(false);
+    }
+  }
+
+  async function copyRequestLink() {
+    if (!bookingLink?.url) {
+      setLinkError("Regenerate this link to copy a new secure URL.");
+      linkInputRef.current?.focus();
+      linkInputRef.current?.select();
       return;
     }
-    setBookingLink(result.bookingLink);
-    if (channel === "CALL") {
-      const writtenChannel = channels.find((item) => item.available && item.channel !== "CALL")?.channel;
-      if (writtenChannel) {
-        replaceDraft(writtenChannel, templateReason, true, result.bookingLink.url);
-      }
-    } else if (!draftEdited) {
-      replaceDraft(channel, templateReason, true, result.bookingLink.url);
+    try {
+      await navigator.clipboard.writeText(bookingLink.url);
+      setLinkCopied(true);
+      setLinkError("");
+    } catch {
+      setLinkError("Copy failed. Select the request link and copy it manually.");
+      linkInputRef.current?.focus();
+      linkInputRef.current?.select();
     }
-    setCopied(false);
+  }
+
+  function insertRequestLinkInDraft() {
+    if (!bookingLink?.url || channel === "CALL") return;
+    if (message.includes(bookingLink.url)) {
+      setIncludeBookingLink(true);
+      return;
+    }
+    setMessage((current) => `${current.trimEnd()}\n\nRequest a maintenance time here: ${bookingLink.url}`);
+    setIncludeBookingLink(true);
+    setDraftEdited(true);
+    setLinkError("");
   }
 
   async function copyText() {
@@ -292,7 +366,7 @@ export function ContactCustomerModal({
       channel,
       responseStatus,
       followUpDate: followUpDate || undefined,
-      bookingLinkId: bookingLink?.id,
+      bookingLinkId: undefined,
       idempotencyKey: idempotencyKeyRef.current,
     });
     setSaving(false);
@@ -309,7 +383,7 @@ export function ContactCustomerModal({
       <div className="space-y-5 p-5">
         {error && <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">{error}</p>}
         {copied && !saved && <p className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-medium text-violet-700">Message copied. Copying alone does not mark the customer contacted.</p>}
-        {bookingLink && !saved && <p className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm font-medium text-zinc-700">Booking link ready. It will be tied to this outreach when you mark the message as sent.</p>}
+        {bookingLink && !saved && <p className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm font-medium text-zinc-700">Appointment request link ready. It expires {formatDate(bookingLink.expiresAt)}. Creating it did not mark outreach sent.</p>}
         {saved && <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700">Outreach saved. No appointment was created.</p>}
 
         <div className="rounded-lg border border-zinc-200 p-4">
@@ -396,23 +470,77 @@ export function ContactCustomerModal({
               }}
               className="h-4 w-4 rounded border-zinc-300 text-violet-950 focus:ring-violet-500"
             />
-            Include booking link
+            Include request link
           </label>
-          {customerBookingEnabled && (
+          {appointmentRequestsEnabled && (
             <button
+              type="button"
               onClick={createLink}
-              disabled={creatingLink || saving || Boolean(bookingLink)}
+              disabled={creatingLink || saving}
               className="inline-flex items-center gap-2 rounded-lg border border-violet-200 px-4 py-2 text-sm font-semibold text-violet-950 disabled:opacity-60"
             >
               <CalendarCheck className="h-4 w-4" />
-              {creatingLink ? "Creating link..." : bookingLink ? "Booking link created" : "Create booking link"}
+              {creatingLink ? "Creating link..." : bookingLink ? "Regenerate link" : "Create Appointment Request Link"}
+            </button>
+          )}
+          {appointmentRequestsEnabled && bookingLink && (
+            <button
+              type="button"
+              onClick={revokeLink}
+              disabled={creatingLink || saving}
+              className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 px-4 py-2 text-sm font-semibold text-zinc-800 disabled:opacity-60"
+            >
+              Revoke Link
             </button>
           )}
           {!bookingLink && (
             <span className="text-sm text-zinc-500">
-              {customerBookingEnabled ? "No booking link has been created for this message." : "Booking links are not available for this shop yet."}
+              {appointmentRequestsEnabled ? "No request link has been created for this message." : "Appointment request links are disabled."}
             </span>
           )}
+          {bookingLink && !bookingLink.url && (
+            <span className="text-sm text-zinc-500">This active link was created earlier. Regenerate it to copy a new secure URL.</span>
+          )}
+          {bookingLink && (
+            <div className="w-full rounded-lg border border-zinc-200 bg-zinc-50 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm font-semibold text-zinc-800">Appointment Request Link</p>
+                <p className="text-xs font-medium text-zinc-500">Expires {formatDate(bookingLink.expiresAt)}</p>
+              </div>
+              <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_auto_auto]">
+                <input
+                  ref={linkInputRef}
+                  readOnly
+                  value={bookingLink.url ?? "Regenerate this active link to create a new secure URL."}
+                  className="h-10 min-w-0 rounded-lg border border-zinc-200 bg-white px-3 text-sm text-zinc-700 outline-none focus:border-violet-500"
+                  aria-label="Appointment request link"
+                  onFocus={(event) => event.currentTarget.select()}
+                />
+                <button
+                  type="button"
+                  onClick={copyRequestLink}
+                  disabled={!bookingLink.url}
+                  className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-zinc-200 px-4 text-sm font-semibold text-zinc-800 disabled:opacity-60"
+                >
+                  <Clipboard className="h-4 w-4" />
+                  {linkCopied ? "Copied" : "Copy Link"}
+                </button>
+                {channel !== "CALL" && (
+                  <button
+                    type="button"
+                    onClick={insertRequestLinkInDraft}
+                    disabled={!bookingLink.url}
+                    className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-violet-200 px-4 text-sm font-semibold text-violet-950 disabled:opacity-60"
+                  >
+                    Insert in draft
+                  </button>
+                )}
+              </div>
+              {linkCopied && <p className="mt-2 text-sm font-medium text-violet-700">Copied. Copying alone does not mark outreach sent.</p>}
+              {linkError && <p className="mt-2 text-sm font-medium text-red-700">{linkError}</p>}
+            </div>
+          )}
+          {!bookingLink && linkError && <p className="w-full text-sm font-medium text-red-700">{linkError}</p>}
         </div>
 
         {channel === "CALL" ? (
