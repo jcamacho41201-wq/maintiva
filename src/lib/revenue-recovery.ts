@@ -257,9 +257,10 @@ function lastOutreachForOpportunity(state: DemoState, opportunity: RevenueOpport
       record.customerId === opportunity.customerId &&
       record.vehicleId === opportunity.vehicleId &&
       (
-        opportunity.maintenanceRecordId
+        record.opportunityId === opportunity.id ||
+        (opportunity.maintenanceRecordId
           ? record.maintenanceRecordIds.includes(opportunity.maintenanceRecordId)
-          : true
+          : true)
       ),
     )
     .sort((a, b) => (a.manuallySentAt ?? a.sentAt).localeCompare(b.manuallySentAt ?? b.sentAt))

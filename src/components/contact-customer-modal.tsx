@@ -6,7 +6,9 @@ import { CalendarCheck, CheckCircle2, Clipboard, Mail, MessageSquare, Phone, Rot
 import { Badge } from "@/components/ui/badge";
 import {
   availableContactChannels,
+  canSendSmsToCustomer,
   defaultContactChannel,
+  smsConsentStatus,
   type ContactWorkflowChannel,
 } from "@/lib/contact-workflow";
 import type { AppointmentRequestLinkRecord, Customer, CustomerResponseStatus, OutreachChannel, Shop, Vehicle, VehicleMaintenanceRecord } from "@/lib/demo-data";
@@ -105,6 +107,8 @@ export function ContactCustomerModal({
   onClose,
   onBook,
   onSave,
+  onSendSms,
+  onRecordSmsConsent,
   onCreateAppointmentRequestLink,
   onRevokeAppointmentRequestLink,
   appointmentRequestsEnabled,
@@ -129,6 +133,20 @@ export function ContactCustomerModal({
     followUpDate?: string;
     bookingLinkId?: string;
     idempotencyKey?: string;
+  }) => Promise<{ ok: boolean; message?: string }>;
+  onSendSms: (input: {
+    customerId: string;
+    vehicleId: string;
+    opportunityIds: string[];
+    message: string;
+    appointmentRequestLinkId?: string;
+    idempotencyKey?: string;
+    duplicateOverride?: boolean;
+  }) => Promise<{ ok: boolean; code?: string; message?: string }>;
+  onRecordSmsConsent: (input: {
+    customerId: string;
+    status: "UNKNOWN" | "OPTED_IN" | "OPTED_OUT";
+    source?: "STAFF_RECORDED" | "CUSTOMER_REQUEST" | "PAPER_FORM" | "VERBAL" | "EXISTING_CUSTOMER_RECORD" | "OTHER";
   }) => Promise<{ ok: boolean; message?: string }>;
   onCreateAppointmentRequestLink: (input: {
     customerId: string;
@@ -169,6 +187,7 @@ export function ContactCustomerModal({
   const [linkError, setLinkError] = useState("");
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [duplicateWarning, setDuplicateWarning] = useState(false);
   const [creatingLink, setCreatingLink] = useState(false);
   const [bookingLink, setBookingLink] = useState<{ id: string; url?: string; expiresAt: string } | null>(
     appointmentRequestLink ? { id: appointmentRequestLink.id, expiresAt: appointmentRequestLink.expiresAt, url: appointmentRequestLink.url } : null,
@@ -176,8 +195,9 @@ export function ContactCustomerModal({
   const linkInputRef = useRef<HTMLInputElement | null>(null);
   const idempotencyKeyRef = useRef<string | null>(null);
   const rows = serviceRows(group, records);
+  const smsEligibility = canSendSmsToCustomer(customer);
   const selectedChannelAvailable = channels.some((item) => item.channel === channel && item.available);
-  const canSaveContact = selectedChannelAvailable && !saving && !saved;
+  const canSaveContact = channel !== "TEXT" && selectedChannelAvailable && !saving && !saved;
   const templateVariables = useMemo(() => outreachTemplateVariables({
     customer,
     vehicle,
@@ -187,6 +207,7 @@ export function ContactCustomerModal({
   }), [bookingLink?.url, customer, group, shop, vehicle]);
   const unresolvedTokens = unresolvedTemplateTokens(channel === "EMAIL" ? `${subject}\n${message}` : message);
   const smsCharacterCount = message.length;
+  const smsSegments = Math.max(1, Math.ceil(smsCharacterCount / 160));
 
   function replaceDraft(
     nextChannel: ContactWorkflowChannel,
@@ -378,6 +399,59 @@ export function ContactCustomerModal({
     setError("");
   }
 
+  async function recordSmsConsent(status: "OPTED_IN" | "OPTED_OUT") {
+    setSaving(true);
+    setError("");
+    const result = await onRecordSmsConsent({
+      customerId: customer.id,
+      status,
+      source: "STAFF_RECORDED",
+    });
+    setSaving(false);
+    if (!result.ok) {
+      setError(result.message ?? "SMS consent could not be updated.");
+      return;
+    }
+    setError("");
+  }
+
+  async function sendSms(duplicateOverride = false) {
+    if (!smsEligibility.allowed) {
+      setError(smsEligibility.reason ?? "Text cannot be sent to this customer.");
+      return;
+    }
+    if (unresolvedTokens.length > 0) {
+      setError("This message contains information that still needs to be completed.");
+      return;
+    }
+    if (message.trim().length < 3) {
+      setError("Add a message before sending a text.");
+      return;
+    }
+    idempotencyKeyRef.current ??= typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    setSaving(true);
+    const result = await onSendSms({
+      ...queuePayload(group),
+      message: message.trim(),
+      appointmentRequestLinkId: bookingLink?.id,
+      idempotencyKey: idempotencyKeyRef.current,
+      duplicateOverride,
+    });
+    setSaving(false);
+    if (!result.ok) {
+      if (result.code === "SMS_DUPLICATE_WARNING") {
+        setDuplicateWarning(true);
+      }
+      setError(result.message ?? "The text could not be sent.");
+      return;
+    }
+    setDuplicateWarning(false);
+    setSaved(true);
+    setError(result.message ?? "Text sent and saved to communication history.");
+  }
+
   return (
     <ModalFrame title="Contact customer" subtitle={`${customer.firstName} ${customer.lastName} · ${vehicle.year} ${vehicle.make} ${vehicle.model}`} onClose={onClose}>
       <div className="space-y-5 p-5">
@@ -397,7 +471,9 @@ export function ContactCustomerModal({
             ))}
           </div>
           <div className="mt-4 flex flex-wrap gap-2">
-            <Badge variant={customer.smsConsent ? "green" : "neutral"}>Text {customer.smsConsent ? "permitted" : "not permitted"}</Badge>
+            <Badge variant={smsConsentStatus(customer) === "OPTED_IN" ? "green" : smsConsentStatus(customer) === "OPTED_OUT" ? "red" : "neutral"}>
+              Text {smsConsentStatus(customer) === "OPTED_IN" ? "eligible" : smsConsentStatus(customer) === "OPTED_OUT" ? "opted out" : "consent not recorded"}
+            </Badge>
             <Badge variant={customer.emailConsent ? "green" : "neutral"}>Email {customer.emailConsent ? "permitted" : "not permitted"}</Badge>
             <Badge variant={customer.callConsent ? "green" : "neutral"}>Call {customer.callConsent ? "permitted" : "not permitted"}</Badge>
           </div>
@@ -410,9 +486,9 @@ export function ContactCustomerModal({
               <button
                 key={value}
                 onClick={() => {
-                  if (available && confirmReplaceDraft()) replaceDraft(value);
+                  if ((available || value === "TEXT") && confirmReplaceDraft()) replaceDraft(value);
                 }}
-                disabled={!available}
+                disabled={!available && value !== "TEXT"}
                 className={`flex h-11 items-center justify-center gap-2 rounded-lg border text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50 ${
                   channel === value ? "border-violet-950 bg-violet-950 text-white" : "border-zinc-200 text-zinc-700"
                 }`}
@@ -575,7 +651,40 @@ export function ContactCustomerModal({
                 className="mt-2 w-full rounded-lg border border-zinc-200 px-3 py-2 text-sm font-normal outline-none focus:border-violet-500"
               />
             </label>
-            {channel === "TEXT" && <p className="text-sm text-zinc-500">{smsCharacterCount} SMS characters</p>}
+            {channel === "TEXT" && (
+              <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-3 text-sm">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="font-semibold text-zinc-800">Recipient</p>
+                    <p className="mt-1 text-zinc-600">{customer.firstName} {customer.lastName} · {customer.phone || "No phone number"}</p>
+                  </div>
+                  <Badge variant={smsEligibility.allowed ? "green" : smsConsentStatus(customer) === "OPTED_OUT" ? "red" : "neutral"}>
+                    {smsEligibility.allowed ? "SMS eligible" : smsEligibility.reason}
+                  </Badge>
+                </div>
+                {smsConsentStatus(customer) === "UNKNOWN" && (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => recordSmsConsent("OPTED_IN")}
+                      disabled={saving}
+                      className="rounded-lg border border-emerald-200 px-3 py-2 text-sm font-semibold text-emerald-800 disabled:opacity-60"
+                    >
+                      Record SMS Consent
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => recordSmsConsent("OPTED_OUT")}
+                      disabled={saving}
+                      className="rounded-lg border border-red-200 px-3 py-2 text-sm font-semibold text-red-700 disabled:opacity-60"
+                    >
+                      Mark Opted Out
+                    </button>
+                  </div>
+                )}
+                <p className="mt-3 text-zinc-500">{smsCharacterCount} SMS characters · about {smsSegments} segment{smsSegments === 1 ? "" : "s"}</p>
+              </div>
+            )}
             {unresolvedTokens.length > 0 && (
               <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">
                 Complete these placeholders before sending: {unresolvedTokens.join(", ")}
@@ -617,10 +726,24 @@ export function ContactCustomerModal({
                 Copy {channel.toLowerCase()}
               </button>
             )}
-            <button onClick={saveContact} disabled={!canSaveContact} className="inline-flex items-center gap-2 rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">
-              <CheckCircle2 className="h-4 w-4" />
-              {saved ? "Saved" : saving ? "Saving..." : channel === "CALL" ? "Record call" : `Mark ${channel.toLowerCase()} as sent`}
-            </button>
+            {channel === "TEXT" ? (
+              <>
+                {duplicateWarning && (
+                  <button onClick={() => sendSms(true)} disabled={!smsEligibility.allowed || saving || saved} className="inline-flex items-center gap-2 rounded-lg border border-amber-200 px-4 py-2 text-sm font-semibold text-amber-800 disabled:opacity-60">
+                    Send Again
+                  </button>
+                )}
+                <button onClick={() => sendSms(false)} disabled={!smsEligibility.allowed || saving || saved} className="inline-flex items-center gap-2 rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">
+                  <CheckCircle2 className="h-4 w-4" />
+                  {saved ? "Sent" : saving ? "Sending..." : "Send Text"}
+                </button>
+              </>
+            ) : (
+              <button onClick={saveContact} disabled={!canSaveContact} className="inline-flex items-center gap-2 rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">
+                <CheckCircle2 className="h-4 w-4" />
+                {saved ? "Saved" : saving ? "Saving..." : channel === "CALL" ? "Record call" : `Mark ${channel.toLowerCase()} as sent`}
+              </button>
+            )}
             {saved && ["INTERESTED", "BOOKED"].includes(responseStatus) && (
               <button onClick={onBook} className="inline-flex items-center gap-2 rounded-lg border border-violet-200 px-4 py-2 text-sm font-semibold text-violet-950">
                 <CalendarCheck className="h-4 w-4" />

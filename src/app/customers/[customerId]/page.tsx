@@ -18,7 +18,7 @@ import {
 } from "@/lib/demo-calculations";
 import { getOpenRevenueOpportunitiesForCustomer, type RevenueOpportunity } from "@/lib/revenue-recovery";
 import { useDemoStore } from "@/lib/demo-store";
-import { type Customer, type Vehicle } from "@/lib/demo-data";
+import { type Customer, type OutreachRecord, type Vehicle } from "@/lib/demo-data";
 import { canPermanentlyDeleteCustomers, customerDeletionSummary, type CustomerDeletionSummary } from "@/lib/customer-deletion";
 import { currentDateInTimeZone, formatCurrency, formatDate, formatLaborHours, formatMileage, formatServiceMileage } from "@/lib/utils";
 
@@ -61,6 +61,12 @@ function opportunityStatusLabel(stage: RevenueOpportunity["stage"]) {
 function vehicleMileageDisplayValue(state: ReturnType<typeof useDemoStore>["state"], vehicle: Vehicle) {
   const forecastMileage = resolveVehicleForecastMileage(state, vehicle);
   return forecastMileage.latestKnownMileage ?? (vehicle.currentMileage !== 0 ? vehicle.currentMileage : null);
+}
+
+function communicationHistoryLabel(record: OutreachRecord) {
+  const serviceText = record.serviceNames.length > 0 ? record.serviceNames.join(", ") : "General follow-up";
+  const deliveryText = record.smsDeliveryStatus ? ` · ${record.smsDeliveryStatus.toLowerCase()}` : "";
+  return `${formatDate(record.smsSentAt ?? record.manuallySentAt ?? record.sentAt)} · ${serviceText} · ${record.channel}${deliveryText}`;
 }
 
 export default function CustomerDetailPage() {
@@ -218,7 +224,9 @@ export default function CustomerDetailPage() {
           <div>
             <p className="text-sm font-medium text-zinc-500">Consent settings</p>
             <div className="mt-2 flex gap-2">
-              <Badge variant={customer.smsConsent ? "green" : "neutral"}>SMS</Badge>
+              <Badge variant={customer.smsConsentStatus === "OPTED_IN" ? "green" : customer.smsConsentStatus === "OPTED_OUT" ? "red" : "neutral"}>
+                SMS {customer.smsConsentStatus === "OPTED_IN" ? "eligible" : customer.smsConsentStatus === "OPTED_OUT" ? "opted out" : "unknown"}
+              </Badge>
               <Badge variant={customer.emailConsent ? "green" : "neutral"}>Email</Badge>
               <Badge variant={customer.callConsent ? "green" : "neutral"}>Call</Badge>
             </div>
@@ -392,7 +400,7 @@ export default function CustomerDetailPage() {
         <RelatedList title="Recent service records" items={recentRecords.map((record) => `${formatDate(record.completedAt)} · ${record.serviceName} · ${formatServiceMileage(record.mileage)}`)} />
         <RelatedList title="Recommended maintenance" items={getRecommendedRecords(state).filter(({ record }) => vehicles.some((vehicle) => vehicle.id === record.vehicleId)).map(({ record, calculation }) => `${record.serviceName} · ${calculation.dueText}`)} />
         <RelatedList title="Upcoming appointments" items={appointments.map((appointment) => `${formatDate(appointment.scheduledStart)} · ${appointment.serviceNames.join(", ")}`)} />
-        <RelatedList title="Outreach history" items={outreach.map((record) => `${formatDate(record.sentAt)} · ${record.serviceNames.join(", ")} · ${record.channel}`)} />
+        <RelatedList title="Communication History" items={outreach.map(communicationHistoryLabel)} />
       </div>
 
       {editingCustomer && (

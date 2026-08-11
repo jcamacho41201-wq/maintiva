@@ -13,13 +13,25 @@ function hasValue(value: string | null | undefined) {
   return Boolean(value?.trim());
 }
 
+export function smsConsentStatus(customer: Customer) {
+  return customer.smsConsentStatus ?? "UNKNOWN";
+}
+
+export function canSendSmsToCustomer(customer: Customer) {
+  if (!hasValue(customer.phone)) return { allowed: false, code: "SMS_NO_PHONE" as const, reason: "Missing phone number" };
+  if (smsConsentStatus(customer) === "OPTED_OUT") return { allowed: false, code: "SMS_OPTED_OUT" as const, reason: "Customer opted out" };
+  if (smsConsentStatus(customer) !== "OPTED_IN") return { allowed: false, code: "SMS_CONSENT_REQUIRED" as const, reason: "SMS consent not recorded" };
+  return { allowed: true, code: undefined, reason: undefined };
+}
+
 export function availableContactChannels(customer: Customer): ContactChannelAvailability[] {
+  const sms = canSendSmsToCustomer(customer);
   return [
     {
       channel: "TEXT",
       label: "Text",
-      available: customer.smsConsent && hasValue(customer.phone),
-      reason: !hasValue(customer.phone) ? "Missing phone number" : "SMS consent not enabled",
+      available: sms.allowed,
+      reason: sms.reason,
     },
     {
       channel: "EMAIL",

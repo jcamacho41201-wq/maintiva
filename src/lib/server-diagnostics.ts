@@ -176,6 +176,19 @@ export function safeMutationOperation(value: unknown): SafeMutationOperation {
       channel: typeof payload.channel === "string" ? payload.channel : undefined,
       outreachStage: typeof payload.responseStatus === "string" ? payload.responseStatus : undefined,
     },
+    recordCustomerSmsConsent: {
+      table: "Customer",
+      operation: "UPDATE",
+      customerId: safeId(payload.customerId),
+    },
+    sendCustomerSms: {
+      table: "OutreachRecord",
+      operation: "INSERT",
+      customerId: safeId(payload.customerId),
+      vehicleId: safeId(payload.vehicleId),
+      opportunityId: Array.isArray(payload.opportunityIds) ? safeId(payload.opportunityIds[0]) : undefined,
+      channel: "TEXT",
+    },
     createAppointmentRequestLink: {
       table: "AppointmentRequestLink",
       operation: "INSERT",

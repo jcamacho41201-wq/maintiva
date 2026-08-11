@@ -9,6 +9,7 @@ function customer(overrides: Partial<Customer>): Customer {
     email: "logan.bailey.47@example.com",
     preferredContact: "EMAIL",
     smsConsent: true,
+    smsConsentStatus: "OPTED_IN",
     emailConsent: true,
     callConsent: true,
     ...overrides,
@@ -33,6 +34,7 @@ describe("contact workflow eligibility", () => {
       phone: "",
       preferredContact: "SMS",
       smsConsent: false,
+      smsConsentStatus: "UNKNOWN",
       emailConsent: true,
       callConsent: false,
     });
@@ -46,6 +48,7 @@ describe("contact workflow eligibility", () => {
       email: "",
       preferredContact: "EMAIL",
       smsConsent: true,
+      smsConsentStatus: "OPTED_IN",
       emailConsent: false,
       callConsent: true,
     });
@@ -59,6 +62,7 @@ describe("contact workflow eligibility", () => {
       phone: "",
       email: "",
       smsConsent: true,
+      smsConsentStatus: "OPTED_IN",
       emailConsent: true,
       callConsent: true,
     });
@@ -67,6 +71,22 @@ describe("contact workflow eligibility", () => {
     expect(canContactCustomerForDraft(result)).toEqual({
       enabled: false,
       reason: "Add a permitted phone, email, or call channel before contacting this customer.",
+    });
+  });
+
+  it("does not treat legacy smsConsent true as canonical SMS opt-in", () => {
+    const result = customer({
+      preferredContact: "SMS",
+      smsConsent: true,
+      smsConsentStatus: "UNKNOWN",
+      emailConsent: false,
+      callConsent: false,
+    });
+
+    expect(defaultContactChannel(result)).toBeNull();
+    expect(availableContactChannels(result).find((item) => item.channel === "TEXT")).toMatchObject({
+      available: false,
+      reason: "SMS consent not recorded",
     });
   });
 });
