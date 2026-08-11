@@ -32,7 +32,7 @@ const requestNotice =
 
 export default function AppointmentRequestPage() {
   const params = useParams<{ token: string }>();
-  const token = params.token;
+  const token = Array.isArray(params.token) ? params.token[0] : params.token;
   const [context, setContext] = useState<RequestContext | null>(null);
   const [resolved, setResolved] = useState<{ title: string; context: ResolvedRequestContext } | null>(null);
   const [selectedSlot, setSelectedSlot] = useState("");
@@ -48,7 +48,12 @@ export default function AppointmentRequestPage() {
 
   useEffect(() => {
     async function loadContext() {
-      const response = await fetch(`/api/request/${token}/context`);
+      if (!token) {
+        setError("Appointment request link is not available.");
+        setLoading(false);
+        return;
+      }
+      const response = await fetch(`/api/request/${encodeURIComponent(token.trim())}/context`);
       const data = await response.json().catch(() => ({})) as RequestState;
       if (!response.ok) {
         setError("message" in data ? data.message : "This appointment request link could not be loaded.");
@@ -76,7 +81,7 @@ export default function AppointmentRequestPage() {
     }
     setSaving(true);
     setError("");
-    const response = await fetch(`/api/request/${token}/submit`, {
+    const response = await fetch(`/api/request/${encodeURIComponent(token.trim())}/submit`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -168,6 +173,12 @@ export default function AppointmentRequestPage() {
           ))}
         </div>
 
+        {context.slots.length === 0 && (
+          <p className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+            This request link is valid, but no request times are currently available. Please contact the shop.
+          </p>
+        )}
+
         {error && <p className="mt-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</p>}
         {submitted && (
           <div className="mt-4 flex items-start gap-3 rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
@@ -182,7 +193,7 @@ export default function AppointmentRequestPage() {
 
         <button
           onClick={submitRequest}
-          disabled={saving || Boolean(submitted)}
+          disabled={saving || Boolean(submitted) || context.slots.length === 0}
           className="mt-6 inline-flex items-center gap-2 rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
         >
           <CalendarClock className="h-4 w-4" />

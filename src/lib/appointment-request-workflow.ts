@@ -15,6 +15,8 @@ import {
   appointmentRequestUrl,
   createAppointmentRequestToken,
   hashAppointmentRequestToken,
+  isAppointmentRequestTokenFormat,
+  normalizeAppointmentRequestToken,
 } from "@/lib/appointment-request-tokens";
 import { appointmentRequestsDisabledResponse, isAppointmentRequestsEnabled } from "@/lib/feature-flags";
 import { canManageAppointments } from "@/lib/permissions";
@@ -60,6 +62,20 @@ type PublicRequestState =
   | { state: "expired"; message: string }
   | { state: "revoked"; message: string }
   | { state: "unavailable"; message: string };
+
+type PublicRequestResolutionReason =
+  | "INVALID_TOKEN"
+  | "LINK_NOT_FOUND"
+  | "TOKEN_HASH_MISMATCH"
+  | "REVOKED"
+  | "EXPIRED"
+  | "ALREADY_USED"
+  | "INVALID_SCOPE"
+  | "SERVICE_SCOPE_MISSING"
+  | "OPPORTUNITY_CLOSED"
+  | "NO_AVAILABILITY"
+  | "FEATURE_DISABLED"
+  | "UNKNOWN";
 
 type PublicResolvedRequest = {
   shop: { name: string };
@@ -163,6 +179,24 @@ function safeId(value: string | null | undefined) {
   if (!value) return undefined;
   if (value.length <= 14) return value;
   return `${value.slice(0, 8)}...${value.slice(-4)}`;
+}
+
+function safeTokenDiagnostics(token: string, tokenHash?: string) {
+  return {
+    tokenLength: token.length,
+    tokenFormatValid: isAppointmentRequestTokenFormat(token),
+    tokenHashPrefix: tokenHash?.slice(0, 8),
+  };
+}
+
+function logPublicRequestResolution(
+  reason: PublicRequestResolutionReason,
+  details: Record<string, unknown>,
+) {
+  console.warn("Maintiva appointment request public resolution", {
+    reason,
+    ...details,
+  });
 }
 
 function dateWindow(now: Date, horizonDays: number, timezone: string) {
@@ -421,6 +455,7 @@ async function loadLinkByToken(token: string, client: AppointmentRequestWorkflow
       shop: { select: { id: true, name: true, timezone: true } },
       customer: { select: { firstName: true } },
       vehicle: { select: { year: true, make: true, model: true } },
+      opportunity: { select: { stage: true } },
       smartMaintenanceBlock: true,
       services: { orderBy: { createdAt: "asc" } },
       requests: {
@@ -693,13 +728,31 @@ function resolvedRequestContext(link: NonNullable<Awaited<ReturnType<typeof load
 
 export async function publicAppointmentRequestState(token: string, request: Request): Promise<PublicRequestState> {
   assertAppointmentRequestsReleased();
-  const remoteKey = `${request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown"}:${hashAppointmentRequestToken(token).slice(0, 16)}`;
+  const normalizedToken = normalizeAppointmentRequestToken(token);
+  const tokenHash = normalizedToken ? hashAppointmentRequestToken(normalizedToken) : "";
+  const tokenDiagnostics = safeTokenDiagnostics(normalizedToken, tokenHash);
+  if (!normalizedToken || !isAppointmentRequestTokenFormat(normalizedToken)) {
+    logPublicRequestResolution("INVALID_TOKEN", tokenDiagnostics);
+    return { state: "unavailable", message: "Appointment request link is not available." };
+  }
+  const remoteKey = `${request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown"}:${tokenHash.slice(0, 16)}`;
   if (!appointmentRequestContextRateLimiter.check(remoteKey)) {
     throw new SafeActionError({ code: "APPOINTMENT_REQUEST_RATE_LIMITED", message: "Too many attempts. Try again soon.", status: 429 });
   }
   const now = new Date();
-  const { link } = await loadLinkByToken(token);
-  if (!link) return { state: "unavailable", message: "Appointment request link is not available." };
+  const loaded = await loadLinkByToken(normalizedToken);
+  const { link } = loaded;
+  if (!link) {
+    logPublicRequestResolution("LINK_NOT_FOUND", tokenDiagnostics);
+    return { state: "unavailable", message: "Appointment request link is not available." };
+  }
+  if (loaded.tokenHash !== tokenHash) {
+    logPublicRequestResolution("TOKEN_HASH_MISMATCH", {
+      ...tokenDiagnostics,
+      loadedHashPrefix: loaded.tokenHash.slice(0, 8),
+    });
+    return { state: "unavailable", message: "Appointment request link is not available." };
+  }
 
   const tokenState = publicTokenState({ status: link.status, expiresAt: iso(link.expiresAt) }, now);
   const latestRequest = link.requests[0];
@@ -712,11 +765,42 @@ export async function publicAppointmentRequestState(token: string, request: Requ
   if (latestRequest?.status === "DECLINED") {
     return { state: "declined", message: "This appointment request was declined. Please contact the shop for another time." };
   }
-  if (tokenState === "revoked") return { state: "revoked", message: "This appointment request link is no longer active." };
-  if (tokenState === "expired") return { state: "expired", message: "This appointment request link has expired." };
-  if (tokenState !== "valid") return { state: "unavailable", message: "Appointment request link is not available." };
+  if (tokenState === "revoked") {
+    logPublicRequestResolution("REVOKED", { ...tokenDiagnostics, linkStatus: link.status });
+    return { state: "revoked", message: "This appointment request link is no longer active." };
+  }
+  if (tokenState === "expired") {
+    logPublicRequestResolution("EXPIRED", { ...tokenDiagnostics, linkStatus: link.status, expiresAt: iso(link.expiresAt) });
+    return { state: "expired", message: "This appointment request link has expired." };
+  }
+  if (tokenState !== "valid") {
+    logPublicRequestResolution(tokenState === "used" ? "ALREADY_USED" : "UNKNOWN", {
+      ...tokenDiagnostics,
+      linkStatus: link.status,
+    });
+    return { state: "unavailable", message: "Appointment request link is not available." };
+  }
 
   const serviceDefinitionIds = link.services.map((service) => service.serviceDefinitionId);
+  if (serviceDefinitionIds.length === 0) {
+    logPublicRequestResolution("SERVICE_SCOPE_MISSING", {
+      ...tokenDiagnostics,
+      linkStatus: link.status,
+      shopId: safeId(link.shopId),
+      requestLinkId: safeId(link.id),
+    });
+    return { state: "unavailable", message: "Appointment request link is not available." };
+  }
+  if (["BOOKED", "COMPLETED", "LOST"].includes(link.opportunity.stage)) {
+    logPublicRequestResolution("OPPORTUNITY_CLOSED", {
+      ...tokenDiagnostics,
+      linkStatus: link.status,
+      opportunityStage: link.opportunity.stage,
+      shopId: safeId(link.shopId),
+      requestLinkId: safeId(link.id),
+    });
+    return { state: "unavailable", message: "Appointment request link is not available." };
+  }
   const serviceLaborMinutesById = Object.fromEntries(
     link.services.map((service) => [service.serviceDefinitionId, service.laborMinutes]),
   );
@@ -727,6 +811,16 @@ export async function publicAppointmentRequestState(token: string, request: Requ
     blockId: link.smartMaintenanceBlockId,
     now,
   });
+  if (slots.length === 0) {
+    logPublicRequestResolution("NO_AVAILABILITY", {
+      ...tokenDiagnostics,
+      linkStatus: link.status,
+      shopId: safeId(link.shopId),
+      requestLinkId: safeId(link.id),
+      serviceScopeCount: link.services.length,
+      smartMaintenanceBlockId: safeId(link.smartMaintenanceBlockId),
+    });
+  }
   return {
     state: "available",
     context: publicAppointmentRequestContext({
@@ -763,7 +857,11 @@ export async function submitPublicAppointmentRequest(token: string, input: unkno
   if (!parsed.success) {
     throw new SafeActionError({ code: "APPOINTMENT_REQUEST_INVALID", message: "Choose a valid request time.", status: 400 });
   }
-  const tokenHash = hashAppointmentRequestToken(token);
+  const normalizedToken = normalizeAppointmentRequestToken(token);
+  const tokenHash = normalizedToken ? hashAppointmentRequestToken(normalizedToken) : "";
+  if (!normalizedToken || !isAppointmentRequestTokenFormat(normalizedToken)) {
+    throw new SafeActionError({ code: "APPOINTMENT_REQUEST_UNAVAILABLE", message: "Appointment request link is not available.", status: 404 });
+  }
   const remoteKey = `${request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown"}:${tokenHash.slice(0, 16)}`;
   if (!appointmentRequestSubmissionRateLimiter.check(remoteKey)) {
     throw new SafeActionError({ code: "APPOINTMENT_REQUEST_RATE_LIMITED", message: "Too many attempts. Try again soon.", status: 429 });
@@ -772,7 +870,7 @@ export async function submitPublicAppointmentRequest(token: string, input: unkno
 
   return prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`appointment-request:${tokenHash}:${parsed.data.startsAt}`}))`;
-    const { link } = await loadLinkByToken(token, tx);
+    const { link } = await loadLinkByToken(normalizedToken, tx);
     if (!link) {
       throw new SafeActionError({ code: "APPOINTMENT_REQUEST_UNAVAILABLE", message: "Appointment request link is not available.", status: 404 });
     }

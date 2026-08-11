@@ -92,16 +92,19 @@ describe("outreach templates", () => {
     expect(draft.body).not.toMatch(/https?:\/\//);
   });
 
-  it("includes a real booking URL only when supplied", () => {
+  it("includes a real request URL only when supplied", () => {
     const { variables } = context("DECLINED_WORK");
     const draft = buildOutreachDraft({
       channel: "EMAIL",
       reason: "DECLINED_WORK",
-      variables: { ...variables, bookingUrl: "https://shop.example/book/secure-token" },
+      variables: { ...variables, bookingUrl: "https://shop.example/request/secure-token" },
       includeBookingLink: true,
     });
 
-    expect(draft.body).toContain("https://shop.example/book/secure-token");
+    expect(draft.body).toContain("https://shop.example/request/secure-token");
+    expect(draft.body).toContain("request a maintenance time");
+    expect(draft.body).not.toContain("book here");
+    expect(draft.body).not.toContain("Book here");
     expect(unresolvedTemplateTokens(`${draft.subject}\n${draft.body}`)).toEqual([]);
   });
 

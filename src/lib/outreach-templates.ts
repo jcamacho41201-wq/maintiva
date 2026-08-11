@@ -74,8 +74,8 @@ export function outreachTemplateVariables({
 function bookingLine(channel: OutreachTemplateChannel, includeBookingLink: boolean) {
   if (!includeBookingLink) return "";
   return channel === "TEXT"
-    ? " Book here: {{bookingUrl}}"
-    : "\n\nYou can book here when you are ready: {{bookingUrl}}";
+    ? " Request a maintenance time here: {{bookingUrl}}"
+    : "\n\nYou can request a maintenance time here: {{bookingUrl}}";
 }
 
 function templateFor(reason: OutreachTemplateReason, channel: OutreachTemplateChannel, includeBookingLink: boolean): OutreachDraft {

@@ -45,6 +45,32 @@ describe("appointment request link creation", () => {
     expect(modal).toContain("Regenerate this active link to create a new secure URL.");
   });
 
+  it("normalizes public route tokens and logs safe unavailable reasons", () => {
+    const workflow = source("src/lib/appointment-request-workflow.ts");
+    const page = source("src/app/request/[token]/page.tsx");
+
+    expect(workflow).toContain("normalizeAppointmentRequestToken(token)");
+    expect(workflow).toContain("isAppointmentRequestTokenFormat(normalizedToken)");
+    expect(workflow).toContain("Maintiva appointment request public resolution");
+    for (const reason of [
+      "INVALID_TOKEN",
+      "LINK_NOT_FOUND",
+      "TOKEN_HASH_MISMATCH",
+      "REVOKED",
+      "EXPIRED",
+      "ALREADY_USED",
+      "SERVICE_SCOPE_MISSING",
+      "OPPORTUNITY_CLOSED",
+      "NO_AVAILABILITY",
+    ]) {
+      expect(workflow).toContain(reason);
+    }
+    expect(workflow).toContain("tokenHashPrefix");
+    expect(workflow).toContain("tokenFormatValid");
+    expect(workflow).not.toContain("rawToken");
+    expect(page).toContain("encodeURIComponent(token.trim())");
+  });
+
   it("matches opportunities to Smart Maintenance Blocks by canonical ServiceDefinition ID", () => {
     const workflow = source("src/lib/appointment-request-workflow.ts");
 
