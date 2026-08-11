@@ -135,6 +135,82 @@ CREATE UNIQUE INDEX IF NOT EXISTS "OutreachRecord_shopId_smsIdempotencyKey_key"
   ON public."OutreachRecord"("shopId", "smsIdempotencyKey")
   WHERE "smsIdempotencyKey" IS NOT NULL;
 
+REVOKE ALL ON TABLE public."OutreachRecord" FROM PUBLIC;
+REVOKE ALL ON TABLE public."OutreachRecord" FROM anon;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public."OutreachRecord" TO authenticated;
+GRANT ALL ON TABLE public."OutreachRecord" TO service_role;
+
+ALTER TABLE public."OutreachRecord" ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_policies
+    WHERE schemaname = 'public'
+      AND tablename = 'OutreachRecord'
+      AND policyname = 'Members can read outreach records'
+  ) THEN
+    CREATE POLICY "Members can read outreach records"
+      ON public."OutreachRecord"
+      FOR SELECT
+      TO authenticated
+      USING (public.maintiva_is_shop_member("shopId"));
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_policies
+    WHERE schemaname = 'public'
+      AND tablename = 'OutreachRecord'
+      AND policyname = 'Members can insert outreach records'
+  ) THEN
+    CREATE POLICY "Members can insert outreach records"
+      ON public."OutreachRecord"
+      FOR INSERT
+      TO authenticated
+      WITH CHECK (public.maintiva_is_shop_member("shopId"));
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_policies
+    WHERE schemaname = 'public'
+      AND tablename = 'OutreachRecord'
+      AND policyname = 'Members can update outreach records'
+  ) THEN
+    CREATE POLICY "Members can update outreach records"
+      ON public."OutreachRecord"
+      FOR UPDATE
+      TO authenticated
+      USING (public.maintiva_is_shop_member("shopId"))
+      WITH CHECK (public.maintiva_is_shop_member("shopId"));
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_policies
+    WHERE schemaname = 'public'
+      AND tablename = 'OutreachRecord'
+      AND policyname = 'Members can delete outreach records'
+  ) THEN
+    CREATE POLICY "Members can delete outreach records"
+      ON public."OutreachRecord"
+      FOR DELETE
+      TO authenticated
+      USING (public.maintiva_is_shop_member("shopId"));
+  END IF;
+END $$;
+
 GRANT USAGE ON TYPE public."SmsConsentStatus" TO authenticated, service_role;
 GRANT USAGE ON TYPE public."SmsConsentSource" TO authenticated, service_role;
 GRANT USAGE ON TYPE public."SmsDeliveryStatus" TO authenticated, service_role;
