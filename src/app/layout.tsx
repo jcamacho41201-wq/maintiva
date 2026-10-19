@@ -16,7 +16,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Maintiva",
   description:
-    "Predictive maintenance, automated customer retention, and intelligent shop management for modern repair shops.",
+    "Customer retention for independent auto repair shops. Turn past customers into future appointments and measurable repeat revenue.",
 };
 
 export default function RootLayout({

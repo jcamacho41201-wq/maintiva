@@ -146,7 +146,7 @@ export function GlobalSearch() {
   let resultOffset = 0;
 
   return (
-    <div ref={containerRef} className="relative flex-1">
+    <div ref={containerRef} className="relative min-w-0 flex-1">
       <label className="flex h-10 items-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 px-3 text-zinc-500 focus-within:border-violet-300 focus-within:bg-white">
         <Search className="h-4 w-4" aria-hidden="true" />
         <input
@@ -194,7 +194,7 @@ export function GlobalSearch() {
       </label>
 
       {open && query.trim().length >= 2 && (
-        <div className="absolute left-0 right-0 top-12 z-50 max-h-[70vh] overflow-y-auto rounded-lg border border-zinc-200 bg-white p-2 shadow-xl">
+        <div className="fixed left-4 right-4 top-16 z-50 max-h-[70vh] overflow-y-auto rounded-lg border border-zinc-200 bg-white p-2 shadow-xl sm:absolute sm:left-0 sm:right-0 sm:top-12">
           {error ? (
             <p className="px-3 py-4 text-sm font-medium text-red-700">{error}</p>
           ) : !loading && results.length === 0 ? (

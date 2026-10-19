@@ -1,398 +1,60 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useState } from "react";
-import { ArrowRight, Bot, CalendarClock, Car, DollarSign, FileUp, Users, Wrench } from "lucide-react";
-import { ContactCustomerModal } from "@/components/contact-customer-modal";
-import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import { Progress } from "@/components/ui/progress";
-import { canContactCustomerForDraft } from "@/lib/contact-workflow";
+import { ArrowRight, CalendarClock, CheckCircle2, MessageSquare, TrendingUp, Users, Wallet } from "lucide-react";
 import { useDemoStore } from "@/lib/demo-store";
-import {
-  getDashboardMetrics,
-  vehicleLabel,
-} from "@/lib/demo-calculations";
-import {
-  getCapacitySummary,
-  getRevenueFunnel,
-  getRevenueRecoveryMetrics,
-  groupRevenueOpportunities,
-  buildRevenueOpportunities,
-  opportunityTimingLabel,
-} from "@/lib/revenue-recovery";
-import { formatCurrency, formatLaborHours, formatLaborMinutes } from "@/lib/utils";
-
-function dashboardDay(value: string, timeZone: string) {
-  return new Intl.DateTimeFormat("en-US", {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    timeZone,
-  }).format(new Date(value));
-}
-
-function dashboardTime(value: string, timeZone: string) {
-  return new Intl.DateTimeFormat("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-    timeZone,
-  }).format(new Date(value));
-}
-
-function serviceSummary(names: string[]) {
-  if (names.length <= 1) return names[0] ?? "Service";
-  return `${names[0]} + ${names.length - 1} more`;
-}
+import { readyForOutreach, retentionReport, upcomingRetention } from "@/lib/retention";
+import { formatCurrency, formatDate } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
+import { vehicleLabel } from "@/lib/demo-calculations";
 
 export default function DashboardPage() {
-  const router = useRouter();
-  const store = useDemoStore();
-  const { state, ready, loadError } = store;
-  const [selectedVehicleId, setSelectedVehicleId] = useState<string | null>(null);
-
-  if (!ready) {
-    return (
-      <div className="rounded-lg border border-zinc-200 bg-white p-6 text-sm font-medium text-zinc-600">
-        Loading shop…
-      </div>
-    );
-  }
-
-  if (loadError) {
-    return (
-      <div className="rounded-lg border border-red-200 bg-red-50 p-6 text-sm text-red-800">
-        <p className="font-semibold">We could not load your shop.</p>
-        <p className="mt-1">Refresh the page or sign in again.</p>
-      </div>
-    );
-  }
-
-  const legacyMetrics = getDashboardMetrics(state);
-  const metrics = getRevenueRecoveryMetrics(state);
-  const opportunities = groupRevenueOpportunities(buildRevenueOpportunities(state));
-  const funnel = getRevenueFunnel(state);
-  const capacity14 = getCapacitySummary(state, 14);
-  const secondaryStats = [
-    { label: "Active customers", value: legacyMetrics.activeCustomers, icon: Users },
-    { label: "Active vehicles", value: legacyMetrics.activeVehicles, icon: Car },
-    { label: "Recoverable opportunities", value: metrics.openOpportunityCount, icon: Wrench },
-    { label: "Customers contacted", value: metrics.contactedCount, icon: Bot },
+  const { state, ready, loadError } = useDemoStore();
+  if (!ready) return <p role="status" className="py-12 text-zinc-600">Loading shop…</p>;
+  if (loadError) return <div role="alert" className="py-12 text-red-800"><h1 className="font-semibold">We could not load your shop.</h1><p>Refresh the page or sign in again.</p></div>;
+  const report = retentionReport(state);
+  const groups = readyForOutreach(state);
+  const readyValue = groups.reduce((sum, group) => sum + group.estimatedRevenueCents, 0);
+  const pending = state.appointmentRequests.filter((request) => request.shopId === state.shop.id && request.status === "PENDING").sort((a, b) => a.customerSubmittedAt.localeCompare(b.customerSubmittedAt));
+  const upcoming = upcomingRetention(state);
+  const metrics = [
+    { label: "Revenue recovered", value: formatCurrency(report.recoveredRevenueCents), detail: "Recorded completed revenue", icon: Wallet, color: "text-emerald-700" },
+    { label: "Customers returned", value: report.customersReturned, detail: "Completed Maintiva appointments", icon: Users, color: "text-emerald-700" },
+    { label: "Appointments generated", value: report.appointmentsGenerated, detail: "Scheduled through today", icon: CalendarClock, color: "text-blue-700" },
+    { label: "Customers contacted", value: report.customersContacted, detail: "Confirmed outreach only", icon: MessageSquare, color: "text-blue-700" },
+    { label: "Estimated opportunity", value: formatCurrency(report.estimatedOpportunityCents), detail: "Open, unbooked services", icon: TrendingUp, color: "text-violet-800" },
+    { label: "Subscription ROI", value: "Not available", detail: "Subscription cost not recorded", icon: CheckCircle2, color: "text-zinc-500" },
   ];
-  const selectedOpportunity = opportunities.find(
-    (opportunity) => opportunity.vehicleId === selectedVehicleId,
-  );
-  const selectedCustomer = selectedOpportunity
-    ? state.customers.find((item) => item.id === selectedOpportunity.customerId)
-    : undefined;
-  const selectedVehicle = selectedOpportunity
-    ? state.vehicles.find((item) => item.id === selectedOpportunity.vehicleId)
-    : undefined;
-  const selectedRecords = selectedOpportunity
-    ? state.maintenanceRecords.filter((record) =>
-        selectedOpportunity.opportunities.some((item) => item.maintenanceRecordId === record.id),
-      )
-    : [];
-
-  const stats = [
-    { label: "Recovered revenue this month", value: formatCurrency(metrics.recoveredRevenueThisMonth), icon: DollarSign },
-    { label: "Maintiva revenue booked", value: formatCurrency(metrics.bookedMaintivaRevenue), icon: CalendarClock },
-    { label: "Open opportunity value", value: formatCurrency(metrics.openOpportunityValue), icon: Wrench },
-    { label: "Unfilled labor hours, next 14 days", value: `${capacity14.openLaborHours} hrs`, icon: CalendarClock },
-    { label: "Appointments booked through Maintiva", value: metrics.appointmentsBookedThroughMaintiva, icon: Bot },
-    { label: "Outreach-to-booking conversion", value: `${metrics.outreachToBookingConversionRate}%`, icon: Users },
-  ];
-  const pendingAppointmentRequests = state.appointmentRequests
-    .filter((request) => request.status === "PENDING")
-    .sort((a, b) => a.customerSubmittedAt.localeCompare(b.customerSubmittedAt))
-    .slice(0, 4);
-  const shopTimeZone = state.shop.timezone || "America/New_York";
-
-  return (
-    <div className="space-y-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <p className="text-sm font-semibold text-violet-700">
-            Maintenance Revenue Recovery
-          </p>
-          <h1 className="mt-1 text-3xl font-semibold tracking-tight">
-            Revenue recovery command center
-          </h1>
-          <p className="mt-2 max-w-3xl text-sm text-zinc-600">
-            Maintiva turns existing customer and service data into scheduled maintenance revenue.
-          </p>
-        </div>
-        <Link
-          href="/automation"
-          className="inline-flex items-center gap-2 rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white"
-        >
-          Work recovery queue
-          <ArrowRight className="h-4 w-4" />
-        </Link>
+  return <div className="space-y-8">
+    <header className="flex flex-wrap items-end justify-between gap-4">
+      <div><p className="text-sm font-medium text-violet-800">Customer retention</p><h1 className="mt-1 text-3xl font-semibold">Bring your next customers back.</h1><p className="mt-2 text-sm text-zinc-600">{state.shop.name} · Retention overview · All time through {formatDate(report.through)}</p></div>
+      <Link href="/outreach" className="inline-flex items-center gap-2 rounded-lg bg-violet-950 px-4 py-3 text-sm font-semibold text-white">Review Opportunities <ArrowRight className="h-4 w-4" /></Link>
+    </header>
+    <section aria-label="Retention metrics" className="grid grid-cols-2 divide-y divide-zinc-200 border-y border-zinc-200 xl:grid-cols-3">
+      {metrics.map(({ label, value, detail, icon: Icon, color }) => <div key={label} className="min-w-0 py-5 pr-4"><div className="flex items-center gap-2 text-sm text-zinc-600"><Icon className={`h-4 w-4 ${color}`} />{label}</div><p className={`mt-2 break-words text-2xl font-semibold ${color}`}>{value}</p><p className="mt-1 text-xs text-zinc-500">{detail}</p></div>)}
+    </section>
+    {report.missingRevenueCount > 0 && <p className="text-sm text-amber-800">{report.missingRevenueCount} completed appointment(s) have no recorded revenue and are excluded from recovered revenue.</p>}
+    <section aria-labelledby="ready-heading">
+      <div className="mb-4 flex flex-wrap items-end justify-between gap-3"><div><h2 id="ready-heading" className="text-xl font-semibold">Ready for Outreach</h2><p className="mt-1 text-sm text-zinc-600">{new Set(groups.map((group) => group.customerId)).size} customers ready for outreach · {formatCurrency(readyValue)} estimated opportunity</p></div><Link href="/outreach" className="text-sm font-semibold text-violet-900">Review all →</Link></div>
+      <div className="divide-y divide-zinc-200 border-y border-zinc-200">
+        {groups.slice(0, 5).map((group) => <div key={group.id} className="grid gap-3 py-5 md:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)_auto]">
+          <div><Link className="font-semibold hover:underline" href={`/customers/${group.customerId}`}>{group.customerName}</Link><p className="mt-1 text-sm text-zinc-500">{group.vehicleLabel}</p><div className="mt-2"><Badge variant="purple">Awaiting review</Badge></div></div>
+          <div><p className="text-sm font-medium">{group.recommendedServices.join(", ")}</p><p className="mt-1 text-sm text-zinc-600">{group.explanation}</p><p className="mt-1 text-xs text-zinc-500">{group.opportunities[0]?.dueDate ? `Estimated due ${formatDate(group.opportunities[0].dueDate)}` : "Due timing based on available service history"}</p></div>
+          <div className="flex items-center justify-between gap-4 md:block md:text-right"><p className="font-semibold">{formatCurrency(group.estimatedRevenueCents)}</p><Link href={`/outreach?vehicle=${encodeURIComponent(group.vehicleId)}`} className="mt-2 inline-flex items-center gap-2 text-sm font-semibold text-violet-900">Review <ArrowRight className="h-4 w-4" /></Link></div>
+        </div>)}
+        {!groups.length && <div className="py-8"><p className="font-medium">No customers ready for outreach.</p><p className="mt-1 text-sm text-zinc-600">Review upcoming services or add a completed service visit to start the next retention cycle.</p><Link href="/visits/new" className="mt-3 inline-block text-sm font-semibold text-violet-900">Add Service Visit</Link></div>}
       </div>
-
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        {stats.map((stat) => {
-          const Icon = stat.icon;
-          return (
-            <Card key={stat.label}>
-              <CardContent className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-zinc-500">{stat.label}</p>
-                  <p className="mt-2 text-2xl font-semibold">{stat.value}</p>
-                </div>
-                <div className="grid h-10 w-10 place-items-center rounded-lg bg-violet-50 text-violet-900">
-                  <Icon className="h-5 w-5" aria-hidden="true" />
-                </div>
-              </CardContent>
-            </Card>
-          );
-        })}
+    </section>
+    <div className="grid gap-8 xl:grid-cols-2">
+      <section><div className="mb-4 flex items-center justify-between gap-3"><h2 className="text-xl font-semibold">Pending Appointment Requests</h2><Link href="/appointments" className="text-sm font-semibold text-violet-900">View all</Link></div>
+        {pending.length === 0 ? <p className="border-t border-zinc-200 py-5 text-sm text-zinc-500">No appointment requests need review.</p> : <div className="divide-y divide-zinc-200 border-y border-zinc-200">{pending.slice(0, 4).map((request) => {
+          const customer = state.customers.find((item) => item.id === request.customerId);
+          const vehicle = state.vehicles.find((item) => item.id === request.vehicleId);
+          return <div key={request.id} className="flex flex-wrap items-center justify-between gap-3 py-4"><div><p className="font-medium">{customer?.firstName} {customer?.lastName}</p><p className="text-sm text-zinc-500">{vehicle ? vehicleLabel(vehicle) : "Vehicle"}</p><p className="mt-1 text-sm">{new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: state.shop.timezone }).format(new Date(request.requestedStart))}</p></div><Link href="/appointments" className="rounded-lg border border-amber-300 px-3 py-2 text-sm font-semibold text-amber-900">Review Request</Link></div>;
+        })}</div>}
       </section>
-
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <h2 className="text-lg font-semibold">Pending Appointment Requests</h2>
-              <p className="mt-1 text-sm text-zinc-500">Customer-selected times waiting for advisor review.</p>
-            </div>
-            <Link href="/appointments" className="text-sm font-semibold text-violet-800">View all</Link>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {pendingAppointmentRequests.length === 0 ? (
-            <p className="rounded-lg border border-zinc-200 p-4 text-sm text-zinc-500">No appointment requests need review.</p>
-          ) : (
-            <div className="grid gap-3 xl:grid-cols-2">
-              {pendingAppointmentRequests.map((request) => {
-                const customer = state.customers.find((item) => item.id === request.customerId);
-                const vehicle = state.vehicles.find((item) => item.id === request.vehicleId);
-                const serviceNames = request.services.map((service) => service.serviceNameSnapshot);
-                return (
-                  <div key={request.id} className="rounded-lg border border-amber-200 bg-amber-50/60 p-4">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <Badge variant="yellow">Pending</Badge>
-                        <p className="mt-3 font-semibold">
-                          {customer ? `${customer.firstName} ${customer.lastName}` : "Customer"}
-                        </p>
-                        <p className="text-sm text-zinc-600">{vehicle ? vehicleLabel(vehicle) : "Vehicle"}</p>
-                        <p className="mt-1 text-sm text-zinc-600">{serviceSummary(serviceNames)}</p>
-                      </div>
-                      <Link href="/appointments" className="shrink-0 rounded-lg bg-violet-950 px-3 py-2 text-sm font-semibold text-white">
-                        Review Request
-                      </Link>
-                    </div>
-                    <div className="mt-4 grid gap-3 text-sm sm:grid-cols-3">
-                      <div>
-                        <p className="text-zinc-500">Requested</p>
-                        <p className="font-semibold">{dashboardDay(request.requestedStart, shopTimeZone)} · {dashboardTime(request.requestedStart, shopTimeZone)}</p>
-                      </div>
-                      <div>
-                        <p className="text-zinc-500">Duration</p>
-                        <p className="font-semibold">{formatLaborMinutes(request.totalLaborMinutes)}</p>
-                      </div>
-                      <div>
-                        <p className="text-zinc-500">Value</p>
-                        <p className="font-semibold">{formatCurrency(request.estimatedRevenueCents)}</p>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {secondaryStats.map((stat) => {
-          const Icon = stat.icon;
-          return (
-            <Card key={stat.label}>
-              <CardContent className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-zinc-500">{stat.label}</p>
-                  <p className="mt-2 text-xl font-semibold">{stat.value}</p>
-                </div>
-                <div className="grid h-9 w-9 place-items-center rounded-lg bg-violet-50 text-violet-900">
-                  <Icon className="h-4 w-4" aria-hidden="true" />
-                </div>
-              </CardContent>
-            </Card>
-          );
-        })}
-      </section>
-
-      <div className="grid gap-6 xl:grid-cols-[1.35fr_1fr]">
-        <Card>
-          <CardHeader>
-            <h2 className="text-lg font-semibold">Revenue Recovery Queue</h2>
-            <p className="mt-1 text-sm text-zinc-500">
-              Due maintenance, overdue maintenance, and declined work grouped by vehicle.
-            </p>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {opportunities.map((opportunity) => {
-              const customer = state.customers.find((item) => item.id === opportunity.customerId);
-              const contactEligibility = customer
-                ? canContactCustomerForDraft(customer)
-                : { enabled: false, reason: "Customer record is not available." };
-              return (
-                <div
-                  key={opportunity.id}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => router.push(`/vehicles/${opportunity.vehicleId}`)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") router.push(`/vehicles/${opportunity.vehicleId}`);
-                  }}
-                  className="grid cursor-pointer gap-4 rounded-lg border border-zinc-200 p-4 transition hover:border-violet-300 hover:bg-violet-50/40 2xl:grid-cols-[minmax(15rem,1.1fr)_minmax(16rem,1fr)_auto]"
-                >
-                  <div>
-                    <p className="font-semibold">{opportunity.customerName}</p>
-                    <p className="text-sm text-zinc-500">{opportunity.vehicleLabel}</p>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      <Badge variant={opportunity.priority === "HIGH" ? "red" : opportunity.priority === "MEDIUM" ? "orange" : "neutral"}>
-                        {opportunity.priority.toLowerCase()} priority
-                      </Badge>
-                      {opportunity.sources.map((source) => <Badge key={source} variant="purple">{source}</Badge>)}
-                      <Badge>{opportunity.outreachStatus}</Badge>
-                      <Badge variant="purple">{formatCurrency(opportunity.estimatedRevenueCents)}</Badge>
-                      <Badge>{formatLaborHours(opportunity.estimatedLaborHours)}</Badge>
-                    </div>
-                    <p className="mt-3 text-sm text-zinc-600">{opportunity.explanation}</p>
-                    <p className="mt-1 text-xs font-medium text-zinc-500">{opportunity.priorityReason}</p>
-                  </div>
-                  <div className="space-y-2">
-                    {opportunity.opportunities.slice(0, 3).map((item) => (
-                      <div key={item.id}>
-                        <div className="mb-1 grid grid-cols-[minmax(0,1fr)_max-content] items-start gap-3 text-xs">
-                          <span className="min-w-0 leading-snug">{item.serviceNames.join(", ")}</span>
-                          <span className="max-w-36 text-right leading-snug">{opportunityTimingLabel(item)}</span>
-                        </div>
-                        <Progress value={item.priority === "HIGH" ? 12 : item.priority === "MEDIUM" ? 38 : 70} />
-                      </div>
-                    ))}
-                  </div>
-                  <div className="flex items-center justify-end">
-                    {opportunity.appointmentStatus === "Booked" ? (
-                      <span className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-700">
-                        Scheduled
-                      </span>
-                    ) : (
-                      <button
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          if (contactEligibility.enabled) setSelectedVehicleId(opportunity.vehicleId);
-                        }}
-                        disabled={!contactEligibility.enabled}
-                        title={contactEligibility.reason ?? "Contact customer"}
-                        className="rounded-lg bg-violet-950 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        Contact
-                      </button>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <h2 className="text-lg font-semibold">Capacity Summary</h2>
-            <p className="mt-1 text-sm text-zinc-500">
-              Next 7, 14, and 30 days of shop-level labor capacity.
-            </p>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {[7, 14, 30].map((days) => {
-              const capacity = getCapacitySummary(state, days as 7 | 14 | 30);
-              return (
-                <Link key={days} href="/capacity" className="block rounded-lg border border-zinc-200 p-4 transition hover:border-violet-300 hover:bg-violet-50/40">
-                  <div className="flex items-center justify-between">
-                    <p className="font-semibold">Next {days} days</p>
-                    <Badge variant="purple">{capacity.openLaborHours} open hrs</Badge>
-                  </div>
-                  <p className="mt-2 text-sm text-zinc-600">
-                    {capacity.matchingOpportunityCount} matching opportunities can fill {Math.round(capacity.potentialLaborHours)} labor hrs.
-                  </p>
-                </Link>
-              );
-            })}
-            <p className="rounded-lg border border-violet-200 bg-violet-50 p-4 text-sm font-medium text-violet-800">
-              Wednesday has 11 open labor hours. Maintiva found {capacity14.matchingOpportunityCount} matching opportunities.
-            </p>
-          </CardContent>
-        </Card>
-      </div>
-
-      <div className="grid gap-6 xl:grid-cols-[1fr_0.8fr]">
-        <Card>
-          <CardHeader>
-            <h2 className="text-lg font-semibold">Revenue Funnel</h2>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {funnel.map((item) => (
-              <div key={item.stage} className="grid grid-cols-[8rem_1fr_auto] items-center gap-3 text-sm">
-                <span className="font-medium">{item.label}</span>
-                <Progress value={Math.min(100, item.count * 18)} />
-                <span className="text-right font-semibold">{item.count} · {formatCurrency(item.valueCents)}</span>
-              </div>
-            ))}
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader>
-            <h2 className="text-lg font-semibold">Import and ROI</h2>
-          </CardHeader>
-          <CardContent className="grid grid-cols-2 gap-4">
-            {[
-              ["Imported files", state.importHistory.length],
-              ["Rows imported", state.importHistory.reduce((sum, item) => sum + item.successfulRows, 0)],
-              ["Open value", formatCurrency(metrics.openOpportunityValue)],
-              ["Completed revenue", formatCurrency(metrics.completedMaintivaRevenue)],
-            ].map(([label, value]) => (
-              <div key={label} className="rounded-lg border border-zinc-200 p-4">
-                <p className="text-sm text-zinc-500">{label}</p>
-                <p className="mt-2 text-2xl font-semibold">{value}</p>
-              </div>
-            ))}
-            <Link href="/import" className="col-span-2 inline-flex items-center justify-center gap-2 rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white">
-              <FileUp className="h-4 w-4" />
-              Import data
-            </Link>
-          </CardContent>
-        </Card>
-      </div>
-
-      {selectedOpportunity && selectedCustomer && selectedVehicle && (
-        <ContactCustomerModal
-          group={selectedOpportunity}
-          customer={selectedCustomer}
-          vehicle={selectedVehicle}
-          shop={state.shop}
-          records={selectedRecords}
-          onClose={() => setSelectedVehicleId(null)}
-          onBook={() => router.push("/automation")}
-          onSave={store.recordOpportunityContact}
-          onSendSms={store.sendCustomerSms}
-          onRecordSmsConsent={store.recordCustomerSmsConsent}
-          onCreateAppointmentRequestLink={store.createAppointmentRequestLink}
-          onRevokeAppointmentRequestLink={store.revokeAppointmentRequestLink}
-          appointmentRequestsEnabled={state.appointmentRequestsEnabled}
-          appointmentRequestLink={state.appointmentRequestLinks.find((link) =>
-            link.status === "ACTIVE" &&
-            link.customerId === selectedOpportunity.customerId &&
-            link.vehicleId === selectedOpportunity.vehicleId &&
-            selectedOpportunity.opportunities.some((opportunity) => opportunity.id === link.opportunityId)
-          )}
-        />
-      )}
+      <section><h2 className="text-xl font-semibold">Upcoming Opportunities</h2><p className="mt-1 text-sm text-zinc-500">Cumulative forecasts from active service assignments. Estimates, not recovered revenue.</p><div className="mt-4 divide-y divide-zinc-200 border-y border-zinc-200">{upcoming.map((window) => <div key={window.days} className="flex items-center justify-between gap-3 py-4"><div><p className="font-medium">Next {window.days} days</p><p className="text-sm text-zinc-500">{window.items.length} services · {new Set(window.items.map((item) => item.customerId)).size} customers</p></div><p className="font-semibold">{formatCurrency(window.valueCents)}</p></div>)}</div></section>
     </div>
-  );
+    <footer className="flex flex-wrap justify-between gap-3 border-t border-zinc-200 pt-4 text-sm text-zinc-500"><p>Shop management software runs today&apos;s work. Maintiva creates tomorrow&apos;s.</p><Link href="/analytics" className="font-medium text-violet-900">View revenue attribution</Link></footer>
+  </div>;
 }

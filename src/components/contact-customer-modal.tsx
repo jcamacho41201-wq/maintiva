@@ -22,6 +22,7 @@ import {
 } from "@/lib/outreach-templates";
 import type { RevenueQueueGroup } from "@/lib/revenue-recovery";
 import { formatCurrency, formatDate, formatLaborHours } from "@/lib/utils";
+import { smsLength } from "@/lib/sms-length";
 
 function selectedRecordIds(group: RevenueQueueGroup) {
   return group.opportunities
@@ -206,8 +207,7 @@ export function ContactCustomerModal({
     bookingUrl: bookingLink?.url,
   }), [bookingLink?.url, customer, group, shop, vehicle]);
   const unresolvedTokens = unresolvedTemplateTokens(channel === "EMAIL" ? `${subject}\n${message}` : message);
-  const smsCharacterCount = message.length;
-  const smsSegments = Math.max(1, Math.ceil(smsCharacterCount / 160));
+  const { characters: smsCharacterCount, segments: smsSegments } = smsLength(message);
 
   function replaceDraft(
     nextChannel: ContactWorkflowChannel,
