@@ -25,6 +25,7 @@ import {
   markPilotMaintenanceServiceComplete,
   markPilotOutreachManuallySent,
   recordPilotInspection,
+  recordPilotServiceVisit,
   recordPilotOpportunityContact,
   resetPilotManualMileageOverride,
   reviewPilotMileageReading,
@@ -61,6 +62,7 @@ import {
 import { recordPilotCustomerSmsConsent, sendPilotCustomerSms } from "@/lib/sms";
 
 const mutationSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("recordServiceVisit"), payload: z.unknown() }),
   z.object({ action: z.literal("addCustomer"), payload: z.unknown() }),
   z.object({
     action: z.literal("updateCustomer"),
@@ -341,6 +343,10 @@ export async function POST(request: Request) {
     let bookingLink: Awaited<ReturnType<typeof createPilotBookingLink>> | undefined;
 
     switch (body.action) {
+      case "recordServiceVisit":
+        await recordPilotServiceVisit(context, body.payload);
+        mutationCommitted = true;
+        break;
       case "addCustomer":
         await addPilotCustomer(context, body.payload);
         mutationCommitted = true;

@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useRef, useState } from "react";
+import { Suspense, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import type React from "react";
 import {
   CalendarCheck,
@@ -18,12 +19,12 @@ import { Card, CardContent } from "@/components/ui/card";
 import type { Appointment, Customer, Vehicle, VehicleMaintenanceRecord } from "@/lib/demo-data";
 import { useDemoStore } from "@/lib/demo-store";
 import {
-  buildRevenueOpportunities,
   groupRevenueOpportunities,
   opportunityTimingLabel,
   type RevenueQueueGroup,
 } from "@/lib/revenue-recovery";
 import { formatCurrency, formatDate, formatLaborHours } from "@/lib/utils";
+import { openCapacityOpportunityIds, retentionOpportunities, retentionType } from "@/lib/retention";
 
 type QueueTab = "NEEDS_ATTENTION" | "CONTACTED" | "BOOKED" | "CLOSED";
 type QueueSort = "PRIORITY" | "REVENUE" | "LABOR" | "OLDEST_DUE" | "MOST_OVERDUE" | "RECENT";
@@ -54,7 +55,7 @@ function workflowTabFor(group: RevenueQueueGroup): QueueTab {
   if (group.opportunities.some((item) => item.stage === "BOOKED") || group.appointmentStatus === "Booked") {
     return "BOOKED";
   }
-  if (group.opportunities.some((item) => item.stage === "CONTACTED")) {
+  if (group.opportunities.some((item) => item.stage === "CONTACTED" || item.stage === "RESPONDED")) {
     return "CONTACTED";
   }
   return "NEEDS_ATTENTION";
@@ -111,6 +112,12 @@ type QueueModal = {
 } | null;
 
 export default function AutomationPage() {
+  return <Suspense fallback={<p>Loading opportunities…</p>}><OpportunityWorklist /></Suspense>;
+}
+
+function OpportunityWorklist() {
+  const params = useSearchParams();
+  const campaign = params.get("campaign");
   const store = useDemoStore();
   const { state, ready, loadError } = store;
   const [queueModal, setQueueModal] = useState<QueueModal>(null);
@@ -122,9 +129,16 @@ export default function AutomationPage() {
   const [contactFilter, setContactFilter] = useState<ContactFilter>("ALL");
   const [search, setSearch] = useState("");
 
+  const capacityIds = useMemo(() => campaign === "capacity" ? openCapacityOpportunityIds(state) : new Set<string>(), [campaign, state]);
   const groups = useMemo(
-    () => groupRevenueOpportunities(buildRevenueOpportunities(state)),
-    [state],
+    () => groupRevenueOpportunities(retentionOpportunities(state).filter((item) => {
+      if (campaign === "maintenance") return retentionType(item) === "Due Service";
+      if (campaign === "deferred") return retentionType(item) === "Deferred Work";
+      if (campaign === "reactivation") return item.source === "REACTIVATION" || item.daysOverdue >= 30 && item.forecastMileageConfidence !== "LOW";
+      if (campaign === "capacity") return capacityIds.has(item.id);
+      return true;
+    })),
+    [state, campaign, capacityIds],
   );
   const counts = useMemo(
     () => Object.fromEntries(
@@ -176,10 +190,12 @@ export default function AutomationPage() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
         <div>
-          <h1 className="text-3xl font-semibold tracking-tight">Revenue Recovery Queue</h1>
+          <h1 className="text-3xl font-semibold tracking-tight">Retention Opportunities</h1>
           <p className="mt-2 max-w-3xl text-sm text-zinc-600">
-            Live maintenance and declined-work opportunities grouped by customer vehicle.
+            Which customers should return, why now, and what the service is worth.
           </p>
+          <Link href="/outreach" className="mt-3 inline-block text-sm font-semibold text-violet-900">Review Ready for Outreach</Link>
+          {campaign && <Link href="/automation" className="ml-4 text-sm underline">Clear campaign filter</Link>}
         </div>
         <div className="flex flex-wrap gap-2">
           <select
@@ -330,7 +346,7 @@ export default function AutomationPage() {
                           <p className="mt-1 text-xs text-zinc-500">{opportunity.explanation}</p>
                         </div>
                         <Badge variant={opportunity.source === "OVERDUE_MAINTENANCE" ? "red" : "purple"}>
-                          {opportunity.sourceLabel}
+                          {retentionType(opportunity)}
                         </Badge>
                       </div>
                     </div>

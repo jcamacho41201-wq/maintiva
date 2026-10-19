@@ -94,7 +94,11 @@ describe("revenue recovery engine", () => {
   });
 
   it("groups revenue queue entries by vehicle", () => {
-    const groups = groupRevenueOpportunities(buildRevenueOpportunities(createInitialDemoState()));
+    const state = createInitialDemoState();
+    state.appointments = [];
+    state.outreachRecords = [];
+    state.maintenanceRecords = state.maintenanceRecords.map((record) => ({ ...record, appointmentId: undefined, outreachRecordId: undefined, outreachStatus: "NEEDS_OUTREACH" }));
+    const groups = groupRevenueOpportunities(buildRevenueOpportunities(state).filter((item) => item.stage === "IDENTIFIED"));
     const jeep = groups.find((item) => item.vehicleId === "veh-jeep");
 
     expect(jeep?.recommendedServices).toContain("Brake Pads");

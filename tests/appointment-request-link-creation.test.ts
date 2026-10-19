@@ -10,7 +10,7 @@ function source(file: string) {
 describe("appointment request link creation", () => {
   it("makes the Revenue Queue link button actionable and never silent", () => {
     const modal = source("src/components/contact-customer-modal.tsx");
-    const dashboardPage = source("src/app/page.tsx");
+    const outreachPage = source("src/app/outreach/page.tsx");
     const automationPage = source("src/app/automation/page.tsx");
 
     expect(modal).toContain("async function createLink()");
@@ -24,7 +24,7 @@ describe("appointment request link creation", () => {
     expect(modal).toContain("copyRequestLink");
     expect(modal).toContain("Copy failed. Select the request link and copy it manually.");
     expect(modal).toContain("Insert in draft");
-    expect(dashboardPage).toContain("appointmentRequestsEnabled={state.appointmentRequestsEnabled}");
+    expect(outreachPage).toContain("appointmentRequestsEnabled={state.appointmentRequestsEnabled}");
     expect(automationPage).toContain("appointmentRequestsEnabled={state.appointmentRequestsEnabled}");
   });
 

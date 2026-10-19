@@ -7,6 +7,7 @@ import { AlertTriangle, Car, ClipboardCheck, Gauge, Pencil, Plus, Trash2, X } fr
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
+import { RetentionProfile } from "@/components/retention-profile";
 import {
   customerName,
   getVehicleMaintenanceCondition,
@@ -199,6 +200,8 @@ export default function CustomerDetailPage() {
       </div>
 
       {error && <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">{error}</p>}
+
+      <RetentionProfile state={state} customerId={customer.id} />
 
       <section className="grid gap-4 md:grid-cols-4">
         {[

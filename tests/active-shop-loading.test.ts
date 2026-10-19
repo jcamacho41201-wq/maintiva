@@ -17,6 +17,7 @@ describe("active shop loading", () => {
   it("does not render zero dashboard metrics while authenticated shop state is unresolved", () => {
     expect(dashboardSource).toContain("Loading shop…");
     expect(dashboardSource).toContain("We could not load your shop.");
-    expect(dashboardSource).toContain("const { state, ready, loadError } = store");
+    expect(dashboardSource.indexOf("if (!ready)")).toBeLessThan(dashboardSource.indexOf("const report = retentionReport(state)"));
+    expect(dashboardSource.indexOf("if (loadError)")).toBeLessThan(dashboardSource.indexOf("const report = retentionReport(state)"));
   });
 });

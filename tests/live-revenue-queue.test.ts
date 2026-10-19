@@ -188,8 +188,9 @@ describe("revenue queue synchronization guardrails", () => {
     expect(dashboardPageSource).not.toContain("RecommendationModal");
     expect(dashboardPageSource).not.toContain("Generate message");
     expect(dashboardPageSource).not.toContain("canRecommend");
-    expect(dashboardPageSource).toContain("canContactCustomerForDraft(customer)");
-    expect(dashboardPageSource).toContain("ContactCustomerModal");
+    expect(dashboardPageSource).toContain('href="/outreach"');
+    expect(readFileSync(join(process.cwd(), "src/lib/retention.ts"), "utf8")).toContain("canContactCustomerForDraft(customer)");
+    expect(readFileSync(join(process.cwd(), "src/app/outreach/page.tsx"), "utf8")).toContain("ContactCustomerModal");
     expect(contactModalSource).toContain('title="Contact customer"');
     expect(contactModalSource).toContain("defaultContactChannel(customer)");
     expect(contactModalSource).toContain("Mark ${channel.toLowerCase()} as sent");

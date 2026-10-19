@@ -43,6 +43,7 @@ import { calculateDrivingProfile } from "@/lib/adaptive-mileage";
 import { removeDeletedCustomerFromState } from "@/lib/customer-deletion";
 import { resolveForecastAsOfDate } from "@/lib/forecast-dates";
 import { currentDateInTimeZone } from "@/lib/utils";
+import type { ServiceVisitInput } from "@/lib/service-visit";
 
 const storageKey = "maintiva-demo-state-v2";
 const changeEvent = "maintiva-demo-state";
@@ -477,6 +478,10 @@ export function useDemoStore() {
 
     return {
       state,
+      recordServiceVisit(input: ServiceVisitInput): Promise<MutationResult> {
+        if (shouldUseLocalDemoPersistence()) return Promise.resolve({ ok: false, message: "Sign in to a shop to record a service visit. Demo data is read-only for this action." });
+        return mutatePilotState({ action: "recordServiceVisit", payload: input });
+      },
       loadError: pilotStateLoadFailed,
       ready: shouldUseLocalDemoPersistence() || Boolean(state.shop.id) || pilotStateLoadFailed,
       resetDemoData() {
