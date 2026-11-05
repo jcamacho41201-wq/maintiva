@@ -6,20 +6,14 @@ import { useEffect, useRef, useState } from "react";
 import {
   BarChart3,
   CalendarDays,
-  ClipboardList,
-  FileUp,
   Gauge,
   LayoutDashboard,
-  Library,
   Menu,
   Settings,
-  Users,
-  Wrench,
   LogOut,
   MessageSquare,
   Megaphone,
   X,
-  Car,
 } from "lucide-react";
 import { GlobalSearch } from "@/components/global-search";
 import { useDemoStore } from "@/lib/demo-store";
@@ -62,20 +56,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const canResetLocalDemo = state.shop.isDemo && !authConfigured && showDemoReset;
   const currentUser = state.users.find((user) => user.id === state.currentUserId) ?? state.users[0];
   const navItems = [
-    { href: "/", activeHref: "/", label: "Dashboard", icon: LayoutDashboard, section: "Overview" },
-    { href: "/automation", activeHref: "/automation", label: "Opportunities", icon: ClipboardList, section: "Overview" },
-    { href: "/outreach", activeHref: "/outreach", label: "Ready for Outreach", icon: MessageSquare, section: "Overview" },
-    { href: "/appointments", activeHref: "/appointments", label: "Appointments", icon: CalendarDays, section: "Overview" },
-    { href: "/customers", activeHref: "/customers", label: "Customers", icon: Users, section: "Customers" },
-    { href: "/vehicles", activeHref: "/vehicles", label: "Vehicles", icon: Car, section: "Customers" },
-    { href: "/visits/new", activeHref: "/visits", label: "Add Service Visit", icon: Wrench, section: "Customers" },
-    { href: "/campaigns", activeHref: "/campaigns", label: "Campaigns", icon: Megaphone, section: "Retention" },
-    { href: "/messages", activeHref: "/messages", label: "Messages", icon: MessageSquare, section: "Retention" },
-    { href: "/settings/smart-maintenance-blocks", activeHref: "/settings/smart-maintenance-blocks", label: "Maintenance Blocks", icon: Gauge, section: "Retention" },
-    { href: "/analytics", activeHref: "/analytics", label: "Recovered Revenue", icon: BarChart3, section: "Performance" },
-    { href: "/services", activeHref: "/services", label: "Services & Intervals", icon: Library, section: "Settings" },
-    { href: "/integrations", activeHref: "/integrations", label: "Data & Integrations", icon: FileUp, section: "Settings" },
-    { href: "/settings", activeHref: "/settings", label: "Shop Settings", icon: Settings, section: "Settings" },
+    { href: "/", paths: ["/"], label: "Overview", icon: LayoutDashboard },
+    { href: "/campaigns", paths: ["/campaigns", "/automation", "/outreach"], label: "Campaigns", icon: Megaphone },
+    { href: "/messages", paths: ["/messages"], label: "Messages", icon: MessageSquare },
+    { href: "/appointments", paths: ["/appointments", "/settings/smart-maintenance-blocks", "/capacity"], label: "Bookings", icon: CalendarDays },
+    { href: "/analytics", paths: ["/analytics"], label: "Results", icon: BarChart3 },
+    { href: "/settings", paths: ["/settings", "/customers", "/vehicles", "/services", "/visits", "/import", "/integrations"], label: "Settings", icon: Settings },
   ];
 
   async function signOut() {
@@ -115,16 +101,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           )}
         </div>
         <nav className="flex-1 space-y-1 overflow-y-auto px-4 py-3">
-          {navItems.map((item, index) => {
-            const active =
-              item.activeHref === "/"
-                ? pathname === item.activeHref
-                : item.href === "/settings" ? pathname === "/settings" : pathname.startsWith(item.activeHref);
+          {navItems.map((item) => {
+            const active = item.paths.some((path) => path === "/" || path === "/settings"
+              ? pathname === path : pathname === path || pathname.startsWith(`${path}/`));
             const Icon = item.icon;
 
             return (
               <div key={item.label}>
-              {navItems[index - 1]?.section !== item.section && <p className="px-3 pb-1 pt-4 text-xs font-semibold uppercase text-zinc-400">{item.section}</p>}
               <Link
                 href={item.href}
                 onClick={() => setNavigationOpen(false)}
@@ -185,7 +168,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </Link>
           )}
         </header>
-        <main className="px-4 py-6 lg:px-8">{children}</main>
+        <main className="px-4 py-6 lg:px-8">
+          {["/campaigns", "/automation", "/outreach"].includes(pathname) && <nav aria-label="Campaign workflow" className="mb-6 flex flex-wrap gap-5 border-b border-zinc-200 text-sm">{[["/campaigns", "Campaigns"], ["/automation", "Opportunities"], ["/outreach", "Ready to review"]].map(([href, label]) => <Link key={href} href={href} aria-current={pathname === href ? "page" : undefined} className={`border-b-2 py-3 ${pathname === href ? "border-teal-700 font-semibold text-teal-800" : "border-transparent text-zinc-600"}`}>{label}</Link>)}</nav>}
+          {pathname === "/appointments" && <div className="mb-4 text-right"><Link href="/settings/smart-maintenance-blocks" className="inline-flex items-center gap-2 text-sm text-zinc-600"><Settings className="h-4 w-4" />Booking settings</Link></div>}
+          {children}
+        </main>
       </div>
     </div>
   );

@@ -77,6 +77,15 @@ export default function SettingsPage() {
         </p>
       </div>
 
+      <section aria-labelledby="shop-data-heading" className="border-y border-zinc-200 py-5">
+        <h2 id="shop-data-heading" className="text-lg font-semibold">Shop data</h2>
+        <div className="mt-3 flex flex-wrap gap-x-6 gap-y-3 text-sm font-medium text-teal-800">{[["/customers", "Customers"], ["/vehicles", "Vehicles"], ["/services", "Services & Intervals"], ["/visits/new", "Add Service Visit"], ["/integrations", "Data & Integrations"]].map(([href, label]) => <Link key={href} href={href} className="underline underline-offset-4">{label}</Link>)}</div>
+      </section>
+      <section id="messaging" className="scroll-mt-24 border-b border-zinc-200 pb-5">
+        <h2 className="text-lg font-semibold">Messaging</h2>
+        <p className="mt-2 text-sm text-zinc-600">SMS provider is not connected yet. Live SMS sending is unavailable.</p>
+        <Link href="/messages" className="mt-3 inline-block text-sm font-medium text-teal-800 underline">View messages</Link>
+      </section>
       <section className="grid gap-4 md:grid-cols-3">
         {[
           {
