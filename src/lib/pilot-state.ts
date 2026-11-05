@@ -30,6 +30,7 @@ import {
 import { assertSameShop, type AuthenticatedShopContext } from "@/lib/auth";
 import { customerSchema, vehicleSchema } from "@/lib/validation";
 import { serviceVisitSchema } from "@/lib/service-visit";
+import { serviceCompletionBaselineUpdate } from "@/lib/service-history";
 import { resolveMaintenanceInterval, timeIntervalToMonths } from "@/lib/service-intervals";
 import {
   DEFAULT_ANNUAL_MILEAGE,
@@ -2720,7 +2721,7 @@ export async function addPilotVehicle(context: AuthenticatedShopContext, input: 
         trim: parsed.trim || null,
         currentMileage: parsed.currentMileage,
         estimatedAnnualMileage: parsed.estimatedAnnualMileage ?? 12_000,
-        lastServiceDate: dateFromDateOnly(readingDate),
+        lastServiceDate: null,
       },
     });
 
@@ -2735,8 +2736,8 @@ export async function addPilotVehicle(context: AuthenticatedShopContext, input: 
         vehicleId: vehicle.id,
         serviceDefinitionId: service.id,
         serviceName: service.name,
-        lastCompletedDate: dateFromDateOnly(readingDate),
-        lastCompletedMileage: parsed.currentMileage,
+        lastCompletedDate: null,
+        lastCompletedMileage: null,
         recommendedMileageInterval: null,
         recommendedTimeIntervalMonths: null,
         mileageIntervalOverride: null,
@@ -3125,6 +3126,12 @@ export async function markPilotMaintenanceServiceComplete(
 
   await prisma.$transaction(async (tx) => {
     const completedDate = dateFromDateOnly(parsed.completedAt);
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${context.shopId}:service-visit:${record.vehicleId}`}))`;
+    const currentBaseline = await tx.vehicleMaintenanceRecord.findFirstOrThrow({
+      where: { id: record.id, shopId: context.shopId, archivedAt: null },
+      select: { lastCompletedDate: true },
+    });
+    const baselineUpdate = serviceCompletionBaselineUpdate(currentBaseline, completedDate, parsed.completedMileage);
     const warningMessages = validationIssues
       .filter((issue) => issue.severity === "warning")
       .map((issue) => issue.message);
@@ -3159,11 +3166,10 @@ export async function markPilotMaintenanceServiceComplete(
         recordedByUserId: context.userId,
       },
     });
-    await tx.vehicleMaintenanceRecord.update({
+    if (baselineUpdate) await tx.vehicleMaintenanceRecord.update({
       where: { id: record.id },
       data: {
-        lastCompletedDate: completedDate,
-        lastCompletedMileage: parsed.completedMileage,
+        ...baselineUpdate,
         priceCents: parsed.finalPriceCents,
         laborMinutes: parsed.finalLaborMinutes,
         status: "HEALTHY",
@@ -3172,14 +3178,15 @@ export async function markPilotMaintenanceServiceComplete(
         updatedByUserId: context.userId,
       },
     });
-    await tx.vehicle.update({
-      where: { id: record.vehicleId },
-      data: {
-        currentMileage: Math.max(record.vehicle.currentMileage, parsed.completedMileage),
-        lastServiceDate: completedDate,
-      },
+    await tx.vehicle.updateMany({
+      where: { id: record.vehicleId, shopId: context.shopId, OR: [{ lastServiceDate: null }, { lastServiceDate: { lte: completedDate } }] },
+      data: { lastServiceDate: completedDate },
     });
-    await tx.maintenanceRevenueOpportunity.updateMany({
+    if (warningMessages.length === 0) await tx.vehicle.updateMany({
+      where: { id: record.vehicleId, shopId: context.shopId, currentMileage: { lt: parsed.completedMileage } },
+      data: { currentMileage: parsed.completedMileage },
+    });
+    if (baselineUpdate) await tx.maintenanceRevenueOpportunity.updateMany({
       where: { shopId: context.shopId, maintenanceRecordId: record.id },
       data: { stage: "COMPLETED", lastActivityAt: completedDate },
     });
@@ -3496,8 +3503,9 @@ export async function recordPilotServiceVisit(context: AuthenticatedShopContext,
       let maintenance = await tx.vehicleMaintenanceRecord.findFirst({ where: { shopId: context.shopId, vehicleId: vehicle.id, serviceDefinitionId: service.id, isActive: true, archivedAt: null }, select: { id: true, lastCompletedDate: true } });
       maintenance ??= await tx.vehicleMaintenanceRecord.create({ data: { shopId: context.shopId, vehicleId: vehicle.id, serviceDefinitionId: service.id, serviceName: service.name, priceCents: service.defaultPriceCents, laborMinutes: service.estimatedLaborMinutes, notificationThreshold: service.defaultNotificationThreshold, createdByUserId: context.userId }, select: { id: true, lastCompletedDate: true } });
       await tx.serviceHistoryRecord.create({ data: { shopId: context.shopId, customerId: vehicle.customerId, vehicleId: vehicle.id, serviceDefinitionId: service.id, maintenanceRecordId: maintenance.id, serviceName: service.name, completedAt: date, mileage: parsed.mileage, laborMinutes: service.estimatedLaborMinutes, priceCents: line.priceCents, notes: parsed.notes || null }, select: { id: true } });
-      if (!maintenance.lastCompletedDate || maintenance.lastCompletedDate <= date) {
-        await tx.vehicleMaintenanceRecord.update({ where: { id: maintenance.id }, data: { lastCompletedDate: date, lastCompletedMileage: parsed.mileage, outreachStatus: "NEEDS_OUTREACH", status: "HEALTHY", updatedByUserId: context.userId }, select: { id: true } });
+      const baselineUpdate = serviceCompletionBaselineUpdate(maintenance, date, parsed.mileage);
+      if (baselineUpdate) {
+        await tx.vehicleMaintenanceRecord.update({ where: { id: maintenance.id }, data: { ...baselineUpdate, outreachStatus: "NEEDS_OUTREACH", status: "HEALTHY", updatedByUserId: context.userId }, select: { id: true } });
         await tx.maintenanceRevenueOpportunity.updateMany({ where: { shopId: context.shopId, maintenanceRecordId: maintenance.id, stage: { notIn: ["BOOKED", "COMPLETED", "LOST"] } }, data: { stage: "COMPLETED", lastActivityAt: date } });
       }
       const resolved = await tx.declinedWorkRecord.findMany({ where: { shopId: context.shopId, vehicleId: vehicle.id, serviceName: service.name, declinedAt: { lt: date }, status: { in: ["OPEN", "SNOOZED"] } }, select: { id: true } });
@@ -5029,6 +5037,7 @@ export async function importPilotCsvRows(
         : null;
 
       if (vehicle) {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${context.shopId}:service-visit:${vehicle.id}`}))`;
         vehicle = await tx.vehicle.update({
           where: { id: vehicle.id },
           data: {
@@ -5134,14 +5143,16 @@ export async function importPilotCsvRows(
         },
       });
 
+      const completedDate = importsCompletedService && serviceDateValue ? dateFromDateOnly(serviceDateValue) : null;
+      let maintenanceRecordId: string;
       if (existingMaintenance) {
+        const baselineUpdate = completedDate
+          ? serviceCompletionBaselineUpdate(existingMaintenance, completedDate, historicalServiceMileage)
+          : null;
         const maintenance = await tx.vehicleMaintenanceRecord.update({
           where: { id: existingMaintenance.id },
           data: {
-            lastCompletedDate: importsCompletedService && stringValue(normalized, "serviceDate")
-              ? new Date(stringValue(normalized, "serviceDate"))
-              : undefined,
-            lastCompletedMileage: importsCompletedService ? historicalServiceMileage ?? undefined : undefined,
+            ...baselineUpdate,
             priceOverrideCents: priceCents,
             laborMinutesOverride: laborMinutes,
             priceCents,
@@ -5149,6 +5160,7 @@ export async function importPilotCsvRows(
             updatedByUserId: context.userId,
           },
         });
+        maintenanceRecordId = maintenance.id;
         touchedMaintenanceRecordIds.push(maintenance.id);
       } else {
         const maintenance = await tx.vehicleMaintenanceRecord.create({
@@ -5157,10 +5169,7 @@ export async function importPilotCsvRows(
           vehicleId: vehicle.id,
           serviceDefinitionId: service.id,
           serviceName,
-          lastCompletedDate: stringValue(normalized, "serviceDate")
-            && importsCompletedService
-            ? new Date(stringValue(normalized, "serviceDate"))
-            : null,
+          lastCompletedDate: completedDate,
           lastCompletedMileage: importsCompletedService ? historicalServiceMileage : null,
           recommendedMileageInterval: null,
           recommendedTimeIntervalMonths: null,
@@ -5181,6 +5190,7 @@ export async function importPilotCsvRows(
           updatedByUserId: context.userId,
         },
         });
+        maintenanceRecordId = maintenance.id;
         touchedMaintenanceRecordIds.push(maintenance.id);
       }
 
@@ -5192,6 +5202,7 @@ export async function importPilotCsvRows(
             customerId: customer.id,
             vehicleId: vehicle.id,
             serviceDefinitionId: service.id,
+            maintenanceRecordId,
             serviceName,
             completedAt: dateFromDateOnly(serviceDate),
             mileage: historicalServiceMileage,

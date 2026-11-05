@@ -1,6 +1,6 @@
 import type { DemoState, OutreachRecord } from "@/lib/demo-data";
 import { buildRevenueOpportunities, groupRevenueOpportunities, type RevenueOpportunity } from "@/lib/revenue-recovery";
-import { resolveVehicleForecastMileage, stateForecastAsOfDate } from "@/lib/demo-calculations";
+import { getRecommendedRecords, resolveVehicleForecastMileage, stateForecastAsOfDate } from "@/lib/demo-calculations";
 import { resolveMaintenanceInterval } from "@/lib/service-intervals";
 import { addCalendarDays, calendarDaysBetween, normalizeDateOnly } from "@/lib/forecast-dates";
 import { canContactCustomerForDraft } from "@/lib/contact-workflow";
@@ -29,10 +29,12 @@ export function retentionType(item: RevenueOpportunity) {
 export function readyForOutreach(state: DemoState) {
   const today = stateForecastAsOfDate(state);
   const now = Date.now();
+  const recommendedIds = new Set(getRecommendedRecords(state).map(({ record }) => record.id));
   return groupRevenueOpportunities(retentionOpportunities(state).filter((item) => {
     const customer = state.customers.find((value) => value.id === item.customerId)!;
     if (!["ACTIVE", "WATCHLIST"].includes(customer.status) || item.stage !== "IDENTIFIED") return false;
     if (["SNOOZED", "STOPPED", "DECLINED"].includes(item.outreachStatus)) return false;
+    if (item.maintenanceRecordId && !recommendedIds.has(item.maintenanceRecordId)) return false;
     if (retentionType(item) === "Deferred Work" && (item.dueDate || item.dueMileage)) {
       const dateDue = item.dueDate && normalizeDateOnly(item.dueDate, state.shop.timezone) <= today;
       const mileageDue = item.dueMileage && item.forecastMileage != null && item.forecastMileage >= item.dueMileage;
