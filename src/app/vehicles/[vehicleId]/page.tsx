@@ -29,6 +29,7 @@ import {
 } from "@/lib/demo-calculations";
 import { type MaintenanceService, type OutreachThresholdType, type TimeIntervalUnit, type User, type Vehicle, type VehicleDrivingProfile, type VehicleMaintenanceRecord, type VehicleMileageReading } from "@/lib/demo-data";
 import { type MaintenanceItemInput, useDemoStore } from "@/lib/demo-store";
+import { RetentionProfile } from "@/components/retention-profile";
 import { calculateDrivingProfile, estimateServiceDueDate, resolveEffectiveForecastMileage, resolveLatestKnownMileage, validateMileageReading } from "@/lib/adaptive-mileage";
 import { buildRevenueOpportunities, isOpenRevenueStage } from "@/lib/revenue-recovery";
 import { formatInterval, resolveMaintenanceInterval } from "@/lib/service-intervals";
@@ -1617,6 +1618,8 @@ export default function VehicleMaintenancePage() {
           </button>
         </div>
       </div>
+
+      <RetentionProfile state={state} customerId={vehicle.customerId} vehicleId={vehicle.id} />
 
       <section className="grid gap-4 md:grid-cols-4">
         {[

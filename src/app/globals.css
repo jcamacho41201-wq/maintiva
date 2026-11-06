@@ -18,6 +18,11 @@ body {
   font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
 }
 
+h1, h2, h3, p, button, a { letter-spacing: 0; }
+
+button:not(:disabled), a, select { cursor: pointer; }
+button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px solid #6d28d9; outline-offset: 3px; }
+
 button,
 a {
   -webkit-tap-highlight-color: transparent;

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { createHash } from "node:crypto";
 import { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
 import {
@@ -28,6 +29,8 @@ import {
 } from "@/lib/demo-data";
 import { assertSameShop, type AuthenticatedShopContext } from "@/lib/auth";
 import { customerSchema, vehicleSchema } from "@/lib/validation";
+import { serviceVisitSchema } from "@/lib/service-visit";
+import { serviceCompletionBaselineUpdate } from "@/lib/service-history";
 import { resolveMaintenanceInterval, timeIntervalToMonths } from "@/lib/service-intervals";
 import {
   DEFAULT_ANNUAL_MILEAGE,
@@ -874,8 +877,8 @@ async function syncDeclinedWorkRevenueOpportunities(
       priorityReason: priority.priorityReason,
       estimatedRevenueCents: record.recommendedPriceCents,
       estimatedLaborMinutes: record.laborMinutes,
-      dueDate: record.declinedAt,
-      dueMileage: null,
+      dueDate: existing ? existing.dueDate : record.declinedAt,
+      dueMileage: existing?.dueMileage ?? null,
       daysOverdue: daysBetween(record.declinedAt),
       milesOverdue: 0,
       lastActivityAt: new Date(),
@@ -2718,7 +2721,7 @@ export async function addPilotVehicle(context: AuthenticatedShopContext, input: 
         trim: parsed.trim || null,
         currentMileage: parsed.currentMileage,
         estimatedAnnualMileage: parsed.estimatedAnnualMileage ?? 12_000,
-        lastServiceDate: dateFromDateOnly(readingDate),
+        lastServiceDate: null,
       },
     });
 
@@ -2733,8 +2736,8 @@ export async function addPilotVehicle(context: AuthenticatedShopContext, input: 
         vehicleId: vehicle.id,
         serviceDefinitionId: service.id,
         serviceName: service.name,
-        lastCompletedDate: dateFromDateOnly(readingDate),
-        lastCompletedMileage: parsed.currentMileage,
+        lastCompletedDate: null,
+        lastCompletedMileage: null,
         recommendedMileageInterval: null,
         recommendedTimeIntervalMonths: null,
         mileageIntervalOverride: null,
@@ -3123,6 +3126,12 @@ export async function markPilotMaintenanceServiceComplete(
 
   await prisma.$transaction(async (tx) => {
     const completedDate = dateFromDateOnly(parsed.completedAt);
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${context.shopId}:service-visit:${record.vehicleId}`}))`;
+    const currentBaseline = await tx.vehicleMaintenanceRecord.findFirstOrThrow({
+      where: { id: record.id, shopId: context.shopId, archivedAt: null },
+      select: { lastCompletedDate: true },
+    });
+    const baselineUpdate = serviceCompletionBaselineUpdate(currentBaseline, completedDate, parsed.completedMileage);
     const warningMessages = validationIssues
       .filter((issue) => issue.severity === "warning")
       .map((issue) => issue.message);
@@ -3157,11 +3166,10 @@ export async function markPilotMaintenanceServiceComplete(
         recordedByUserId: context.userId,
       },
     });
-    await tx.vehicleMaintenanceRecord.update({
+    if (baselineUpdate) await tx.vehicleMaintenanceRecord.update({
       where: { id: record.id },
       data: {
-        lastCompletedDate: completedDate,
-        lastCompletedMileage: parsed.completedMileage,
+        ...baselineUpdate,
         priceCents: parsed.finalPriceCents,
         laborMinutes: parsed.finalLaborMinutes,
         status: "HEALTHY",
@@ -3170,14 +3178,15 @@ export async function markPilotMaintenanceServiceComplete(
         updatedByUserId: context.userId,
       },
     });
-    await tx.vehicle.update({
-      where: { id: record.vehicleId },
-      data: {
-        currentMileage: Math.max(record.vehicle.currentMileage, parsed.completedMileage),
-        lastServiceDate: completedDate,
-      },
+    await tx.vehicle.updateMany({
+      where: { id: record.vehicleId, shopId: context.shopId, OR: [{ lastServiceDate: null }, { lastServiceDate: { lte: completedDate } }] },
+      data: { lastServiceDate: completedDate },
     });
-    await tx.maintenanceRevenueOpportunity.updateMany({
+    if (warningMessages.length === 0) await tx.vehicle.updateMany({
+      where: { id: record.vehicleId, shopId: context.shopId, currentMileage: { lt: parsed.completedMileage } },
+      data: { currentMileage: parsed.completedMileage },
+    });
+    if (baselineUpdate) await tx.maintenanceRevenueOpportunity.updateMany({
       where: { shopId: context.shopId, maintenanceRecordId: record.id },
       data: { stage: "COMPLETED", lastActivityAt: completedDate },
     });
@@ -3440,6 +3449,84 @@ export async function updatePilotVehicleMileage(context: AuthenticatedShopContex
       activeMaintenanceRecords.map((record) => record.id),
     );
   });
+}
+
+export async function recordPilotServiceVisit(context: AuthenticatedShopContext, input: unknown) {
+  const parsed = serviceVisitSchema.parse(input);
+  const payloadHash = createHash("sha256").update(JSON.stringify(parsed)).digest("hex");
+  if (context.role === "TECHNICIAN") throw new SafeActionError({ code: "VISIT_PERMISSION_REQUIRED", message: "An advisor must record this visit.", status: 403 });
+  const today = currentDateInTimeZone(context.shopTimezone);
+  if (parsed.date > today) throw new SafeActionError({ code: "VISIT_DATE_FUTURE", message: "Visit date cannot be in the future.", status: 400 });
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${context.shopId}:service-visit:${parsed.vehicleId}`}))`;
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${context.shopId}:service-visit-key:${parsed.idempotencyKey}`}))`;
+    const previous = await tx.auditLog.findFirst({ where: { shopId: context.shopId, action: "service_visit.recorded", entityId: parsed.idempotencyKey }, select: { id: true, metadata: true } });
+    if (previous) {
+      const metadata = previous.metadata as { payloadHash?: string } | null;
+      if (metadata?.payloadHash !== payloadHash) throw new SafeActionError({ code: "VISIT_RETRY_CHANGED", message: "This visit was already saved with different details. Refresh the customer before recording another visit.", status: 409 });
+      return;
+    }
+    const vehicle = await tx.vehicle.findFirst({ where: { id: parsed.vehicleId, customerId: parsed.customerId, shopId: context.shopId, archivedAt: null, customer: { archivedAt: null, shopId: context.shopId } }, select: { id: true, customerId: true, year: true, lastServiceDate: true, currentMileage: true } });
+    if (!vehicle) throw new SafeActionError({ code: "VISIT_TARGET_UNAVAILABLE", message: "Customer or vehicle is unavailable in your shop.", status: 404 });
+    const services = await tx.serviceDefinition.findMany({ where: { id: { in: parsed.services.map((item) => item.serviceDefinitionId) }, shopId: context.shopId, isActive: true }, select: { id: true, name: true, estimatedLaborMinutes: true, defaultPriceCents: true, defaultNotificationThreshold: true } });
+    if (services.length !== parsed.services.length) throw new SafeActionError({ code: "VISIT_SERVICE_UNAVAILABLE", message: "A selected service is unavailable. Refresh the service library.", status: 409 });
+    const readings = await tx.vehicleMileageReading.findMany({ where: { shopId: context.shopId, vehicleId: vehicle.id }, select: { readingMileage: true, readingDate: true, source: true, verificationStatus: true, anomalyStatus: true, includedInForecast: true } });
+    const issues = validateMileageReading({ reading: { readingMileage: parsed.mileage, readingDate: parsed.date }, existingReadings: readings.map((item) => ({ ...item, readingDate: dateOnly(item.readingDate) })), vehicleYear: vehicle.year, asOf: today });
+    const blocking = issues.find((item) => item.severity === "error");
+    if (blocking) throw new SafeActionError({ code: blocking.code, message: blocking.message, status: 400 });
+    const warnings = issues.filter((item) => item.severity === "warning" && item.code !== "DUPLICATE_READING");
+    const sameDateConflict = readings.some((item) => dateOnly(item.readingDate) === parsed.date && item.readingMileage !== parsed.mileage);
+    if (warnings.length || sameDateConflict) throw new SafeActionError({ code: "VISIT_MILEAGE_REVIEW_REQUIRED", message: "This odometer reading conflicts with the vehicle history. Review the mileage on the vehicle profile before recording this visit.", status: 409 });
+    const duplicateReading = readings.some((item) => dateOnly(item.readingDate) === parsed.date && item.readingMileage === parsed.mileage);
+    const date = dateFromDateOnly(parsed.date);
+    const completedIds: string[] = [];
+    const deferredIds: string[] = [];
+    for (const line of parsed.services) {
+      const service = services.find((item) => item.id === line.serviceDefinitionId)!;
+      const booked = await tx.appointment.findFirst({ where: { shopId: context.shopId, vehicleId: vehicle.id, status: { in: ["REQUESTED", "CONFIRMED", "IN_PROGRESS"] }, services: { some: { serviceDefinitionId: service.id } } }, select: { id: true } });
+      if (booked) throw new SafeActionError({ code: "VISIT_SERVICE_BOOKED", message: "A selected service is on an active appointment. Complete or cancel that appointment first to preserve its history and revenue attribution.", status: 409 });
+      if (line.outcome === "DEFERRED") {
+        const conflict = await tx.serviceHistoryRecord.findFirst({ where: { shopId: context.shopId, vehicleId: vehicle.id, serviceName: service.name, completedAt: date }, select: { id: true } });
+        if (conflict) throw new SafeActionError({ code: "VISIT_OUTCOME_CONFLICT", message: "A selected deferred service is already recorded as completed on this date.", status: 409 });
+        const existing = await tx.declinedWorkRecord.findFirst({ where: { shopId: context.shopId, vehicleId: vehicle.id, serviceName: service.name, status: { in: ["OPEN", "SNOOZED", "BOOKED"] } }, select: { id: true } });
+        if (existing) throw new SafeActionError({ code: "VISIT_DEFERRED_EXISTS", message: "A selected deferred service already has an open recommendation. Update it from the vehicle profile.", status: 409 });
+        const deferred = await tx.declinedWorkRecord.create({ data: { shopId: context.shopId, customerId: vehicle.customerId, vehicleId: vehicle.id, serviceName: service.name, declinedAt: date, recommendedPriceCents: line.priceCents, laborMinutes: service.estimatedLaborMinutes, advisorNotes: parsed.notes || null, status: "OPEN", outreachStatus: "NEEDS_OUTREACH" }, select: { id: true } });
+        deferredIds.push(deferred.id);
+        await syncDeclinedWorkRevenueOpportunities(tx, context, [deferred.id]);
+        await tx.maintenanceRevenueOpportunity.updateMany({ where: { shopId: context.shopId, declinedWorkRecordId: deferred.id }, data: { dueDate: line.dueDate ? dateFromDateOnly(line.dueDate) : line.dueMileage !== undefined ? null : date, dueMileage: line.dueMileage ?? null } });
+        continue;
+      }
+      const priorDeferred = await tx.declinedWorkRecord.findFirst({ where: { shopId: context.shopId, vehicleId: vehicle.id, serviceName: service.name, declinedAt: date }, select: { id: true } });
+      if (priorDeferred) throw new SafeActionError({ code: "VISIT_OUTCOME_CONFLICT", message: "A selected completed service is already recorded as deferred on this date. Review the existing record first.", status: 409 });
+      const duplicate = await tx.serviceHistoryRecord.findFirst({ where: { shopId: context.shopId, vehicleId: vehicle.id, serviceName: service.name, completedAt: date }, select: { id: true } });
+      if (duplicate) throw new SafeActionError({ code: "VISIT_ALREADY_RECORDED", message: "A selected service is already recorded on this date. Review service history before adding another visit.", status: 409 });
+      let maintenance = await tx.vehicleMaintenanceRecord.findFirst({ where: { shopId: context.shopId, vehicleId: vehicle.id, serviceDefinitionId: service.id, isActive: true, archivedAt: null }, select: { id: true, lastCompletedDate: true } });
+      maintenance ??= await tx.vehicleMaintenanceRecord.create({ data: { shopId: context.shopId, vehicleId: vehicle.id, serviceDefinitionId: service.id, serviceName: service.name, priceCents: service.defaultPriceCents, laborMinutes: service.estimatedLaborMinutes, notificationThreshold: service.defaultNotificationThreshold, createdByUserId: context.userId }, select: { id: true, lastCompletedDate: true } });
+      await tx.serviceHistoryRecord.create({ data: { shopId: context.shopId, customerId: vehicle.customerId, vehicleId: vehicle.id, serviceDefinitionId: service.id, maintenanceRecordId: maintenance.id, serviceName: service.name, completedAt: date, mileage: parsed.mileage, laborMinutes: service.estimatedLaborMinutes, priceCents: line.priceCents, notes: parsed.notes || null }, select: { id: true } });
+      const baselineUpdate = serviceCompletionBaselineUpdate(maintenance, date, parsed.mileage);
+      if (baselineUpdate) {
+        await tx.vehicleMaintenanceRecord.update({ where: { id: maintenance.id }, data: { ...baselineUpdate, outreachStatus: "NEEDS_OUTREACH", status: "HEALTHY", updatedByUserId: context.userId }, select: { id: true } });
+        await tx.maintenanceRevenueOpportunity.updateMany({ where: { shopId: context.shopId, maintenanceRecordId: maintenance.id, stage: { notIn: ["BOOKED", "COMPLETED", "LOST"] } }, data: { stage: "COMPLETED", lastActivityAt: date } });
+      }
+      const resolved = await tx.declinedWorkRecord.findMany({ where: { shopId: context.shopId, vehicleId: vehicle.id, serviceName: service.name, declinedAt: { lt: date }, status: { in: ["OPEN", "SNOOZED"] } }, select: { id: true } });
+      await tx.declinedWorkRecord.updateMany({ where: { id: { in: resolved.map((item) => item.id) }, shopId: context.shopId }, data: { status: "COMPLETED" } });
+      deferredIds.push(...resolved.map((item) => item.id));
+      completedIds.push(maintenance.id);
+    }
+    if (!duplicateReading) await tx.vehicleMileageReading.create({ data: { shopId: context.shopId, vehicleId: vehicle.id, readingDate: date, readingMileage: parsed.mileage, source: "SHOP_MANUAL_ENTRY", verificationStatus: "VERIFIED", anomalyStatus: "NONE", includedInForecast: true, sourceReferenceType: "ManualServiceVisit", sourceReferenceId: parsed.idempotencyKey, recordedByUserId: context.userId }, select: { id: true } });
+    if (completedIds.length && (!vehicle.lastServiceDate || vehicle.lastServiceDate <= date)) {
+      await tx.vehicle.update({ where: { id: vehicle.id }, data: { lastServiceDate: date }, select: { id: true } });
+    }
+    const customer = await tx.customer.findFirst({ where: { id: vehicle.customerId, shopId: context.shopId }, select: { lastVisit: true } });
+    if (!customer?.lastVisit || customer.lastVisit <= date) await tx.customer.update({ where: { id: vehicle.customerId }, data: { lastVisit: date }, select: { id: true } });
+    await recalculatePersistedDrivingProfile({ tx, context, vehicleId: vehicle.id });
+    const activeRecords = await tx.vehicleMaintenanceRecord.findMany({ where: { shopId: context.shopId, vehicleId: vehicle.id, isActive: true, archivedAt: null }, select: { id: true } });
+    await syncMaintenanceRevenueOpportunities(tx, context, activeRecords.map((record) => record.id));
+    // New deferred targets already carry advisor due dates; only resync resolved recommendations here.
+    const resolvedIds = await tx.declinedWorkRecord.findMany({ where: { shopId: context.shopId, id: { in: deferredIds }, status: "COMPLETED" }, select: { id: true } });
+    await syncDeclinedWorkRevenueOpportunities(tx, context, resolvedIds.map((item) => item.id));
+    await tx.auditLog.create({ data: { shopId: context.shopId, actorUserId: context.userId, action: "service_visit.recorded", entityType: "ManualServiceVisit", entityId: parsed.idempotencyKey, metadata: { source: "MANUAL", vehicleId: vehicle.id, date: parsed.date, payloadHash, completed: completedIds.length, deferred: parsed.services.filter((item) => item.outcome === "DEFERRED").length } }, select: { id: true } });
+  }, { timeout: 20000 });
 }
 
 export async function recordPilotInspection(context: AuthenticatedShopContext, input: unknown) {
@@ -4950,6 +5037,7 @@ export async function importPilotCsvRows(
         : null;
 
       if (vehicle) {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`${context.shopId}:service-visit:${vehicle.id}`}))`;
         vehicle = await tx.vehicle.update({
           where: { id: vehicle.id },
           data: {
@@ -5055,14 +5143,16 @@ export async function importPilotCsvRows(
         },
       });
 
+      const completedDate = importsCompletedService && serviceDateValue ? dateFromDateOnly(serviceDateValue) : null;
+      let maintenanceRecordId: string;
       if (existingMaintenance) {
+        const baselineUpdate = completedDate
+          ? serviceCompletionBaselineUpdate(existingMaintenance, completedDate, historicalServiceMileage)
+          : null;
         const maintenance = await tx.vehicleMaintenanceRecord.update({
           where: { id: existingMaintenance.id },
           data: {
-            lastCompletedDate: importsCompletedService && stringValue(normalized, "serviceDate")
-              ? new Date(stringValue(normalized, "serviceDate"))
-              : undefined,
-            lastCompletedMileage: importsCompletedService ? historicalServiceMileage ?? undefined : undefined,
+            ...baselineUpdate,
             priceOverrideCents: priceCents,
             laborMinutesOverride: laborMinutes,
             priceCents,
@@ -5070,6 +5160,7 @@ export async function importPilotCsvRows(
             updatedByUserId: context.userId,
           },
         });
+        maintenanceRecordId = maintenance.id;
         touchedMaintenanceRecordIds.push(maintenance.id);
       } else {
         const maintenance = await tx.vehicleMaintenanceRecord.create({
@@ -5078,10 +5169,7 @@ export async function importPilotCsvRows(
           vehicleId: vehicle.id,
           serviceDefinitionId: service.id,
           serviceName,
-          lastCompletedDate: stringValue(normalized, "serviceDate")
-            && importsCompletedService
-            ? new Date(stringValue(normalized, "serviceDate"))
-            : null,
+          lastCompletedDate: completedDate,
           lastCompletedMileage: importsCompletedService ? historicalServiceMileage : null,
           recommendedMileageInterval: null,
           recommendedTimeIntervalMonths: null,
@@ -5102,6 +5190,7 @@ export async function importPilotCsvRows(
           updatedByUserId: context.userId,
         },
         });
+        maintenanceRecordId = maintenance.id;
         touchedMaintenanceRecordIds.push(maintenance.id);
       }
 
@@ -5113,6 +5202,7 @@ export async function importPilotCsvRows(
             customerId: customer.id,
             vehicleId: vehicle.id,
             serviceDefinitionId: service.id,
+            maintenanceRecordId,
             serviceName,
             completedAt: dateFromDateOnly(serviceDate),
             mileage: historicalServiceMileage,

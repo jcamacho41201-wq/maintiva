@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Download, Printer } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { useDemoStore } from "@/lib/demo-store";
-import { getRevenueFunnel, getRoiReport } from "@/lib/revenue-recovery";
+import { retentionReport, type ReportRange } from "@/lib/retention";
 import { formatCurrency } from "@/lib/utils";
 
 function downloadCsv(rows: string[][]) {
@@ -19,48 +19,56 @@ function downloadCsv(rows: string[][]) {
 }
 
 export default function AnalyticsPage() {
-  const { state } = useDemoStore();
-  const [range, setRange] = useState("This month");
-  const report = getRoiReport(state);
-  const funnel = getRevenueFunnel(state);
+  const { state, ready, loadError } = useDemoStore();
+  const [range, setRange] = useState<ReportRange>("MONTH");
+  const report = retentionReport(state, range);
+  if (!ready) return <p>Loading revenue report…</p>;
+  if (loadError) return <p role="alert">Revenue report could not be loaded.</p>;
+  const funnel = [
+    { stage: "contact", label: "Contacted", count: report.customersContacted },
+    { stage: "response", label: "Responded", count: report.customerResponses },
+    { stage: "request", label: "Requests", count: report.requestCount },
+    { stage: "appointment", label: "Appointments", count: report.appointmentsGenerated },
+    { stage: "return", label: "Returned", count: report.customersReturned },
+  ];
   const cards = [
-    ["Opportunities identified", report.opportunitiesIdentified.toString()],
-    ["Value identified", formatCurrency(report.opportunityValueIdentified)],
+    ["Recovered revenue", formatCurrency(report.recoveredRevenueCents)],
+    ["Customers returned", report.customersReturned.toString()],
     ["Customers contacted", report.customersContacted.toString()],
     ["Customer responses", report.customerResponses.toString()],
-    ["Appointments booked", report.appointmentsBookedThroughMaintiva.toString()],
-    ["Booked revenue", formatCurrency(report.bookedMaintivaRevenue)],
-    ["Completed revenue", formatCurrency(report.completedMaintivaRevenue)],
-    ["Average recovered RO", formatCurrency(report.averageRecoveredRepairOrder)],
+    ["Appointments scheduled", report.appointmentsGenerated.toString()],
+    ["Appointment requests", report.requestCount.toString()],
+    ["Estimated open opportunity (current)", formatCurrency(report.estimatedOpportunityCents)],
+    ["Estimated scheduled value (current)", formatCurrency(report.estimatedScheduledCents)],
   ];
   const csvRows = [
     ["Metric", "Value"],
     ...cards,
-    ["Outreach to response rate", `${report.outreachToResponseRate}%`],
-    ["Response to booking rate", `${report.responseToBookingRate}%`],
-    ["Overall outreach to booking rate", `${report.overallOutreachToBookingRate}%`],
-    ["Labor hours booked", `${report.laborHoursBookedThroughMaintiva}`],
+    ["Period start", report.from],
+    ["Period end", report.through],
+    ["Revenue missing", String(report.missingRevenueCount)],
   ];
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h1 className="text-3xl font-semibold tracking-tight">ROI Report</h1>
+          <h1 className="text-3xl font-semibold tracking-tight">Recovered Revenue & Retention</h1>
           <p className="mt-2 max-w-3xl text-sm text-zinc-600">
-            Attribution for maintenance revenue Maintiva helped identify, book, and recover.
+            Recorded revenue from completed Maintiva-attributed appointments. Estimates remain separate.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <select
             value={range}
-            onChange={(event) => setRange(event.target.value)}
+            onChange={(event) => setRange(event.target.value as ReportRange)}
+            aria-label="Report period"
             className="h-10 rounded-lg border border-zinc-200 bg-white px-3 text-sm font-semibold outline-none focus:border-violet-500"
           >
-            <option>This month</option>
-            <option>Last 30 days</option>
-            <option>Quarter to date</option>
-            <option>Pilot to date</option>
+            <option value="MONTH">This month</option>
+            <option value="30_DAYS">Last 30 days</option>
+            <option value="QUARTER">Quarter to date</option>
+            <option value="ALL">All time</option>
           </select>
           <button
             onClick={() => downloadCsv(csvRows)}
@@ -94,19 +102,19 @@ export default function AnalyticsPage() {
         <Card>
           <CardHeader>
             <h2 className="text-lg font-semibold">Revenue Funnel</h2>
-            <p className="mt-1 text-sm text-zinc-500">{range}</p>
+            <p className="mt-1 text-sm text-zinc-500">{report.from === "0000-01-01" ? "All time" : report.from} through {report.through}. Appointments use scheduled date; returns use completion date.</p>
           </CardHeader>
           <CardContent className="space-y-3">
             {funnel.map((item) => (
-              <div key={item.stage} className="grid grid-cols-[8rem_1fr_auto] items-center gap-3 text-sm">
+              <div key={item.stage} className="grid grid-cols-[7rem_1fr_auto] items-center gap-3 text-sm">
                 <span className="font-medium">{item.label}</span>
                 <div className="h-3 rounded-full bg-zinc-100">
                   <div
                     className="h-3 rounded-full bg-violet-800"
-                    style={{ width: `${Math.min(100, item.count * 18)}%` }}
+                    style={{ width: `${item.count / Math.max(1, ...funnel.map((entry) => entry.count)) * 100}%` }}
                   />
                 </div>
-                <span className="text-right font-semibold">{item.count} · {formatCurrency(item.valueCents)}</span>
+                <span className="text-right font-semibold">{item.count}</span>
               </div>
             ))}
           </CardContent>
@@ -118,23 +126,23 @@ export default function AnalyticsPage() {
           </CardHeader>
           <CardContent className="space-y-4">
             {[
-              ["Outreach to response", report.outreachToResponseRate],
-              ["Response to booking", report.responseToBookingRate],
-              ["Outreach to booking", report.overallOutreachToBookingRate],
+              ["Contacted customers who responded", report.responseRate],
+              ["Contacted customers with appointments", report.bookingRate],
             ].map(([label, value]) => (
               <div key={label} className="rounded-lg border border-zinc-200 p-4">
                 <div className="flex items-center justify-between text-sm">
                   <span className="font-medium">{label}</span>
-                  <span className="font-semibold">{value}%</span>
+                  <span className="font-semibold">{value === null ? "Not available" : `${value}%`}</span>
                 </div>
                 <div className="mt-3 h-3 rounded-full bg-zinc-100">
-                  <div className="h-3 rounded-full bg-violet-800" style={{ width: `${value}%` }} />
+                  <div className="h-3 rounded-full bg-violet-800" style={{ width: `${value ?? 0}%` }} />
                 </div>
               </div>
             ))}
             <div className="rounded-lg border border-zinc-200 p-4">
-              <p className="text-sm text-zinc-500">Labor hours booked through Maintiva</p>
-              <p className="mt-1 text-xl font-semibold">{report.laborHoursBookedThroughMaintiva} hrs</p>
+              <p className="text-sm text-zinc-500">Subscription ROI</p>
+              <p className="mt-1 font-semibold">Not available: subscription cost not recorded.</p>
+              <p className="mt-3 text-sm text-zinc-500">{report.missingRevenueCount} completed appointments excluded from revenue because the completion amount is missing.</p>
             </div>
           </CardContent>
         </Card>

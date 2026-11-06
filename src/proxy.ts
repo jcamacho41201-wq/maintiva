@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 
 const publicRoutes = new Set([
+  "/about",
   "/login",
   "/password-reset",
   "/privacy",

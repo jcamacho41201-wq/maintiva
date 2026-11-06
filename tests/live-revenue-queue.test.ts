@@ -133,7 +133,7 @@ describe("live revenue queue data source", () => {
 
 describe("revenue queue synchronization guardrails", () => {
   const pilotStateSource = readFileSync(join(process.cwd(), "src/lib/pilot-state.ts"), "utf8");
-  const automationPageSource = readFileSync(join(process.cwd(), "src/app/automation/page.tsx"), "utf8");
+  const automationPageSource = readFileSync(join(process.cwd(), "src/app/campaigns/page.tsx"), "utf8");
   const dashboardPageSource = readFileSync(join(process.cwd(), "src/app/page.tsx"), "utf8");
   const contactModalSource = readFileSync(join(process.cwd(), "src/components/contact-customer-modal.tsx"), "utf8");
   const contactWorkflowSource = readFileSync(join(process.cwd(), "src/lib/contact-workflow.ts"), "utf8");
@@ -167,17 +167,13 @@ describe("revenue queue synchronization guardrails", () => {
     expect(pilotStateSource).not.toContain("currentMileage: initialCurrentMileage ?? 0");
   });
 
-  it("keeps the main queue to four workflow tabs with advanced filters", () => {
-    expect(automationPageSource).toContain("Needs Attention");
-    expect(automationPageSource).toContain("Contacted");
-    expect(automationPageSource).toContain("Booked");
-    expect(automationPageSource).toContain("Closed");
-    expect(automationPageSource).toContain("Advanced Filters");
-    expect(automationPageSource).toContain("Any reason");
-    expect(automationPageSource).toContain("Any priority");
-    expect(automationPageSource).toContain("Any contact state");
-    expect(automationPageSource).not.toContain("[\"ALL\", \"All\"]");
-    expect(automationPageSource).not.toContain("Appointment attribution");
+  it("uses a single needs-review queue with category and snooze views", () => {
+    expect(automationPageSource).toContain("Needs review");
+    expect(automationPageSource).toContain("Snoozed");
+    expect(automationPageSource).toContain("All opportunities");
+    expect(automationPageSource).toContain("Campaign category");
+    expect(automationPageSource).toContain("needsReviewOpportunities(state)");
+    expect(automationPageSource).toContain("groupRevenueOpportunities([selected])");
   });
 
   it("uses the canonical contact workflow instead of the recommendation workflow", () => {
@@ -188,17 +184,18 @@ describe("revenue queue synchronization guardrails", () => {
     expect(dashboardPageSource).not.toContain("RecommendationModal");
     expect(dashboardPageSource).not.toContain("Generate message");
     expect(dashboardPageSource).not.toContain("canRecommend");
-    expect(dashboardPageSource).toContain("canContactCustomerForDraft(customer)");
-    expect(dashboardPageSource).toContain("ContactCustomerModal");
+    expect(dashboardPageSource).toContain('href="/campaigns"');
+    expect(readFileSync(join(process.cwd(), "src/lib/retention.ts"), "utf8")).toContain("canContactCustomerForDraft(customer)");
+    expect(readFileSync(join(process.cwd(), "src/app/outreach/page.tsx"), "utf8")).toContain('@/app/automation/page');
     expect(contactModalSource).toContain('title="Contact customer"');
     expect(contactModalSource).toContain("defaultContactChannel(customer)");
     expect(contactModalSource).toContain("Mark ${channel.toLowerCase()} as sent");
     expect(automationPageSource).toContain("BookAppointmentModal");
-    expect(automationPageSource).toContain('title="Book appointment"');
-    expect(automationPageSource).toContain("Create appointment");
-    expect(automationPageSource).toContain("SnoozeOpportunityModal");
-    expect(automationPageSource).toContain('title="Snooze opportunity"');
-    expect(automationPageSource).toContain("End snooze now");
+    const bookingSource = readFileSync(join(process.cwd(), "src/components/queue-booking-modal.tsx"), "utf8");
+    expect(bookingSource).toContain('title="Book appointment"');
+    expect(bookingSource).toContain("Create appointment");
+    expect(automationPageSource).toContain("store.snoozeOpportunity");
+    expect(automationPageSource).toContain("End snooze");
   });
 
   it("keeps drafting separate from recorded outreach", () => {

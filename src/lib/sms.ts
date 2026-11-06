@@ -202,10 +202,14 @@ export async function sendPilotCustomerSms(context: AuthenticatedShopContext, in
   const existingForKey = input.idempotencyKey
     ? await prisma.outreachRecord.findFirst({
         where: { shopId: context.shopId, smsIdempotencyKey: input.idempotencyKey },
-        select: { id: true },
+        select: { id: true, smsDeliveryStatus: true, smsFailureCode: true, customerId: true, vehicleId: true },
       })
     : null;
-  if (existingForKey) return { outreachRecordId: existingForKey.id, simulated: false };
+  if (existingForKey) {
+    if (existingForKey.customerId !== input.customerId || existingForKey.vehicleId !== input.vehicleId) throw smsActionError("SMS_PROVIDER_FAILED", "This send key belongs to another outreach attempt.", 409);
+    if (existingForKey.smsDeliveryStatus === "FAILED") throw smsActionError(existingForKey.smsFailureCode === "SMS_PROVIDER_NOT_CONFIGURED" ? "SMS_PROVIDER_NOT_CONFIGURED" : "SMS_PROVIDER_FAILED", existingForKey.smsFailureCode === "SMS_PROVIDER_NOT_CONFIGURED" ? "SMS provider is not connected yet." : "The previous SMS attempt failed. Review Communication History before trying again.", 409);
+    return { outreachRecordId: existingForKey.id, simulated: existingForKey.smsDeliveryStatus === "SIMULATED" };
+  }
 
   let providerResult: SmsTransportResult | undefined;
   let providerError: SafeActionError | undefined;

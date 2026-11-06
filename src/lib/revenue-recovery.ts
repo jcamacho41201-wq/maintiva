@@ -363,11 +363,11 @@ function buildPersistedRevenueOpportunities(state: DemoState): RevenueOpportunit
             shopTimezone: state.shop.timezone,
           })
         : null;
-      const daysOverdue = effective?.daysUntilDue !== null && effective?.daysUntilDue !== undefined
-        ? Math.max(0, -effective.daysUntilDue)
+      const daysOverdue = effective
+        ? Math.max(0, -(effective.daysUntilDue ?? 0))
         : opportunity.daysOverdue;
-      const milesOverdue = effective?.milesUntilDue !== null && effective?.milesUntilDue !== undefined
-        ? Math.max(0, -effective.milesUntilDue)
+      const milesOverdue = effective
+        ? Math.max(0, -(effective.milesUntilDue ?? 0))
         : opportunity.milesOverdue;
       const source = effective
         ? effective.status === "OVERDUE" || daysOverdue > 0 || milesOverdue > 0
@@ -442,8 +442,8 @@ function buildPersistedRevenueOpportunities(state: DemoState): RevenueOpportunit
         forecastMileageReason: forecastMileage.confidenceReason,
         latestKnownMileage: forecastMileage.latestKnownMileage ?? undefined,
         latestKnownDate: forecastMileage.latestKnownDate ?? undefined,
-        dueDate: effective?.nextDueDate ?? opportunity.dueDate,
-        dueMileage: effective?.nextDueMileage ?? opportunity.dueMileage,
+        dueDate: effective ? effective.nextDueDate ?? undefined : opportunity.dueDate,
+        dueMileage: effective ? effective.nextDueMileage ?? undefined : opportunity.dueMileage,
         daysOverdue,
         milesOverdue,
         estimatedRevenueCents: effective?.priceCents ?? opportunity.estimatedRevenueCents,
