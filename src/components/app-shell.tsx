@@ -169,7 +169,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           )}
         </header>
         <main className="px-4 py-6 lg:px-8">
-          {["/campaigns", "/automation", "/outreach"].includes(pathname) && <nav aria-label="Campaign workflow" className="mb-6 flex flex-wrap gap-5 border-b border-zinc-200 text-sm">{[["/campaigns", "Campaigns"], ["/automation", "Opportunities"], ["/outreach", "Ready to review"]].map(([href, label]) => <Link key={href} href={href} aria-current={pathname === href ? "page" : undefined} className={`border-b-2 py-3 ${pathname === href ? "border-teal-700 font-semibold text-teal-800" : "border-transparent text-zinc-600"}`}>{label}</Link>)}</nav>}
           {pathname === "/appointments" && <div className="mb-4 text-right"><Link href="/settings/smart-maintenance-blocks" className="inline-flex items-center gap-2 text-sm text-zinc-600"><Settings className="h-4 w-4" />Booking settings</Link></div>}
           {children}
         </main>

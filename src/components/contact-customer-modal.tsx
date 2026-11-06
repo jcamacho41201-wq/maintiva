@@ -99,6 +99,10 @@ function ModalFrame({
   );
 }
 
+function SupportingDetails({ embedded, title, children }: { embedded: boolean; title: string; children: React.ReactNode }) {
+  return embedded ? <details className="border-b border-zinc-200 pb-3"><summary className="cursor-pointer text-sm font-medium text-zinc-600">{title}</summary><div className="mt-3">{children}</div></details> : <>{children}</>;
+}
+
 export function ContactCustomerModal({
   group,
   customer,
@@ -114,6 +118,9 @@ export function ContactCustomerModal({
   onRevokeAppointmentRequestLink,
   appointmentRequestsEnabled,
   appointmentRequestLink,
+  embedded = false,
+  smsDisabledReason,
+  reviewActions,
 }: {
   group: RevenueQueueGroup;
   customer: Customer;
@@ -157,9 +164,12 @@ export function ContactCustomerModal({
   onRevokeAppointmentRequestLink: (id: string) => Promise<{ ok: boolean; message?: string }>;
   appointmentRequestsEnabled: boolean;
   appointmentRequestLink?: AppointmentRequestLinkRecord;
+  embedded?: boolean;
+  smsDisabledReason?: string;
+  reviewActions?: React.ReactNode;
 }) {
   const channels = availableContactChannels(customer);
-  const initialChannel = defaultContactChannel(customer) ?? "EMAIL";
+  const initialChannel = embedded ? "TEXT" : defaultContactChannel(customer) ?? "EMAIL";
   const initialTemplateReason = templateReasonForGroup(group);
   const initialVariables = outreachTemplateVariables({
     customer,
@@ -416,6 +426,7 @@ export function ContactCustomerModal({
   }
 
   async function sendSms(duplicateOverride = false) {
+    if (smsDisabledReason) { setError(smsDisabledReason); return; }
     if (!smsEligibility.allowed) {
       setError(smsEligibility.reason ?? "Text cannot be sent to this customer.");
       return;
@@ -452,15 +463,14 @@ export function ContactCustomerModal({
     setError(result.message ?? "Text sent and saved to communication history.");
   }
 
-  return (
-    <ModalFrame title="Contact customer" subtitle={`${customer.firstName} ${customer.lastName} · ${vehicle.year} ${vehicle.make} ${vehicle.model}`} onClose={onClose}>
-      <div className="space-y-5 p-5">
+  const content = (
+      <div className={embedded ? "space-y-3" : "space-y-5 p-5"}>
         {error && <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">{error}</p>}
         {copied && !saved && <p className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-medium text-violet-700">Message copied. Copying alone does not mark the customer contacted.</p>}
         {bookingLink && !saved && <p className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm font-medium text-zinc-700">Appointment request link ready. It expires {formatDate(bookingLink.expiresAt)}. Creating it did not mark outreach sent.</p>}
         {saved && <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-700">Outreach saved. No appointment was created.</p>}
 
-        <div className="rounded-lg border border-zinc-200 p-4">
+        {!embedded && <div className="rounded-lg border border-zinc-200 p-4">
           <div className="grid gap-3 text-sm md:grid-cols-3">
             {rows.map((row) => (
               <div key={row.id}>
@@ -477,9 +487,9 @@ export function ContactCustomerModal({
             <Badge variant={customer.emailConsent ? "green" : "neutral"}>Email {customer.emailConsent ? "permitted" : "not permitted"}</Badge>
             <Badge variant={customer.callConsent ? "green" : "neutral"}>Call {customer.callConsent ? "permitted" : "not permitted"}</Badge>
           </div>
-        </div>
+        </div>}
 
-        <div className="grid gap-3 sm:grid-cols-3" role="radiogroup" aria-label="Communication channel">
+        <div className={`grid gap-3 ${embedded ? "grid-cols-3" : "sm:grid-cols-3"}`} role="radiogroup" aria-label="Communication channel">
           {channels.map(({ channel: value, label, available, reason }) => {
             const Icon = value === "TEXT" ? MessageSquare : value === "EMAIL" ? Mail : Phone;
             return (
@@ -502,6 +512,7 @@ export function ContactCustomerModal({
           })}
         </div>
 
+        <SupportingDetails embedded={embedded} title="Template options">
         <div className="grid gap-4 sm:grid-cols-[1fr_auto] sm:items-end">
           <label className="text-sm font-medium">
             Template
@@ -529,12 +540,14 @@ export function ContactCustomerModal({
           </button>
         </div>
 
+        </SupportingDetails>
         {group.lastContactedAt && (
           <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-800">
             Last contacted {formatDate(group.lastContactedAt)}. Review the draft before sending another follow-up.
           </p>
         )}
 
+        <SupportingDetails embedded={embedded} title="Appointment request link options">
         <div className="flex flex-wrap items-center gap-3 rounded-lg border border-zinc-200 p-3">
           <label className="inline-flex items-center gap-2 text-sm font-medium text-zinc-700">
             <input
@@ -619,6 +632,7 @@ export function ContactCustomerModal({
           {!bookingLink && linkError && <p className="w-full text-sm font-medium text-red-700">{linkError}</p>}
         </div>
 
+        </SupportingDetails>
         {channel === "CALL" ? (
           <label className="block text-sm font-semibold">
             Call notes
@@ -652,6 +666,7 @@ export function ContactCustomerModal({
               />
             </label>
             {channel === "TEXT" && (
+              <SupportingDetails embedded={embedded} title={`Recipient & consent · ${smsCharacterCount} characters`}>
               <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-3 text-sm">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
@@ -684,20 +699,24 @@ export function ContactCustomerModal({
                 )}
                 <p className="mt-3 text-zinc-500">{smsCharacterCount} SMS characters · about {smsSegments} segment{smsSegments === 1 ? "" : "s"}</p>
               </div>
+              </SupportingDetails>
             )}
             {unresolvedTokens.length > 0 && (
               <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-medium text-red-700">
                 Complete these placeholders before sending: {unresolvedTokens.join(", ")}
               </p>
             )}
+            <SupportingDetails embedded={embedded} title="Final preview">
             <div className="rounded-lg border border-zinc-200 bg-zinc-50 p-4 text-sm">
               <p className="font-semibold text-zinc-800">Final preview</p>
               {channel === "EMAIL" && <p className="mt-3 font-medium text-zinc-700">Subject: {subject}</p>}
               <p className="mt-3 whitespace-pre-wrap text-zinc-700">{message}</p>
             </div>
+            </SupportingDetails>
           </div>
         )}
 
+        <SupportingDetails embedded={embedded} title="Response & follow-up">
         <div className="grid gap-4 sm:grid-cols-2">
           <label className="text-sm font-medium">
             Customer response
@@ -717,8 +736,10 @@ export function ContactCustomerModal({
           </label>
         </div>
 
+        </SupportingDetails>
+        {channel === "TEXT" && (smsDisabledReason || !smsEligibility.allowed) && <p id={embedded ? "review-send-blocker" : undefined} role="status" className="text-sm text-amber-900">{!smsEligibility.allowed && `${smsEligibility.reason}. `}{smsDisabledReason}</p>}
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-zinc-100 pt-5">
-          <Badge variant="neutral">Manual outreach · no live send integration</Badge>
+          {!embedded && <Badge variant="neutral">Manual outreach · no live send integration</Badge>}
           <div className="flex flex-wrap gap-2">
             {channel !== "CALL" && (
               <button onClick={copyText} disabled={!selectedChannelAvailable || saving} className="inline-flex items-center gap-2 rounded-lg border border-zinc-200 px-4 py-2 text-sm font-semibold text-zinc-800 disabled:opacity-60">
@@ -729,13 +750,13 @@ export function ContactCustomerModal({
             {channel === "TEXT" ? (
               <>
                 {duplicateWarning && (
-                  <button onClick={() => sendSms(true)} disabled={!smsEligibility.allowed || saving || saved} className="inline-flex items-center gap-2 rounded-lg border border-amber-200 px-4 py-2 text-sm font-semibold text-amber-800 disabled:opacity-60">
+                  <button onClick={() => sendSms(true)} disabled={Boolean(smsDisabledReason) || !smsEligibility.allowed || saving || saved} className="inline-flex items-center gap-2 rounded-lg border border-amber-200 px-4 py-2 text-sm font-semibold text-amber-800 disabled:opacity-60">
                     Send Again
                   </button>
                 )}
-                <button onClick={() => sendSms(false)} disabled={!smsEligibility.allowed || saving || saved} className="inline-flex items-center gap-2 rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">
+                <button aria-describedby={embedded ? "review-send-blocker" : undefined} onClick={() => sendSms(false)} disabled={Boolean(smsDisabledReason) || !smsEligibility.allowed || saving || saved || unresolvedTokens.length > 0 || message.trim().length < 3} className="inline-flex items-center gap-2 rounded-lg bg-violet-950 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">
                   <CheckCircle2 className="h-4 w-4" />
-                  {saved ? "Sent" : saving ? "Sending..." : "Send Text"}
+                  {saved ? "Sent" : saving ? "Sending..." : embedded ? "Approve & send" : "Send Text"}
                 </button>
               </>
             ) : (
@@ -750,9 +771,10 @@ export function ContactCustomerModal({
                 Book appointment
               </button>
             )}
+            {reviewActions}
           </div>
         </div>
       </div>
-    </ModalFrame>
   );
+  return embedded ? content : <ModalFrame title="Contact customer" subtitle={`${customer.firstName} ${customer.lastName} · ${vehicle.year} ${vehicle.make} ${vehicle.model}`} onClose={onClose}>{content}</ModalFrame>;
 }

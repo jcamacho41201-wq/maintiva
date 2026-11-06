@@ -10,8 +10,7 @@ function source(file: string) {
 describe("appointment request link creation", () => {
   it("makes the Revenue Queue link button actionable and never silent", () => {
     const modal = source("src/components/contact-customer-modal.tsx");
-    const outreachPage = source("src/app/outreach/page.tsx");
-    const automationPage = source("src/app/automation/page.tsx");
+    const reviewPage = source("src/app/campaigns/page.tsx");
 
     expect(modal).toContain("async function createLink()");
     expect(modal).toContain('setCreatingLink(true)');
@@ -24,8 +23,8 @@ describe("appointment request link creation", () => {
     expect(modal).toContain("copyRequestLink");
     expect(modal).toContain("Copy failed. Select the request link and copy it manually.");
     expect(modal).toContain("Insert in draft");
-    expect(outreachPage).toContain("appointmentRequestsEnabled={state.appointmentRequestsEnabled}");
-    expect(automationPage).toContain("appointmentRequestsEnabled={state.appointmentRequestsEnabled}");
+    expect(reviewPage).toContain("appointmentRequestsEnabled={state.appointmentRequestsEnabled}");
+    expect(reviewPage).toContain("item.opportunityId === selected.id");
   });
 
   it("returns the raw URL only at creation and displays existing metadata safely", () => {
